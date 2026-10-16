@@ -1,0 +1,127 @@
+{
+  "sourceCommit": "887d6760105c1b736095fb94468a807e3fb4ac72",
+  "baseCommit": "c67b081ec13d90cc982d045fc065211cd6438e44",
+  "testedOn": "2026-10-17 Asia/Shanghai",
+  "environment": {
+    "frontend": "feature worktree",
+    "backendImage": "ghcr.io/zyycn/codex-proxy-rs:3.28.0",
+    "backendRevision": "447869860a0fb88f78109cdb700db0cb1eb5d8b5",
+    "postgresql": 18,
+    "redis": 8,
+    "browser": "Chromium 151 on localhost HTTP"
+  },
+  "checks": {
+    "pnpm --dir frontend format:check": "passed",
+    "pnpm --dir frontend build": "passed, includes typecheck",
+    "pnpm --dir frontend audit --prod": "No known vulnerabilities found",
+    "git diff --check": "passed",
+    "inputAndFailureCases": 22
+  },
+  "realProxies": [
+    {
+      "proxy": "A",
+      "httpConnect": true,
+      "country": "PH",
+      "city": "Manila",
+      "locationStatus": "detected",
+      "httpLatencyMs": 1945,
+      "manualRequestLocationUnchanged": true,
+      "socks5hConnectivity": true,
+      "socks5hLatencyMs": 2609
+    },
+    {
+      "proxy": "B",
+      "httpConnect": true,
+      "country": "PH",
+      "city": "Manila",
+      "locationStatus": "detected",
+      "httpLatencyMs": 2104,
+      "manualRequestLocationUnchanged": true,
+      "socks5hConnectivity": true,
+      "socks5hLatencyMs": 2587
+    }
+  ],
+  "realNetwork": true,
+  "mockedRealProxyResponses": false,
+  "persistedAfterReload": true,
+  "ui": {
+    "controlledResponses": true,
+    "results": [
+      {
+        "mode": "light",
+        "flagLoaded": true,
+        "manualLocationNotUsedAsExit": true,
+        "oneList": true,
+        "rows": 100,
+        "scrollHeight": 6265,
+        "viewportHeight": 416,
+        "keyboardScrollToLast": true,
+        "noHorizontalPageOverflow": true
+      },
+      {
+        "mode": "dark",
+        "flagLoaded": true,
+        "manualLocationNotUsedAsExit": true,
+        "oneList": true,
+        "rows": 100,
+        "scrollHeight": 6265,
+        "viewportHeight": 416,
+        "keyboardScrollToLast": true,
+        "noHorizontalPageOverflow": true
+      },
+      {
+        "mode": "mobile",
+        "flagLoaded": true,
+        "manualLocationNotUsedAsExit": true,
+        "oneList": true,
+        "rows": 100,
+        "scrollHeight": 8315,
+        "viewportHeight": 416,
+        "keyboardScrollToLast": true,
+        "noHorizontalPageOverflow": true
+      }
+    ],
+    "geolocationFailureNotConnectionFailure": true,
+    "retryOnlyTwoLocationFailures": true,
+    "staleExitAndUnknownCountryHandled": true,
+    "detectLocationOnAllRequests": true,
+    "pageErrors": 0
+  },
+  "workflow": {
+    "crossPageSelection": true,
+    "filteredTargets": 205,
+    "filteredPaginationRead": true,
+    "maxTestConcurrency": 2,
+    "capacityAndRevisionErrorsSeparated": true,
+    "retryOnlyUnsuccessful": true,
+    "stopDispatchesNoMoreThanTwo": true,
+    "networkAndPermissionStopQueue": true,
+    "unmountStopsQueue": true,
+    "actualRevisionConflict": true,
+    "committedButLostCreateResponse": true,
+    "pageErrors": []
+  },
+  "finalAsyncBoundaries": {
+    "selectedTargetMissingWarning": true,
+    "geolocationRetryCases": 4,
+    "cancelledRetryDoesNotRestartNewDialog": true,
+    "detectLocationPropagated": true
+  },
+  "additionalVisualStates": [
+    "batch input in light/dark/mobile",
+    "target list loading",
+    "empty list disables batch test"
+  ],
+  "limitations": [
+    "Real proxy checks used the official 3.28.0 release backend; no Rust code was changed and full Rust workspace tests were not run",
+    "100-item UI and 205-item orchestration checks used controlled responses; they are separate from the real proxy checks",
+    "Screenshot data is synthetic; real proxy endpoints and credentials are not published",
+    "City names retain geolocation service output"
+  ],
+  "ai": {
+    "tool": "Codex",
+    "model": "GPT-6.1 Sol",
+    "reasoningEffort": "极高",
+    "source": "user confirmed session UI"
+  }
+}
