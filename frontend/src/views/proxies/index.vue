@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import type { OutboundProxyRecord } from '@/api'
-import { ZButton, ZCard, ZConfirmDialog, ZInput, ZPageHeader, ZPagination, ZTable, ZTag } from '@codex-proxy/ui'
-import { LockKeyhole, MapPin, Plus, Search, Users } from '@lucide/vue'
-import { shallowRef } from 'vue'
+import { ZButton, ZCard, ZCheckbox, ZConfirmDialog, ZInput, ZMenuItem, ZPageHeader, ZPagination, ZPopover, ZTable, ZTag } from '@codex-proxy/ui'
+import { ChevronDown, LockKeyhole, MapPin, Plus, Search, Users, Wifi } from '@lucide/vue'
+import { shallowRef, watch } from 'vue'
+import { usePageSelection } from '@/composables/usePageSelection'
 import ProxyAccountsModal from './components/ProxyAccountsModal.vue'
 import ProxyActions from './components/ProxyActions.vue'
+import ProxyBatchTestModal from './components/ProxyBatchTestModal.vue'
 import ProxyFormModal from './components/ProxyFormModal.vue'
+import ProxyRegion from './components/ProxyRegion.vue'
 import { useProxies } from './composables/useProxies'
 import { proxyColumns } from './constants'
 import { effectiveProxyLocation } from './utils/location'
@@ -16,6 +19,7 @@ const {
   loading,
   pagination,
   loadProxies,
+  reloadAfterCreate,
   showForm,
   editing,
   form,
@@ -35,6 +39,7 @@ const {
   detectingLocation,
   openForm,
   checkProxy,
+  testSavedProxy,
   testConnection,
   detectLocation,
   save,
@@ -46,6 +51,20 @@ const {
 } = useProxies()
 const showAccounts = shallowRef(false)
 const inspected = shallowRef<OutboundProxyRecord | null>(null)
+const { selectedIds, selectedRowKeys, allSelected, indeterminate, toggleSelection, toggleAll } = usePageSelection(proxies)
+const showBatchTest = shallowRef(false)
+const testScope = shallowRef<'selected' | 'filtered'>('selected')
+const testSearch = shallowRef('')
+
+function openBatchTest(scope: 'selected' | 'filtered') {
+  testScope.value = scope
+  testSearch.value = search.value.trim()
+  showBatchTest.value = true
+}
+
+watch(search, () => {
+  selectedIds.value = new Set()
+})
 </script>
 
 <template>
@@ -63,7 +82,29 @@ const inspected = shallowRef<OutboundProxyRecord | null>(null)
               <Search class="size-4.5 text-cp-text-tertiary" />
             </template>
           </ZInput>
-          <div class="flex shrink-0 items-center justify-end gap-2 sm:ml-auto">
+          <div class="flex shrink-0 flex-wrap items-center justify-end gap-2 sm:ml-auto">
+            <ZButton v-if="selectedIds.size" size="small" variant="plain" @click="selectedIds = new Set()">
+              清空选择
+            </ZButton>
+            <ZPopover placement="bottom-end">
+              <template #reference>
+                <ZButton :disabled="loading || !pagination.total" aria-label="批量测试代理">
+                  <Wifi class="size-4" />
+                  批量测试<span v-if="selectedIds.size"> ({{ selectedIds.size }})</span>
+                  <ChevronDown class="size-3.5" />
+                </ZButton>
+              </template>
+              <template #default="{ close }">
+                <div class="w-52 p-1.5">
+                  <ZMenuItem :disabled="!selectedIds.size" @click="(close(), openBatchTest('selected'))">
+                    测试选中 ({{ selectedIds.size }})
+                  </ZMenuItem>
+                  <ZMenuItem @click="(close(), openBatchTest('filtered'))">
+                    测试当前筛选结果
+                  </ZMenuItem>
+                </div>
+              </template>
+            </ZPopover>
             <ZButton type="primary" @click="openForm()">
               <template #icon>
                 <Plus class="size-4" />
@@ -75,7 +116,13 @@ const inspected = shallowRef<OutboundProxyRecord | null>(null)
       </template>
       <template #body>
         <div class="flex h-full min-h-0 flex-col">
-          <ZTable class="min-h-0 flex-1" :columns="proxyColumns" :data="proxies" :loading="loading" :empty-text="search.trim() ? '没有找到匹配的代理，请尝试其他名称' : '暂无代理，请点击新增代理添加'">
+          <ZTable class="min-h-0 flex-1" :columns="proxyColumns" :data="proxies" :loading="loading" :selected-row-keys="selectedRowKeys" :empty-text="search.trim() ? '没有找到匹配的代理，请尝试其他名称' : '暂无代理，请点击新增代理添加'">
+            <template #header-selection>
+              <ZCheckbox :model-value="allSelected" :indeterminate="indeterminate" aria-label="选择当前页代理" @update:model-value="toggleAll" />
+            </template>
+            <template #selection="{ row }">
+              <ZCheckbox :model-value="selectedIds.has(row.id)" :aria-label="`选择代理 ${row.name}`" @update:model-value="toggleSelection(row.id)" />
+            </template>
             <template #name="{ row }">
               <span class="block truncate text-cp text-cp-text" :title="row.name">{{ row.name }}</span>
             </template>
@@ -114,6 +161,9 @@ const inspected = shallowRef<OutboundProxyRecord | null>(null)
               <span v-else-if="row.lastTest?.exitIp" class="block truncate font-mono text-cp-xs" :title="row.lastTest.exitIp">{{ row.lastTest.exitIp }}</span>
               <span v-else class="text-cp-text-quaternary">-</span>
             </template>
+            <template #region="{ row }">
+              <ProxyRegion :proxy="row" class="text-cp-sm" />
+            </template>
             <template #latency="{ row }">
               <span v-if="testingIds.has(row.id)" class="text-cp-text-secondary">测试中</span>
               <span v-else-if="row.lastTest?.success" class="tabular-nums text-cp-success">
@@ -151,11 +201,14 @@ const inspected = shallowRef<OutboundProxyRecord | null>(null)
       :saving="saving"
       :testing-connection="testingConnection"
       :detecting-location="detectingLocation"
+      :test-saved-proxy="testSavedProxy"
+      :reload-after-create="reloadAfterCreate"
       @save="save"
       @test="testConnection"
       @detect-location="detectLocation"
       @after-leave="clearCredentials"
     />
+    <ProxyBatchTestModal v-model="showBatchTest" :scope="testScope" :search="testSearch" :selected-ids="selectedRowKeys" :test="testSavedProxy" :reload="() => loadProxies({ silent: true })" />
     <ZConfirmDialog v-model="showDisable" title="禁用代理" confirm-text="禁用代理" :loading="disabling" @confirm="confirmDisable">
       <p class="m-0">
         确定禁用“{{ pendingDisable?.name }}”吗？

@@ -1,7 +1,9 @@
 import type { OutboundProxyRecord, OutboundProxyTest } from '@/api'
+import type { RequestOptions } from '@/api/request'
 import { ZNotification } from '@codex-proxy/ui'
 import { computed, onMounted, reactive, shallowRef, watch } from 'vue'
 import { createProxy, deleteProxy, getProxies, probeProxy, testProxy, updateProxy } from '@/api'
+import { ApiError } from '@/api/request'
 import { useAsyncAction } from '@/composables/useAsyncAction'
 import { useIdSet } from '@/composables/useIdSet'
 import { usePagedQuery } from '@/composables/usePagedQuery'
@@ -53,16 +55,30 @@ export function useProxies() {
     showForm.value = true
   }
 
-  async function checkProxy(proxy: OutboundProxyRecord) {
+  async function testSavedProxy(proxy: OutboundProxyRecord, options: RequestOptions = {}, detectLocation = false) {
     if (testing.has(proxy.id))
-      return
+      throw new ApiError('该代理正在测试，请等待当前测试结束', 429)
     testing.add(proxy.id)
     try {
-      const result = await testProxy({ id: proxy.id, revision: proxy.revision })
-      if (editing.value?.id === result.id) {
+      const result = await testProxy({ id: proxy.id, revision: proxy.revision, detectLocation }, options)
+      // 列表或编辑目标已换版本时，迟到的测试不能覆盖新配置
+      proxies.value = proxies.value.map(item => item.id === result.id && item.revision === proxy.revision ? result : item)
+      if (editing.value?.id === result.id && editing.value.revision === proxy.revision) {
         editing.value = result
         formTestResult.value = result.lastTest
       }
+      return result
+    }
+    finally {
+      testing.remove(proxy.id)
+    }
+  }
+
+  async function checkProxy(proxy: OutboundProxyRecord) {
+    if (testing.has(proxy.id))
+      return
+    try {
+      const result = await testSavedProxy(proxy)
       if (result.lastTest?.success === false)
         ZNotification.error({ message: `${result.name}：${result.lastTest.message}` })
       else if (result.lastTest?.success)
@@ -72,7 +88,6 @@ export function useProxies() {
     }
     catch {}
     finally {
-      testing.remove(proxy.id)
       await query.execute({ silent: true })
     }
   }
@@ -183,10 +198,14 @@ export function useProxies() {
           }))
       showForm.value = false
       ZNotification.success({ message: '代理已保存' })
-      search.value = ''
-      query.page.value = 1
-      await query.execute()
+      await reloadAfterCreate()
     })
+  }
+
+  async function reloadAfterCreate() {
+    search.value = ''
+    query.page.value = 1
+    await query.execute()
   }
 
   function requestDelete(proxy: OutboundProxyRecord) {
@@ -269,6 +288,7 @@ export function useProxies() {
     loading,
     pagination,
     loadProxies: query.execute,
+    reloadAfterCreate,
     showForm,
     editing,
     form,
@@ -288,6 +308,7 @@ export function useProxies() {
     detectingLocation,
     openForm,
     checkProxy,
+    testSavedProxy,
     testConnection,
     detectLocation,
     save,

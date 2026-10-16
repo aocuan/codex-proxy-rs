@@ -215,6 +215,9 @@ importers:
       axios:
         specifier: ^1.20.0
         version: 1.20.0(debug@4.4.3)
+      circle-flags:
+        specifier: github:HatScripts/circle-flags#379588b5da95482d6bbf10bd45644a35b0609ea6
+        version: https://codeload.github.com/HatScripts/circle-flags/tar.gz/379588b5da95482d6bbf10bd45644a35b0609ea6
       css-tree:
         specifier: ^3.2.1
         version: 3.2.1
@@ -1270,6 +1273,10 @@ packages:
   ci-info@4.4.0:
     resolution: {integrity: sha512-77PSwercCZU2Fc4sX94eF8k8Pxte6JAwL4/ICZLFjJLqegs7kCuAsqqj/70NQF6TvDpgFjkubQB2FW2ZZddvQg==}
     engines: {node: '>=8'}
+
+  circle-flags@https://codeload.github.com/HatScripts/circle-flags/tar.gz/379588b5da95482d6bbf10bd45644a35b0609ea6:
+    resolution: {gitHosted: true, integrity: sha512-7+MedPAzgGg+c+uPnMPirLcppBk5CNEbhLpEX4AyGEbuKnIUL/blstcznhp64lW34FiQtnkgDdmsp27Tb1Z6QA==, tarball: https://codeload.github.com/HatScripts/circle-flags/tar.gz/379588b5da95482d6bbf10bd45644a35b0609ea6}
+    version: 1.0.0
 
   combined-stream@1.0.8:
     resolution: {integrity: sha512-FQN4MRfuJeHf7cBbBMJFXhKSDq+2kAArBlmRBvcvFE5BB1HZKXtSFASDhdlz9zOYwxh8lDdnvmMOe/+5cdoEdg==}
@@ -3565,6 +3572,8 @@ snapshots:
       readdirp: 5.1.1
 
   ci-info@4.4.0: {}
+
+  circle-flags@https://codeload.github.com/HatScripts/circle-flags/tar.gz/379588b5da95482d6bbf10bd45644a35b0609ea6: {}
 
   combined-stream@1.0.8:
     dependencies:

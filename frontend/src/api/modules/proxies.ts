@@ -99,12 +99,13 @@ export function getProxies(data: { page: number, pageSize: number, search?: stri
   })
 }
 
-export function createProxy(data: { name: string, proxyUrl: string, autoLocation?: boolean, location?: RequestLocation | null }) {
+export function createProxy(data: { name: string, proxyUrl: string, autoLocation?: boolean, location?: RequestLocation | null }, options: RequestOptions = {}) {
   return request<ProxyMutation>({
     url: '/api/admin/proxies/create',
     timeout: 25000,
     method: 'POST',
     data,
+    ...options,
   })
 }
 
@@ -125,12 +126,13 @@ export function deleteProxy(data: { id: string, revision: number }) {
   })
 }
 
-export function testProxy(data: { id: string, revision: number, detectLocation?: boolean }) {
+export function testProxy(data: { id: string, revision: number, detectLocation?: boolean }, options: RequestOptions = {}) {
   return request<OutboundProxyRecord>({
     url: '/api/admin/proxies/test',
     method: 'POST',
     data,
     timeout: 25000,
+    ...options,
   })
 }
 

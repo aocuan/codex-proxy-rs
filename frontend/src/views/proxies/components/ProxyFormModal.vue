@@ -1,10 +1,14 @@
 <script setup lang="ts">
+import type { ProxyTestExecutor } from '../composables/useProxyBatchTest'
 import type { OutboundProxyRecord, OutboundProxyTest, RequestLocation } from '@/api'
-import { ZButton, ZDialog, ZForm, ZFormItem, ZInput, ZSwitch } from '@codex-proxy/ui'
-import { Save, Wifi } from '@lucide/vue'
-import { computed } from 'vue'
+import { ZButton, ZDialog, ZForm, ZFormItem, ZInput, ZSegmented, ZSwitch } from '@codex-proxy/ui'
+import { Save, Square, Wifi } from '@lucide/vue'
+import { computed, shallowRef, watch } from 'vue'
 import RequestLocationDetectButton from '@/components/RequestLocationDetectButton.vue'
 import RequestLocationFields from '@/components/RequestLocationFields.vue'
+import { useProxyBatchCreate } from '../composables/useProxyBatchCreate'
+import ProxyBatchCreateFields from './ProxyBatchCreateFields.vue'
+import ProxyBatchResults from './ProxyBatchResults.vue'
 
 const props = defineProps<{
   proxy: OutboundProxyRecord | null
@@ -12,6 +16,8 @@ const props = defineProps<{
   testingConnection: boolean
   detectingLocation: boolean
   testResult: OutboundProxyTest | null
+  testSavedProxy: ProxyTestExecutor
+  reloadAfterCreate: () => Promise<unknown>
 }>()
 const emit = defineEmits<{
   save: []
@@ -23,6 +29,24 @@ const name = defineModel<string>('name', { required: true })
 const proxyUrl = defineModel<string>('proxyUrl', { required: true })
 const customLocation = defineModel<boolean>('customLocation', { required: true })
 const location = defineModel<RequestLocation>('location', { required: true })
+const mode = shallowRef('single')
+const modeOptions = [{ label: '单条', value: 'single' }, { label: '批量', value: 'batch' }]
+const batch = useProxyBatchCreate({ test: (proxy, options, detectLocation) => props.testSavedProxy(proxy, options, detectLocation), reload: () => props.reloadAfterCreate() })
+const {
+  text: batchText,
+  prefix: batchPrefix,
+  protocol: batchProtocol,
+  items: batchItems,
+  busy: batchBusy,
+  stopping: batchStopping,
+  testingRequested,
+  parsed,
+  inputError,
+  created,
+  canEditFailures,
+} = batch
+const { items: batchTestItems, running: batchTesting } = batch.tests
+const single = computed(() => Boolean(props.proxy) || mode.value === 'single')
 const manualLocationWarning = computed(() => {
   const location = props.testResult?.location
   if (location?.status === 'conflict')
@@ -31,16 +55,24 @@ const manualLocationWarning = computed(() => {
     return location.message
   return ''
 })
-const busy = computed(() => props.saving || props.testingConnection || props.detectingLocation)
+const busy = computed(() => props.saving || props.testingConnection || props.detectingLocation || batchBusy.value)
 const title = computed(() => props.proxy ? '编辑代理' : '新增代理')
 const connectionDescription = computed(() => props.proxy
   ? '留空保留当前连接和认证信息，填写新地址时，请包含所需的用户名和密码'
   : '支持 HTTP、HTTPS、SOCKS5 和 SOCKS5H，可在地址中包含用户名和密码')
+
+watch(open, (value) => {
+  if (value) {
+    mode.value = 'single'
+    batch.clear()
+  }
+})
 </script>
 
 <template>
-  <ZDialog v-model="open" :title="title" width="36rem" :show-close="!busy" :close-on-click-modal="!busy" :close-on-press-escape="!busy">
-    <ZForm class="grid gap-5">
+  <ZDialog v-model="open" :title="title" :width="single ? '36rem' : '48rem'" :show-close="!busy" :close-on-click-modal="!busy" :close-on-press-escape="!busy" @after-leave="batch.clear()">
+    <ZSegmented v-if="!proxy" v-model="mode" :options="modeOptions" :disabled="busy" aria-label="代理添加方式" class="mb-5 w-full" />
+    <ZForm v-if="single" class="grid gap-5">
       <ZFormItem label="代理名称" required>
         <ZInput v-model="name" maxlength="100" :disabled="busy" aria-label="代理名称" placeholder="请输入代理名称" />
       </ZFormItem>
@@ -69,22 +101,61 @@ const connectionDescription = computed(() => props.proxy
         将更新 {{ proxy.accountCount }} 个关联账号的出口
       </p>
     </ZForm>
+    <ProxyBatchCreateFields v-else-if="!batchItems.length" v-model="batchText" v-model:prefix="batchPrefix" v-model:protocol="batchProtocol" :rows="parsed" :error="inputError" :disabled="busy" />
+    <div v-else class="grid min-w-0 gap-5">
+      <ProxyBatchResults :items="batchItems" :tests="batchTestItems" />
+      <p v-if="batchItems.some(item => item.status === 'unknown')" class="m-0 text-cp-xs text-cp-warning-text" role="alert">
+        结果待确认的条目可能已保存，请刷新列表核对后再添加
+      </p>
+    </div>
     <template #footer>
-      <ZButton :disabled="busy" @click="open = false">
-        取消
-      </ZButton>
-      <ZButton :loading="testingConnection" :disabled="saving || detectingLocation" @click="emit('test')">
-        <template #icon>
-          <Wifi class="size-4" />
-        </template>
-        测试连接
-      </ZButton>
-      <ZButton type="primary" :loading="saving" :disabled="testingConnection || detectingLocation" @click="emit('save')">
-        <template #icon>
-          <Save class="size-4" />
-        </template>
-        保存代理
-      </ZButton>
+      <template v-if="single">
+        <ZButton :disabled="busy" @click="open = false">
+          取消
+        </ZButton>
+        <ZButton :loading="testingConnection" :disabled="saving || detectingLocation" @click="emit('test')">
+          <template #icon>
+            <Wifi class="size-4" />
+          </template>
+          测试连接
+        </ZButton>
+        <ZButton type="primary" :loading="saving" :disabled="testingConnection || detectingLocation" @click="emit('save')">
+          <template #icon>
+            <Save class="size-4" />
+          </template>
+          保存代理
+        </ZButton>
+      </template>
+      <template v-else-if="batchBusy">
+        <ZButton :disabled="batchStopping" @click="batch.stop()">
+          <Square class="size-3.5" />{{ batchStopping ? '等待当前操作结束' : '停止后续操作' }}
+        </ZButton>
+        <ZButton type="primary" loading>
+          {{ batchTesting ? '正在测试' : '正在添加' }}
+        </ZButton>
+      </template>
+      <template v-else-if="batchItems.length">
+        <ZButton @click="open = false">
+          关闭
+        </ZButton>
+        <ZButton v-if="canEditFailures" @click="batch.editFailures()">
+          修改未添加项
+        </ZButton>
+        <ZButton v-if="created.length && !testingRequested" type="primary" @click="batch.testCreated()">
+          测试已添加的 {{ created.length }} 条
+        </ZButton>
+      </template>
+      <template v-else>
+        <ZButton @click="open = false">
+          取消
+        </ZButton>
+        <ZButton :disabled="!parsed.some(row => !row.error) || Boolean(inputError)" @click="batch.submit(false)">
+          仅添加
+        </ZButton>
+        <ZButton type="primary" :disabled="!parsed.some(row => !row.error) || Boolean(inputError)" @click="batch.submit(true)">
+          添加并测试
+        </ZButton>
+      </template>
     </template>
   </ZDialog>
 </template>
