@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "feature": "accounts list refresh, issue 403",
+  "baseline": "0b02d0d98a925e7f1189754af6442f51d39c82a5",
+  "implementation": "8a9cf404e86adf55e3dbde49b9ec91ca0ca82bb8",
+  "data": "All screenshots use synthetic accounts; no real identities or credentials",
+  "capturedAt": "2026-10-17T05:52:41.490095+00:00",
+  "screenshots": [
+    {
+      "path": "screenshots/before-light.png",
+      "caption": "变更前 1440px 浅色",
+      "sha256": "798bb470f5eff93cfb97cbaa8c37709a8d2a56e4dcfc6e0fb258aae4e55b526f",
+      "size": [
+        1440,
+        1000
+      ],
+      "sourceCommit": "0b02d0d98a925e7f1189754af6442f51d39c82a5"
+    },
+    {
+      "path": "screenshots/after-light.png",
+      "caption": "变更后 1440px 浅色，默认暂停",
+      "sha256": "796b14d25ac27c515e5baa76e21915acc25687da7ac695015878c1f07719d15c",
+      "size": [
+        1440,
+        1000
+      ],
+      "sourceCommit": "8a9cf404e86adf55e3dbde49b9ec91ca0ca82bb8"
+    },
+    {
+      "path": "screenshots/selected-auto-light.png",
+      "caption": "选中账号并启用 30 秒，工具栏保持一行",
+      "sha256": "959629e26d87439637392f83640ee3649bc3a70807f8d9cde19f11f159627185",
+      "size": [
+        1440,
+        1000
+      ],
+      "sourceCommit": "8a9cf404e86adf55e3dbde49b9ec91ca0ca82bb8"
+    },
+    {
+      "path": "screenshots/interval-menu.png",
+      "caption": "自动刷新设置菜单",
+      "sha256": "d97dafef2be8e7cae7532d8ff042fc9f07bdf51a73e20ea9e9fad6bacbd3e2ef",
+      "size": [
+        1440,
+        1000
+      ],
+      "sourceCommit": "8a9cf404e86adf55e3dbde49b9ec91ca0ca82bb8"
+    },
+    {
+      "path": "screenshots/batch-menu.png",
+      "caption": "批量操作菜单",
+      "sha256": "58efb66b7ed1b4ea5a54f8b7bc2956cea0fcdf97a7b60307883a9a04dafac999",
+      "size": [
+        1440,
+        1000
+      ],
+      "sourceCommit": "8a9cf404e86adf55e3dbde49b9ec91ca0ca82bb8"
+    },
+    {
+      "path": "screenshots/after-dark.png",
+      "caption": "变更后深色",
+      "sha256": "12fc9a281cd636ecc3868dd95d31fb9acfab0b65934853effd035e28ec0646b9",
+      "size": [
+        1440,
+        1000
+      ],
+      "sourceCommit": "8a9cf404e86adf55e3dbde49b9ec91ca0ca82bb8"
+    },
+    {
+      "path": "screenshots/narrow-light.png",
+      "caption": "390px 浅色，已滚动至工具栏",
+      "sha256": "bd3e450696ec115acb0be85bdc347cf4472950817c4fb8d063ae6dc2fd11b24c",
+      "size": [
+        390,
+        844
+      ],
+      "sourceCommit": "8a9cf404e86adf55e3dbde49b9ec91ca0ca82bb8"
+    },
+    {
+      "path": "screenshots/narrow-dark.png",
+      "caption": "390px 深色，已滚动至工具栏",
+      "sha256": "77b4d459677bf52d671b2cc29f02b37df629ebc6ebe86215fbd57470d0199417",
+      "size": [
+        390,
+        844
+      ],
+      "sourceCommit": "8a9cf404e86adf55e3dbde49b9ec91ca0ca82bb8"
+    },
+    {
+      "path": "screenshots/narrow-refresh-menu.png",
+      "caption": "390px 自动刷新菜单",
+      "sha256": "cb64ee46b8cb43b08770c887591dffb8ba4dc6e238c434b01de5e015fdff61ef",
+      "size": [
+        390,
+        844
+      ],
+      "sourceCommit": "8a9cf404e86adf55e3dbde49b9ec91ca0ca82bb8"
+    },
+    {
+      "path": "screenshots/empty.png",
+      "caption": "筛选无结果",
+      "sha256": "c067204edfbbb76efcbcc7c48f518aa5a1758344d5944b25cf5c6a79fc1776a0",
+      "size": [
+        1440,
+        1000
+      ],
+      "sourceCommit": "8a9cf404e86adf55e3dbde49b9ec91ca0ca82bb8"
+    },
+    {
+      "path": "screenshots/refreshing.png",
+      "caption": "注入慢响应，保留列表并禁用重复刷新",
+      "sha256": "986482b01a21cfb6589475962ffd4ed5e89d8cfe86aeefd2fb22ccd804d070d0",
+      "size": [
+        1440,
+        1000
+      ],
+      "sourceCommit": "8a9cf404e86adf55e3dbde49b9ec91ca0ca82bb8"
+    },
+    {
+      "path": "screenshots/manual-error.png",
+      "caption": "注入连续 503，保留列表并提示错误",
+      "sha256": "9564e867161466243982188f3647289e0921deecefb2cadb0954350c66785b0d",
+      "size": [
+        1440,
+        1000
+      ],
+      "sourceCommit": "8a9cf404e86adf55e3dbde49b9ec91ca0ca82bb8"
+    }
+  ]
+}

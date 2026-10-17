@@ -1,0 +1,72 @@
+{
+  "workflow-result.json": {
+    "checks": [
+      "默认暂停，无周期列表请求",
+      "手动刷新保留选择与展开行",
+      "第二页刷新保留页码",
+      "手动刷新保留筛选、排序和当前页",
+      "30 秒自动刷新复用当前查询",
+      "切换 60 秒后按新周期调度",
+      "暂停后不再发周期请求",
+      "模拟 visibilitychange：隐藏暂停，恢复后继续",
+      "慢刷新保留行数据，禁用重复手动操作，周期刷新不叠加",
+      "手动刷新失败保留列表并提示，可继续刷新恢复",
+      "空列表可手动刷新",
+      "390px 窄屏无页面横向溢出",
+      "键盘可设置频率并触发刷新",
+      "离开账号页面后停止周期请求",
+      "浏览器无未捕获脚本异常"
+    ],
+    "browser": "Chromium",
+    "backend": "v3.28.0",
+    "accountFixtureCount": 27,
+    "clock": "Playwright virtual clock; visibility simulated",
+    "screenshotsContain": "synthetic accounts only"
+  },
+  "boundaries-result.json": {
+    "checks": [
+      "后台独立修改后，手动刷新更新行状态和概览",
+      "真实计时 30 秒轮询从后台更新行状态和概览",
+      "刷新被新筛选取代，迟到旧响应不覆盖结果",
+      "周期失败静默保留列表，下一周期继续",
+      "390px 浅色工具栏与表格可使用，无页面横向溢出"
+    ],
+    "realTimerElapsedMs": 30569,
+    "metrics": {
+      "width": 390,
+      "scrollWidth": 390
+    }
+  },
+  "visual-result.json": {
+    "checks": [
+      "键盘打开自动刷新菜单并启用 30 秒",
+      "1440px：启用自动刷新并选中账号后，工具栏仍为一行",
+      "批量菜单的编辑入口打开原有弹窗",
+      "批量菜单导出成功下载演示账号数据",
+      "批量删除保留原有二次确认，未删除账号",
+      "390px 深浅主题：操作自然换行，页面无横向溢出"
+    ],
+    "wideToolbarOneRow": true,
+    "narrowWidth": 390
+  },
+  "real-accounts-result.json": {
+    "sourceAccountCount": 6,
+    "importedDistinctAccounts": 6,
+    "disabled": true,
+    "refreshTokensImported": false,
+    "upstreamInferenceExecuted": false,
+    "upstreamCredentialRefreshExecuted": false,
+    "outbound": "local closed port bound to all imported accounts",
+    "manualListRefreshMatched": 6,
+    "automaticListRefreshMatched": 6,
+    "publicScreenshots": "synthetic data only",
+    "scope": "isolated v3.28.0 backend serving current production frontend on HTTP localhost; list retrieval only, not credential validity"
+  },
+  "staticChecks": {
+    "pnpm --dir frontend format:check": "passed",
+    "pnpm --dir frontend build": "passed, includes vue-tsc",
+    "git diff --check": "passed"
+  },
+  "scope": "frontend-only; Chromium at HTTP localhost; temporary v3.28.0 backend; 6 real OAuth accounts list retrieval only, no inference or credential validity check",
+  "cleanup": "6 temporary OAuth account copies removed after validation"
+}
