@@ -30,14 +30,14 @@ async fn proxy_location_round_trips_preserves_omitted_and_clears_null() {
     let (status, created) = request(
         &fixture,
         "/api/admin/proxies/create",
-        Some(json!({
+        Some(json!([{
             "name":"Tokyo", "proxyUrl":"http://proxy.example:8080", "location":location
-        })),
+        }])),
         true,
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(created["data"]["record"]["location"], location);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(created["data"][0]["data"]["record"]["location"], location);
     let (_, listed) = request(&fixture, "/api/admin/proxies", None, true).await;
     assert_eq!(listed["data"]["items"][0]["location"], location);
     for (revision, change, expected) in [
@@ -70,24 +70,29 @@ async fn proxy_location_rejects_invalid_and_incomplete_input() {
         let mut invalid =
             json!({"country":"JP", "region":"Tokyo", "city":"Tokyo", "timezone":"Asia/Tokyo"});
         invalid[field] = value;
-        let (status, _) = request(&fixture, "/api/admin/proxies/create", Some(json!({"name":"Invalid", "proxyUrl":"http://proxy.example:8080", "location":invalid})), true).await;
-        assert!(status.is_client_error(), "invalid {field} accepted");
+        let (status, result) = request(&fixture, "/api/admin/proxies/create", Some(json!([{"name":"Invalid", "proxyUrl":"http://proxy.example:8080", "location":invalid}])), true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            result["data"][0]["httpStatus"], 400,
+            "invalid {field} accepted"
+        );
     }
-    let (status, _) = request(&fixture, "/api/admin/proxies/create", Some(json!({"name":"Incomplete", "proxyUrl":"http://proxy.example:8080", "location":{"country":"JP"}})), true).await;
-    assert!(status.is_client_error());
+    let (status, result) = request(&fixture, "/api/admin/proxies/create", Some(json!([{"name":"Incomplete", "proxyUrl":"http://proxy.example:8080", "location":{"country":"JP"}}])), true).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["data"][0]["httpStatus"], 400);
     let (status, created) = request(
         &fixture,
         "/api/admin/proxies/create",
-        Some(json!({"name":"Legacy", "proxyUrl":"http://proxy.example:8080"})),
+        Some(json!([{"name":"Legacy", "proxyUrl":"http://proxy.example:8080"}])),
         true,
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED);
-    assert!(created["data"]["record"]["location"].is_null());
+    assert_eq!(status, StatusCode::OK);
+    assert!(created["data"][0]["data"]["record"]["location"].is_null());
 }
 
 #[derive(Default)]
-pub(super) struct MemoryProxies(Mutex<Option<ProxyRecord>>);
+pub(super) struct MemoryProxies(Mutex<Vec<ProxyRecord>>);
 
 #[tokio::test]
 async fn proxy_enabled_updates_preserve_connection_and_omitted_state() {
@@ -96,14 +101,14 @@ async fn proxy_enabled_updates_preserve_connection_and_omitted_state() {
     let (status, created) = request(
         &fixture,
         "/api/admin/proxies/create",
-        Some(json!({
+        Some(json!([{
             "name":"Office", "proxyUrl":"http://proxy.example:8080"
-        })),
+        }])),
         true,
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(created["data"]["record"]["enabled"], true);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(created["data"][0]["data"]["record"]["enabled"], true);
     for (revision, enabled, expected) in [
         (1, Some(false), false),
         (2, None, false),
@@ -119,7 +124,7 @@ async fn proxy_enabled_updates_preserve_connection_and_omitted_state() {
         assert_eq!(changed["data"]["record"]["enabled"], expected);
         assert_eq!(
             changed["data"]["record"]["endpoint"],
-            created["data"]["record"]["endpoint"]
+            created["data"][0]["data"]["record"]["endpoint"]
         );
         let (_, listed) = request(&fixture, "/api/admin/proxies", None, true).await;
         assert_eq!(listed["data"]["items"][0]["enabled"], expected);
@@ -155,7 +160,7 @@ impl ProxyStore for MemoryProxies {
         Err(missing())
     }
     async fn list(&self, query: ProxyListQuery) -> AdminStoreResult<ProxyPage> {
-        let items: Vec<_> = self.0.lock().unwrap().iter().cloned().collect();
+        let items = self.0.lock().unwrap().clone();
         Ok(ProxyPage {
             total: u64::try_from(items.len()).unwrap(),
             items,
@@ -163,8 +168,14 @@ impl ProxyStore for MemoryProxies {
             page_size: query.page_size.get(),
         })
     }
-    async fn get(&self, _: &str) -> AdminStoreResult<ProxyRecord> {
-        self.0.lock().unwrap().clone().ok_or_else(missing)
+    async fn get(&self, id: &str) -> AdminStoreResult<ProxyRecord> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|record| record.id == id)
+            .cloned()
+            .ok_or_else(missing)
     }
     async fn list_accounts(
         &self,
@@ -174,8 +185,8 @@ impl ProxyStore for MemoryProxies {
             .0
             .lock()
             .unwrap()
-            .as_ref()
-            .is_some_and(|record| record.id == query.proxy_id)
+            .iter()
+            .any(|record| record.id == query.proxy_id)
         {
             return Err(missing());
         }
@@ -201,12 +212,24 @@ impl ProxyStore for MemoryProxies {
         command: NewProxy,
         _: &MutationContext,
     ) -> AdminStoreResult<ProxyMutation> {
+        let mut stored = self.0.lock().unwrap();
+        if stored.iter().any(|record| record.proxy == command.proxy) {
+            return Err(AdminStoreError::new(
+                AdminStoreErrorKind::Conflict,
+                "proxy",
+                "duplicate",
+            ));
+        }
         let mut record = ProxyRecord {
             enabled: true,
             auto_location: command.auto_location,
             detected_location: None,
             location: command.location,
-            id: "proxy_test".to_owned(),
+            id: if stored.is_empty() {
+                "proxy_test".to_owned()
+            } else {
+                format!("proxy_test_{}", stored.len() + 1)
+            },
             name: command.name,
             proxy: command.proxy,
             revision: Revision::new(1).unwrap(),
@@ -221,7 +244,7 @@ impl ProxyStore for MemoryProxies {
             record.last_test = Some(result);
             record.last_test_at = Some(Utc::now());
         }
-        *self.0.lock().unwrap() = Some(record.clone());
+        stored.push(record.clone());
         Ok(ProxyMutation {
             config_revision: record.revision,
             record,
@@ -233,7 +256,10 @@ impl ProxyStore for MemoryProxies {
         _: &MutationContext,
     ) -> AdminStoreResult<ProxyMutation> {
         let mut stored = self.0.lock().unwrap();
-        let record = stored.as_mut().ok_or_else(missing)?;
+        let record = stored
+            .iter_mut()
+            .find(|record| record.id == command.id)
+            .ok_or_else(missing)?;
         record.name = command.name;
         if let Some(enabled) = command.enabled {
             record.enabled = enabled;
@@ -266,22 +292,37 @@ impl ProxyStore for MemoryProxies {
     }
     async fn delete(
         &self,
-        _: &str,
+        id: &str,
         _: Revision,
         _: &MutationContext,
     ) -> AdminStoreResult<Revision> {
-        self.0.lock().unwrap().take().ok_or_else(missing)?;
+        let mut stored = self.0.lock().unwrap();
+        let index = stored
+            .iter()
+            .position(|record| record.id == id)
+            .ok_or_else(missing)?;
+        stored.remove(index);
         Ok(Revision::new(3).unwrap())
     }
     async fn record_test(
         &self,
-        _: &str,
-        _: Revision,
+        id: &str,
+        revision: Revision,
         result: ProxyTestResult,
         _: &MutationContext,
     ) -> AdminStoreResult<ProxyMutation> {
         let mut stored = self.0.lock().unwrap();
-        let record = stored.as_mut().ok_or_else(missing)?;
+        let record = stored
+            .iter_mut()
+            .find(|record| record.id == id)
+            .ok_or_else(missing)?;
+        if record.revision != revision {
+            return Err(AdminStoreError::new(
+                AdminStoreErrorKind::Conflict,
+                "proxy",
+                "stale revision",
+            ));
+        }
         record.detected_location = record.detected_location_after_test(&result);
         record.last_test = Some(result);
         record.last_test_at = Some(Utc::now());
@@ -363,22 +404,33 @@ async fn proxy_routes_save_reload_test_rename_and_delete_without_exposing_creden
     let (status, created) = request(
         &fixture,
         "/api/admin/proxies/create",
-        Some(json!({
+        Some(json!([{
             "name": "  Office  ", "proxyUrl": "http://test-user:private-password@proxy.example:8080"
-        })),
+        }])),
         true,
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(created["data"]["record"]["name"], "Office");
-    assert_eq!(created["data"]["record"]["hasAuthentication"], true);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(created["data"][0]["data"]["record"]["name"], "Office");
     assert_eq!(
-        created["data"]["record"]["endpoint"],
+        created["data"][0]["data"]["record"]["hasAuthentication"],
+        true
+    );
+    assert_eq!(
+        created["data"][0]["data"]["record"]["endpoint"],
         "http://proxy.example:8080/"
     );
-    assert!(created["data"]["record"].get("proxyUrl").is_none());
-    assert_eq!(created["data"]["record"]["accountCount"], 0);
-    assert!(created["data"]["record"].get("accounts").is_none());
+    assert!(
+        created["data"][0]["data"]["record"]
+            .get("proxyUrl")
+            .is_none()
+    );
+    assert_eq!(created["data"][0]["data"]["record"]["accountCount"], 0);
+    assert!(
+        created["data"][0]["data"]["record"]
+            .get("accounts")
+            .is_none()
+    );
 
     let (status, linked) = request(
         &fixture,
@@ -404,12 +456,15 @@ async fn proxy_routes_save_reload_test_rename_and_delete_without_exposing_creden
     let (status, tested) = request(
         &fixture,
         "/api/admin/proxies/test",
-        Some(json!({"id": "proxy_test", "revision": 1})),
+        Some(json!([{"id": "proxy_test", "revision": 1}])),
         true,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(tested["data"]["lastTest"]["exitIp"], "203.0.113.2");
+    assert_eq!(
+        tested["data"][0]["data"]["lastTest"]["exitIp"],
+        "203.0.113.2"
+    );
     let (_, listed) = request(
         &fixture,
         "/api/admin/proxies?page=1&pageSize=20",
@@ -417,7 +472,7 @@ async fn proxy_routes_save_reload_test_rename_and_delete_without_exposing_creden
         true,
     )
     .await;
-    assert_eq!(listed["data"]["items"][0], tested["data"]);
+    assert_eq!(listed["data"]["items"][0], tested["data"][0]["data"]);
 
     let (status, _) = request(
         &fixture,
@@ -427,18 +482,20 @@ async fn proxy_routes_save_reload_test_rename_and_delete_without_exposing_creden
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = request(
+    let (status, conflict) = request(
         &fixture,
         "/api/admin/proxies/test",
-        Some(json!({"id": "proxy_test", "revision": 1})),
+        Some(json!([{"id": "proxy_test", "revision": 1}])),
         true,
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(conflict["data"][0]["status"], "failed");
+    assert_eq!(conflict["data"][0]["httpStatus"], 409);
     let (status, _) = request(
         &fixture,
         "/api/admin/proxies/test",
-        Some(json!({"id": "proxy_test", "revision": 2})),
+        Some(json!([{"id": "proxy_test", "revision": 2}])),
         true,
     )
     .await;
@@ -488,14 +545,17 @@ async fn proxy_probe_checks_unsaved_address_without_creating_or_changing_records
     let (_, created) = request(
         &fixture,
         "/api/admin/proxies/create",
-        Some(json!({"name": "Saved", "proxyUrl": "http://saved.example:8080"})),
+        Some(json!([{"name": "Saved", "proxyUrl": "http://saved.example:8080"}])),
         true,
     )
     .await;
     let (status, _) = request(&fixture, "/api/admin/proxies/probe", Some(draft), true).await;
     assert_eq!(status, StatusCode::OK);
     let (_, listed) = request(&fixture, "/api/admin/proxies", None, true).await;
-    assert_eq!(listed["data"]["items"][0], created["data"]["record"]);
+    assert_eq!(
+        listed["data"]["items"][0],
+        created["data"][0]["data"]["record"]
+    );
 }
 
 #[tokio::test]
@@ -603,25 +663,30 @@ async fn proxy_routes_require_auth_and_reject_invalid_input() {
             StatusCode::BAD_REQUEST
         );
     }
-    for body in [
-        json!({"name":" ","proxyUrl":"http://proxy.example:8080"}),
-        json!({"name":"Invalid","proxyUrl":""}),
-    ] {
-        assert_eq!(
-            request(&fixture, "/api/admin/proxies/create", Some(body), true)
-                .await
-                .0,
-            StatusCode::BAD_REQUEST
-        );
-    }
-    let (status, _) = request(
+    let (status, result) = request(
         &fixture,
         "/api/admin/proxies/create",
-        Some(json!({"name":"Invalid","proxyUrl":"ftp://test-user:private-password@proxy.example"})),
+        Some(json!([
+            {"name":" ","proxyUrl":"http://proxy.example:8080"}
+        ])),
         true,
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["data"][0]["httpStatus"], 400);
+    for proxy_url in ["", "ftp://test-user:private-password@proxy.example"] {
+        let (status, result) = request(
+            &fixture,
+            "/api/admin/proxies/create",
+            Some(json!([
+                {"name":"Invalid", "proxyUrl":proxy_url}
+            ])),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(result["data"][0]["httpStatus"], 400);
+    }
 }
 
 #[tokio::test]
@@ -683,11 +748,11 @@ async fn auto_location_detects_on_enable_preserves_manual_and_refreshes_only_on_
     let fixture = AdminTestFixture::new().await;
     fixture.auth.insert_session("valid-session");
     let manual = json!({"country":"US", "region":"California", "city":"Los Angeles", "timezone":"America/Los_Angeles"});
-    let (status, created) = request(&fixture, "/api/admin/proxies/create", Some(json!({
+    let (status, created) = request(&fixture, "/api/admin/proxies/create", Some(json!([{
         "name":"Automatic", "proxyUrl":"http://test-user:private-password@proxy.example:8080", "autoLocation":true, "location":manual
-    })), true).await;
-    assert_eq!(status, StatusCode::CREATED);
-    let record = &created["data"]["record"];
+    }])), true).await;
+    assert_eq!(status, StatusCode::OK);
+    let record = &created["data"][0]["data"]["record"];
     assert_eq!(record["autoLocation"], true);
     assert_eq!(
         record["detectedLocation"]["location"]["timezone"],
@@ -714,13 +779,16 @@ async fn auto_location_detects_on_enable_preserves_manual_and_refreshes_only_on_
     let (status, tested) = request(
         &fixture,
         "/api/admin/proxies/test",
-        Some(json!({"id":"proxy_test", "revision":2})),
+        Some(json!([{"id":"proxy_test", "revision":2}])),
         true,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(tested["data"]["revision"], 3);
-    assert_eq!(tested["data"]["lastTest"]["location"]["status"], "detected");
+    assert_eq!(tested["data"][0]["data"]["revision"], 3);
+    assert_eq!(
+        tested["data"][0]["data"]["lastTest"]["location"]["status"],
+        "detected"
+    );
     let (_, disabled) = request(
         &fixture,
         "/api/admin/proxies/update",
@@ -740,21 +808,21 @@ async fn manual_proxy_can_detect_location_once_without_enabling_auto_location() 
     let fixture = AdminTestFixture::new().await;
     fixture.auth.insert_session("valid-session");
     let manual = json!({"country":"US", "region":"California", "city":"Los Angeles", "timezone":"America/Los_Angeles"});
-    let (status, created) = request(&fixture, "/api/admin/proxies/create", Some(json!({
+    let (status, created) = request(&fixture, "/api/admin/proxies/create", Some(json!([{
         "name":"Manual", "proxyUrl":"http://test-user:private-password@proxy.example:8080", "location":manual
-    })), true).await;
-    assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(created["data"]["record"]["autoLocation"], false);
+    }])), true).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(created["data"][0]["data"]["record"]["autoLocation"], false);
 
     let (status, tested) = request(
         &fixture,
         "/api/admin/proxies/test",
-        Some(json!({"id":"proxy_test", "revision":1, "detectLocation":true})),
+        Some(json!([{"id":"proxy_test", "revision":1, "detectLocation":true}])),
         true,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let record = &tested["data"];
+    let record = &tested["data"][0]["data"];
     assert_eq!(record["revision"], 1);
     assert_eq!(record["autoLocation"], false);
     assert_eq!(record["location"], manual);
@@ -767,4 +835,101 @@ async fn manual_proxy_can_detect_location_once_without_enabling_auto_location() 
         record["lastTest"]["location"]["location"]["timezone"],
         "Asia/Tokyo"
     );
+}
+
+#[tokio::test]
+async fn proxy_arrays_preserve_input_order_and_individual_failures() {
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    let (status, created) = request(
+        &fixture,
+        "/api/admin/proxies/create",
+        Some(json!([
+            {"name":"First", "proxyUrl":"http://test-user:private-password@proxy.example:8080"},
+            {"name":"Duplicate", "proxyUrl":"http://test-user:private-password@proxy.example:8080"},
+            {"name":" ", "proxyUrl":"http://invalid-name.example:8080"},
+            {"name":"Invalid URL", "proxyUrl":"ftp://test-user:private-password@proxy.example"},
+            {"name":"Last", "proxyUrl":"http://last.example:8080"}
+        ])),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = created["data"].as_array().unwrap();
+    assert_eq!(items.len(), 5);
+    assert_eq!(items[0]["data"]["record"]["name"], "First");
+    assert_eq!(items[1]["status"], "failed");
+    assert_eq!(items[1]["httpStatus"], 409);
+    assert_eq!(items[1]["code"], 40901);
+    assert_eq!(items[2]["httpStatus"], 400);
+    assert_eq!(items[3]["httpStatus"], 400);
+    assert_eq!(items[4]["data"]["record"]["name"], "Last");
+    let (_, listed) = request(&fixture, "/api/admin/proxies", None, true).await;
+    assert_eq!(listed["data"]["page"]["total"], 2);
+
+    let (status, tested) = request(
+        &fixture,
+        "/api/admin/proxies/test",
+        Some(json!([
+            {"id":"missing", "revision":1},
+            {"id":"malformed", "revision":"not-a-number"},
+            {"id":"proxy_test", "revision":1, "detectLocation":true},
+            {"id":"proxy_test_2", "revision":2}
+        ])),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = tested["data"].as_array().unwrap();
+    assert_eq!(items.len(), 4);
+    assert_eq!(items[0]["httpStatus"], 404);
+    assert_eq!(items[1]["httpStatus"], 400);
+    assert_eq!(items[2]["data"]["id"], "proxy_test");
+    assert_eq!(
+        items[2]["data"]["lastTest"]["location"]["status"],
+        "detected"
+    );
+    assert_eq!(items[3]["httpStatus"], 409);
+}
+
+#[tokio::test]
+async fn proxy_arrays_reject_invalid_shape_size_and_duplicate_test_ids_before_execution() {
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    for (path, item) in [
+        (
+            "/api/admin/proxies/create",
+            json!({"name":"Proxy", "proxyUrl":"http://proxy.example:8080"}),
+        ),
+        (
+            "/api/admin/proxies/test",
+            json!({"id":"proxy_test", "revision":1}),
+        ),
+    ] {
+        assert_eq!(
+            request(&fixture, path, Some(item.clone()), true).await.0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        for body in [json!([]), json!(vec![item.clone(); 101])] {
+            assert_eq!(
+                request(&fixture, path, Some(body), true).await.0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+    }
+    assert_eq!(
+        request(
+            &fixture,
+            "/api/admin/proxies/test",
+            Some(json!([
+                {"id":"proxy_test", "revision":1}, {"id":"proxy_test", "revision":1}
+            ])),
+            true
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let (_, listed) = request(&fixture, "/api/admin/proxies", None, true).await;
+    assert_eq!(listed["data"]["page"]["total"], 0);
 }

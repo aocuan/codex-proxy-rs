@@ -1,98 +1,74 @@
-import type { Ref } from 'vue'
 import type { ProxyTestExecutor } from './useProxyBatchTest'
 import type { OutboundProxyRecord } from '@/api'
-import { computed, onScopeDispose, shallowRef, watch } from 'vue'
+import { ZNotification } from '@codex-proxy/ui'
 import { getProxies } from '@/api'
 import { useRequestState } from '@/composables/useRequestState'
-import { needsProxyBatchRetry } from '../utils/batch'
 import { useProxyBatchTest } from './useProxyBatchTest'
 
-export interface ProxyBatchTestingOptions {
-  scope: 'selected' | 'filtered'
-  search: string
-  selectedIds: string[]
-  test: ProxyTestExecutor
-  reload: () => Promise<unknown>
-}
-
-export function useProxyBatchTesting(open: Ref<boolean>, options: ProxyBatchTestingOptions) {
-  const targets = shallowRef<OutboundProxyRecord[]>([])
-  const warning = shallowRef('')
+export function useProxyBatchTesting(options: { test: ProxyTestExecutor, reload: () => Promise<unknown> }) {
   const request = useRequestState()
-  const { loading, error } = request
-  const tests = useProxyBatchTest((proxy, requestOptions, detectLocation) => options.test(proxy, requestOptions, detectLocation))
-  const { items, running, stopping } = tests
-  const busy = computed(() => loading.value || running.value)
-  const canRetry = computed(() => items.value.some(needsProxyBatchRetry))
-  let disposed = false
+  const tests = useProxyBatchTest(options.test)
 
-  async function loadTargets(ids?: string[]) {
+  async function start(ids: string[]) {
+    if (request.loading.value || !ids.length)
+      return
+    const wanted = new Set(ids)
     const requestId = request.start()
-    warning.value = ''
-    targets.value = []
-    const wanted = ids ? new Set(ids) : undefined
-    const search = wanted ? undefined : options.search.trim() || undefined
     const collected = new Map<string, OutboundProxyRecord>()
     try {
       let totalPages = 1
       for (let page = 1; page <= totalPages; page += 1) {
-        const result = await getProxies({ page, pageSize: 200, search }, { silent: true, signal: request.signal })
+        const result = await getProxies({ page, pageSize: 200 }, { silent: true, signal: request.signal })
         if (!request.isCurrent(requestId))
           return
         // 只读取首次分页给出的范围，完成后固定实际名单，不追随新增记录无限加载
         if (page === 1)
           totalPages = result.page.totalPages
         for (const proxy of result.items) {
-          if (!wanted || wanted.has(proxy.id))
+          if (wanted.has(proxy.id))
             collected.set(proxy.id, proxy)
         }
-        if (wanted && collected.size === wanted.size)
+        if (collected.size === wanted.size)
           break
       }
       if (!request.isCurrent(requestId))
         return
-      targets.value = [...collected.values()]
-      if (wanted && collected.size < wanted.size)
-        warning.value = `${wanted.size - collected.size} 个选中代理未找到，未加入本次测试`
-      return true
+      if (!collected.size) {
+        ZNotification.warning({ message: '所选代理已不存在，请刷新列表' })
+        return
+      }
+      await tests.run([...collected.values()])
+      if (!request.isCurrent(requestId))
+        return
+      await options.reload()
+      if (!request.isCurrent(requestId))
+        return
+      const succeeded = tests.items.value.filter(item => item.status === 'succeeded').length
+      const incomplete = tests.items.value.filter(item => item.status !== 'succeeded')
+      const locationPending = tests.items.value.filter(item => item.status === 'succeeded' && item.record?.lastTest?.location.status !== 'detected').length
+      const missing = wanted.size - collected.size
+      const summary = [`批量测试完成，连接正常 ${succeeded} 条`]
+      if (incomplete.length)
+        summary.push(`未成功 ${incomplete.length} 条`)
+      if (locationPending)
+        summary.push(`地区待处理 ${locationPending} 条`)
+      if (missing)
+        summary.push(`${missing} 条代理已不存在`)
+      const firstFailure = incomplete.find(item => item.status !== 'skipped')
+      if (firstFailure)
+        summary.push(`${firstFailure.name}：${firstFailure.message}`)
+      const notify = incomplete.length || locationPending || missing ? ZNotification.warning : ZNotification.success
+      notify({ message: summary.join('，') })
     }
     catch (cause) {
       request.fail(requestId, cause)
+      if (request.isCurrent(requestId) && request.error.value)
+        ZNotification.error({ message: request.error.value })
     }
     finally {
       request.finish(requestId)
     }
   }
 
-  async function start() {
-    if (disposed || !open.value || busy.value || !targets.value.length || error.value)
-      return
-    await tests.run(targets.value)
-    if (!disposed)
-      await options.reload()
-  }
-
-  async function retry() {
-    if (busy.value)
-      return
-    const ids = items.value.filter(needsProxyBatchRetry).map(item => item.key)
-    if (await loadTargets(ids))
-      await start()
-  }
-
-  watch(open, (value) => {
-    if (!value) {
-      request.invalidate()
-      tests.stop()
-      return
-    }
-    tests.reset()
-    void loadTargets(options.scope === 'selected' ? options.selectedIds : undefined)
-  })
-
-  onScopeDispose(() => {
-    disposed = true
-  })
-
-  return { targets, warning, loading, error, items, running, stopping, busy, canRetry, start, retry, stop: tests.stop }
+  return { busy: request.loading, start }
 }

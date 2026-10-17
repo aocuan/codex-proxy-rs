@@ -32,7 +32,7 @@ const emit = defineEmits<{
         </ZIconButton>
       </template>
       <template #default="{ close }">
-        <div class="w-44 p-1.5">
+        <div class="w-36 p-1.5">
           <ZMenuItem :disabled="testing || updating" @click="(close(), emit('toggle', proxy))">
             <template #icon>
               <Power class="size-3.5" :class="proxy.enabled ? 'text-cp-warning' : 'text-cp-success'" />

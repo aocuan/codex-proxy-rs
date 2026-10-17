@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ProxyTestExecutor } from '../composables/useProxyBatchTest'
 import type { OutboundProxyRecord, OutboundProxyTest, RequestLocation } from '@/api'
-import { ZButton, ZDialog, ZForm, ZFormItem, ZInput, ZSegmented, ZSwitch } from '@codex-proxy/ui'
+import { ZButton, ZCheckbox, ZDialog, ZForm, ZFormItem, ZInput, ZSegmented, ZSwitch } from '@codex-proxy/ui'
 import { Save, Square, Wifi } from '@lucide/vue'
 import { computed, shallowRef, watch } from 'vue'
 import RequestLocationDetectButton from '@/components/RequestLocationDetectButton.vue'
@@ -16,13 +16,14 @@ const props = defineProps<{
   testingConnection: boolean
   detectingLocation: boolean
   testResult: OutboundProxyTest | null
-  testSavedProxy: ProxyTestExecutor
+  testSavedProxies: ProxyTestExecutor
   reloadAfterCreate: () => Promise<unknown>
 }>()
 const emit = defineEmits<{
   save: []
   test: []
   detectLocation: []
+  afterLeave: []
 }>()
 const open = defineModel<boolean>({ required: true })
 const name = defineModel<string>('name', { required: true })
@@ -30,8 +31,9 @@ const proxyUrl = defineModel<string>('proxyUrl', { required: true })
 const customLocation = defineModel<boolean>('customLocation', { required: true })
 const location = defineModel<RequestLocation>('location', { required: true })
 const mode = shallowRef('single')
+const testAfterCreate = shallowRef(true)
 const modeOptions = [{ label: '单条', value: 'single' }, { label: '批量', value: 'batch' }]
-const batch = useProxyBatchCreate({ test: (proxy, options, detectLocation) => props.testSavedProxy(proxy, options, detectLocation), reload: () => props.reloadAfterCreate() })
+const batch = useProxyBatchCreate({ test: (proxy, options, detectLocation) => props.testSavedProxies(proxy, options, detectLocation), reload: () => props.reloadAfterCreate() })
 const {
   text: batchText,
   prefix: batchPrefix,
@@ -46,6 +48,7 @@ const {
   canEditFailures,
 } = batch
 const { items: batchTestItems, running: batchTesting } = batch.tests
+const addableCount = computed(() => parsed.value.filter(row => !row.error).length)
 const single = computed(() => Boolean(props.proxy) || mode.value === 'single')
 const manualLocationWarning = computed(() => {
   const location = props.testResult?.location
@@ -64,13 +67,19 @@ const connectionDescription = computed(() => props.proxy
 watch(open, (value) => {
   if (value) {
     mode.value = 'single'
+    testAfterCreate.value = true
     batch.clear()
   }
 })
+
+function clearForm() {
+  batch.clear()
+  emit('afterLeave')
+}
 </script>
 
 <template>
-  <ZDialog v-model="open" :title="title" :width="single ? '36rem' : '48rem'" :show-close="!busy" :close-on-click-modal="!busy" :close-on-press-escape="!busy" @after-leave="batch.clear()">
+  <ZDialog v-model="open" :title="title" :description="proxy ? undefined : '添加代理，为账号配置网络出口'" width="42rem" :show-close="!busy" :close-on-click-modal="!busy" :close-on-press-escape="!busy" @closed="clearForm">
     <ZSegmented v-if="!proxy" v-model="mode" :options="modeOptions" :disabled="busy" aria-label="代理添加方式" class="mb-5 w-full" />
     <ZForm v-if="single" class="grid gap-5">
       <ZFormItem label="代理名称" required>
@@ -146,14 +155,12 @@ watch(open, (value) => {
         </ZButton>
       </template>
       <template v-else>
+        <ZCheckbox v-model="testAfterCreate" class="mr-auto self-center" label="添加后测试" />
         <ZButton @click="open = false">
           取消
         </ZButton>
-        <ZButton :disabled="!parsed.some(row => !row.error) || Boolean(inputError)" @click="batch.submit(false)">
-          仅添加
-        </ZButton>
-        <ZButton type="primary" :disabled="!parsed.some(row => !row.error) || Boolean(inputError)" @click="batch.submit(true)">
-          添加并测试
+        <ZButton type="primary" :disabled="!addableCount || Boolean(inputError)" @click="batch.submit(testAfterCreate)">
+          {{ addableCount ? `添加 ${addableCount} 条` : '添加代理' }}
         </ZButton>
       </template>
     </template>

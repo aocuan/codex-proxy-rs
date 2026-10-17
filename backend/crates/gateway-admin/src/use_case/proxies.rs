@@ -1,6 +1,9 @@
 //! 账号出站代理的管理、账号解绑与连通性测试用例
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use async_trait::async_trait;
 use futures::{StreamExt, stream};
@@ -27,6 +30,16 @@ use crate::{
 
 #[async_trait]
 pub trait ProxiesService: Send + Sync {
+    async fn create_batch(
+        &self,
+        commands: Vec<Result<NewProxy, AdminError>>,
+        context: &MutationContext,
+    ) -> Result<Vec<ProxyBatchResult<ProxyMutation>>, AdminError>;
+    async fn test_batch(
+        &self,
+        commands: Vec<Result<TestProxy, AdminError>>,
+        context: &MutationContext,
+    ) -> Result<Vec<ProxyBatchResult<ProxyRecord>>, AdminError>;
     async fn list(&self, query: ProxyListQuery) -> Result<ProxyPage, AdminError>;
     async fn list_accounts(
         &self,
@@ -96,6 +109,75 @@ impl DefaultProxiesService {
 
 #[async_trait]
 impl ProxiesService for DefaultProxiesService {
+    async fn create_batch(
+        &self,
+        commands: Vec<Result<NewProxy, AdminError>>,
+        context: &MutationContext,
+    ) -> Result<Vec<ProxyBatchResult<ProxyMutation>>, AdminError> {
+        validate_batch_size(commands.len())?;
+        let mut stopped = false;
+        let mut results = Vec::with_capacity(commands.len());
+        for command in commands {
+            if stopped {
+                results.push(ProxyBatchResult::Skipped);
+                continue;
+            }
+            let result = match command {
+                Ok(command) => self.create(command, context).await,
+                Err(error) => Err(error),
+            };
+            stopped = result.as_ref().is_err_and(batch_should_stop);
+            results.push(ProxyBatchResult::Completed(result));
+        }
+        Ok(results)
+    }
+
+    async fn test_batch(
+        &self,
+        commands: Vec<Result<TestProxy, AdminError>>,
+        context: &MutationContext,
+    ) -> Result<Vec<ProxyBatchResult<ProxyRecord>>, AdminError> {
+        validate_batch_size(commands.len())?;
+        let mut ids = std::collections::HashSet::with_capacity(commands.len());
+        if commands
+            .iter()
+            .filter_map(|command| command.as_ref().ok())
+            .any(|command| !ids.insert(&command.id))
+        {
+            return Err(AdminError::invalid("批量测试不能包含重复代理"));
+        }
+        let stopped = AtomicBool::new(false);
+        // 与单条测试共用全局容量，批次最多占用两槽，保留交互操作的容量
+        Ok(stream::iter(commands)
+            .map(|command| {
+                let stopped = &stopped;
+                async move {
+                    if stopped.load(Ordering::Relaxed) {
+                        return ProxyBatchResult::Skipped;
+                    }
+                    let result = match command {
+                        Ok(command) => {
+                            self.test(
+                                &command.id,
+                                command.revision,
+                                command.detect_location,
+                                context,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    if result.as_ref().is_err_and(batch_should_stop) {
+                        stopped.store(true, Ordering::Relaxed);
+                    }
+                    ProxyBatchResult::Completed(result)
+                }
+            })
+            .buffered(2)
+            .collect()
+            .await)
+    }
+
     async fn remove_account(
         &self,
         proxy_id: &str,
@@ -312,4 +394,23 @@ fn validate_name(value: &str) -> Result<String, AdminError> {
         return Err(AdminError::invalid("代理名称需要 1 至 100 个字符"));
     }
     Ok(value.to_owned())
+}
+
+fn validate_batch_size(size: usize) -> Result<(), AdminError> {
+    if size == 0 || size > MAX_PROXY_BATCH_SIZE {
+        return Err(AdminError::invalid("一次需要提交 1 至 100 条代理"));
+    }
+    Ok(())
+}
+
+fn batch_should_stop(error: &AdminError) -> bool {
+    matches!(
+        error.kind(),
+        AdminErrorKind::Unauthorized
+            | AdminErrorKind::Forbidden
+            | AdminErrorKind::BadGateway
+            | AdminErrorKind::UpstreamResultUnknown
+            | AdminErrorKind::Unavailable
+            | AdminErrorKind::Internal
+    )
 }

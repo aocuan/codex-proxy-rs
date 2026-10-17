@@ -3,10 +3,6 @@ import type { OutboundProxyRecord } from '@/api'
 const countryNames = new Intl.DisplayNames(['zh-CN'], { type: 'region', fallback: 'code' })
 const flags = import.meta.glob<string>('/node_modules/circle-flags/flags/??.svg', { eager: true, import: 'default', query: '?url&no-inline' })
 
-export function effectiveProxyLocation(proxy: OutboundProxyRecord) {
-  return proxy.autoLocation ? proxy.detectedLocation?.location : proxy.location
-}
-
 export function proxyExitLocation(proxy: OutboundProxyRecord) {
   const detected = proxy.detectedLocation
   if (!detected)

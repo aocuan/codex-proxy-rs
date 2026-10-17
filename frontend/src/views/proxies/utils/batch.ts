@@ -1,4 +1,4 @@
-import type { OutboundProxyRecord } from '@/api'
+import type { OutboundProxyRecord, ProxyBatchResult } from '@/api'
 import { ApiError } from '@/api/request'
 
 export const MAX_BATCH_CREATE = 100
@@ -30,10 +30,6 @@ export interface ProxyBatchInput {
   error: string
 }
 
-export function needsProxyBatchRetry(item: ProxyBatchItem): boolean {
-  return item.status !== 'succeeded' || item.record?.lastTest?.location.status !== 'detected'
-}
-
 export const proxyBatchStates: Record<ProxyBatchStatus, { label: string, tone: string }> = {
   pending: { label: '待执行', tone: 'text-cp-text-secondary' },
   running: { label: '执行中', tone: 'text-cp-info-text' },
@@ -50,15 +46,15 @@ export const proxyBatchStates: Record<ProxyBatchStatus, { label: string, tone: s
 function proxyUrlFromLine(value: string, protocol: string): string {
   if (/^[a-z][a-z\d+.-]*:\/\//iu.test(value))
     return value
-  const fields = /^(\[[^\]]+\]|[^:\s]+):(\d+):([^:]*):(.*)$/u.exec(value)
+  const fields = /^(\[[^\]]+\]|[^:\s]+):(\d+)(?::([^:]*):(.*))?$/u.exec(value)
   if (!fields)
-    throw new Error('请输入完整 URL 或 host:port:用户名:密码')
+    throw new Error('代理格式不正确')
   const [, host, port, username, password] = fields
   const url = new URL(`${protocol}://${host}:${port}`)
   if (url.username || url.password || (url.pathname && url.pathname !== '/') || url.search || url.hash)
     throw new Error('代理主机或端口不合法')
-  url.username = encodeURIComponent(username!)
-  url.password = encodeURIComponent(password!)
+  url.username = encodeURIComponent(username ?? '')
+  url.password = encodeURIComponent(password ?? '')
   return url.toString()
 }
 
@@ -98,7 +94,7 @@ export function parseProxyBatch(text: string, prefix: string, protocol: string):
     }
     catch {
       // 解析器的异常可能携带认证信息，界面只显示固定格式说明
-      error = '请输入完整 URL 或 host:port:用户名:密码，IPv6 请使用方括号'
+      error = '格式不正确，请参考格式说明'
     }
     return [{ line, raw: value, name, proxyUrl, endpoint: safeEndpoint(proxyUrl), error }]
   })
@@ -124,4 +120,18 @@ export function proxyRequestFailure(error: unknown): { status: ProxyBatchStatus,
   if (error.status === 429)
     return { status: 'busy', message: error.message, stop: false }
   return { status: 'error', message: error.message, stop: false }
+}
+
+export function proxyBatchFailure(result: ProxyBatchResult<unknown> | undefined) {
+  if (result?.status === 'skipped')
+    return { status: 'skipped' as const, message: '前序操作异常，未执行', stop: true }
+  return proxyRequestFailure(result?.status === 'failed'
+    ? new ApiError(result.message, result.httpStatus, result.code)
+    : undefined)
+}
+
+export function proxyResultData<T>(result: ProxyBatchResult<T> | undefined): T {
+  if (result?.status === 'succeeded')
+    return result.data
+  throw new Error(proxyBatchFailure(result).message)
 }

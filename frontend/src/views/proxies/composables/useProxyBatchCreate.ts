@@ -2,7 +2,7 @@ import type { ProxyBatchItem } from '../utils/batch'
 import type { ProxyTestExecutor } from './useProxyBatchTest'
 import { computed, onScopeDispose, ref, shallowRef } from 'vue'
 import { createProxy } from '@/api'
-import { MAX_BATCH_INPUT_BYTES, parseProxyBatch, proxyBatchInputError, proxyRequestFailure } from '../utils/batch'
+import { MAX_BATCH_INPUT_BYTES, parseProxyBatch, proxyBatchFailure, proxyBatchInputError, proxyRequestFailure } from '../utils/batch'
 import { useProxyBatchTest } from './useProxyBatchTest'
 
 interface CreateItem extends ProxyBatchItem {
@@ -71,25 +71,40 @@ export function useProxyBatchCreate(options: { test: ProxyTestExecutor, reload: 
     stopRequested.value = false
     testingRequested.value = testAfterCreate
     try {
-      for (const item of items.value) {
+      const targets = items.value.filter(item => item.status === 'pending')
+      for (let offset = 0; offset < targets.length; offset += 10) {
         if (stopRequested.value || disposed)
           break
-        if (item.status !== 'pending')
-          continue
-        item.status = 'running'
+        const group = targets.slice(offset, offset + 10)
+        for (const item of group)
+          item.status = 'running'
         try {
-          const result = await createProxy({ name: item.name, proxyUrl: item.proxyUrl, autoLocation: false, location: null }, { silent: true, retry: false })
-          item.record = result.record
-          item.endpoint = result.record.endpoint
-          item.status = 'succeeded'
-          item.message = '已添加'
-          item.input = ''
-          item.proxyUrl = ''
+          const results = await createProxy(group.map(item => ({ name: item.name, proxyUrl: item.proxyUrl, autoLocation: false, location: null })), { silent: true, retry: false })
+          for (const [index, item] of group.entries()) {
+            const result = results[index]
+            if (result?.status === 'succeeded') {
+              item.record = result.data.record
+              item.endpoint = result.data.record.endpoint
+              item.status = 'succeeded'
+              item.message = '已添加'
+              item.input = ''
+              item.proxyUrl = ''
+            }
+            else {
+              const failure = proxyBatchFailure(result)
+              item.status = failure.status
+              item.message = failure.status === 'conflict' ? '代理已存在或配置冲突，未覆盖已有记录' : failure.message
+              if (failure.stop)
+                stop()
+            }
+          }
         }
         catch (error) {
           const failure = proxyRequestFailure(error)
-          item.status = failure.status
-          item.message = failure.status === 'conflict' ? '代理已存在或配置冲突，未覆盖已有记录' : failure.message
+          for (const item of group) {
+            item.status = failure.status
+            item.message = failure.message
+          }
           if (failure.stop)
             stop()
         }

@@ -1,17 +1,16 @@
 <script setup lang="ts">
 import type { OutboundProxyRecord } from '@/api'
-import { ZButton, ZCard, ZCheckbox, ZConfirmDialog, ZInput, ZMenuItem, ZPageHeader, ZPagination, ZPopover, ZTable, ZTag } from '@codex-proxy/ui'
-import { ChevronDown, LockKeyhole, MapPin, Plus, Search, Users, Wifi } from '@lucide/vue'
+import { ZButton, ZCard, ZCheckbox, ZConfirmDialog, ZInput, ZPageHeader, ZPagination, ZTable, ZTag } from '@codex-proxy/ui'
+import { LockKeyhole, Plus, Search, Users, Wifi } from '@lucide/vue'
 import { shallowRef, watch } from 'vue'
 import { usePageSelection } from '@/composables/usePageSelection'
 import ProxyAccountsModal from './components/ProxyAccountsModal.vue'
 import ProxyActions from './components/ProxyActions.vue'
-import ProxyBatchTestModal from './components/ProxyBatchTestModal.vue'
 import ProxyFormModal from './components/ProxyFormModal.vue'
 import ProxyRegion from './components/ProxyRegion.vue'
 import { useProxies } from './composables/useProxies'
+import { useProxyBatchTesting } from './composables/useProxyBatchTesting'
 import { proxyColumns } from './constants'
-import { effectiveProxyLocation } from './utils/location'
 
 const {
   search,
@@ -39,7 +38,7 @@ const {
   detectingLocation,
   openForm,
   checkProxy,
-  testSavedProxy,
+  testSavedProxies,
   testConnection,
   detectLocation,
   save,
@@ -52,15 +51,10 @@ const {
 const showAccounts = shallowRef(false)
 const inspected = shallowRef<OutboundProxyRecord | null>(null)
 const { selectedIds, selectedRowKeys, allSelected, indeterminate, toggleSelection, toggleAll } = usePageSelection(proxies)
-const showBatchTest = shallowRef(false)
-const testScope = shallowRef<'selected' | 'filtered'>('selected')
-const testSearch = shallowRef('')
-
-function openBatchTest(scope: 'selected' | 'filtered') {
-  testScope.value = scope
-  testSearch.value = search.value.trim()
-  showBatchTest.value = true
-}
+const { busy: batchTesting, start: testSelectedProxies } = useProxyBatchTesting({
+  test: testSavedProxies,
+  reload: () => loadProxies({ silent: true }),
+})
 
 watch(search, () => {
   selectedIds.value = new Set()
@@ -77,34 +71,16 @@ watch(search, () => {
     <ZCard class="mt-5 flex h-[calc(100dvh-136px)] min-h-125 flex-col">
       <template #header>
         <div class="flex w-full flex-col gap-3 sm:flex-row sm:items-center">
-          <ZInput v-model="search" class="sm:w-80" aria-label="搜索代理" placeholder="搜索代理名称...">
+          <ZInput v-model="search" :disabled="batchTesting" class="sm:w-80" aria-label="搜索代理" placeholder="搜索代理名称...">
             <template #prefix>
               <Search class="size-4.5 text-cp-text-tertiary" />
             </template>
           </ZInput>
           <div class="flex shrink-0 flex-wrap items-center justify-end gap-2 sm:ml-auto">
-            <ZButton v-if="selectedIds.size" size="small" variant="plain" @click="selectedIds = new Set()">
-              清空选择
+            <ZButton v-if="selectedIds.size" :loading="batchTesting" :disabled="loading" aria-label="批量测试代理" @click="testSelectedProxies(selectedRowKeys)">
+              <Wifi class="size-4" />
+              批量测试 ({{ selectedIds.size }})
             </ZButton>
-            <ZPopover placement="bottom-end">
-              <template #reference>
-                <ZButton :disabled="loading || !pagination.total" aria-label="批量测试代理">
-                  <Wifi class="size-4" />
-                  批量测试<span v-if="selectedIds.size"> ({{ selectedIds.size }})</span>
-                  <ChevronDown class="size-3.5" />
-                </ZButton>
-              </template>
-              <template #default="{ close }">
-                <div class="w-52 p-1.5">
-                  <ZMenuItem :disabled="!selectedIds.size" @click="(close(), openBatchTest('selected'))">
-                    测试选中 ({{ selectedIds.size }})
-                  </ZMenuItem>
-                  <ZMenuItem @click="(close(), openBatchTest('filtered'))">
-                    测试当前筛选结果
-                  </ZMenuItem>
-                </div>
-              </template>
-            </ZPopover>
             <ZButton type="primary" @click="openForm()">
               <template #icon>
                 <Plus class="size-4" />
@@ -118,25 +94,19 @@ watch(search, () => {
         <div class="flex h-full min-h-0 flex-col">
           <ZTable class="min-h-0 flex-1" :columns="proxyColumns" :data="proxies" :loading="loading" :selected-row-keys="selectedRowKeys" :empty-text="search.trim() ? '没有找到匹配的代理，请尝试其他名称' : '暂无代理，请点击新增代理添加'">
             <template #header-selection>
-              <ZCheckbox :model-value="allSelected" :indeterminate="indeterminate" aria-label="选择当前页代理" @update:model-value="toggleAll" />
+              <ZCheckbox :model-value="allSelected" :indeterminate="indeterminate" :disabled="batchTesting" aria-label="选择当前页代理" @update:model-value="toggleAll" />
             </template>
             <template #selection="{ row }">
-              <ZCheckbox :model-value="selectedIds.has(row.id)" :aria-label="`选择代理 ${row.name}`" @update:model-value="toggleSelection(row.id)" />
+              <ZCheckbox :model-value="selectedIds.has(row.id)" :disabled="batchTesting" :aria-label="`选择代理 ${row.name}`" @update:model-value="toggleSelection(row.id)" />
             </template>
             <template #name="{ row }">
               <span class="block truncate text-cp text-cp-text" :title="row.name">{{ row.name }}</span>
             </template>
             <template #address="{ row }">
-              <div class="grid min-w-0 gap-1">
-                <span class="flex min-w-0 items-center gap-1 text-cp-xs font-emphasis text-cp-text-quaternary">
-                  <LockKeyhole v-if="row.hasAuthentication" class="size-3 shrink-0" aria-label="已保存代理认证" />
-                  <span class="truncate font-mono" :title="row.endpoint">{{ row.endpoint }}</span>
-                </span>
-                <span v-if="effectiveProxyLocation(row)" class="flex min-w-0 items-center gap-1 text-cp-xs text-cp-text-secondary">
-                  <MapPin class="size-3 shrink-0" aria-hidden="true" />
-                  <span class="truncate" :title="`${effectiveProxyLocation(row)?.city} · ${effectiveProxyLocation(row)?.timezone}`">{{ effectiveProxyLocation(row)?.city }} · {{ effectiveProxyLocation(row)?.timezone }}</span>
-                </span>
-              </div>
+              <span class="flex min-w-0 items-center gap-1 text-cp-xs font-emphasis text-cp-text-quaternary">
+                <LockKeyhole v-if="row.hasAuthentication" class="size-3 shrink-0" aria-label="已保存代理认证" />
+                <span class="truncate font-mono" :title="row.endpoint">{{ row.endpoint }}</span>
+              </span>
             </template>
             <template #status="{ row }">
               <ZTag :type="row.enabled ? 'success' : 'default'">
@@ -201,14 +171,13 @@ watch(search, () => {
       :saving="saving"
       :testing-connection="testingConnection"
       :detecting-location="detectingLocation"
-      :test-saved-proxy="testSavedProxy"
+      :test-saved-proxies="testSavedProxies"
       :reload-after-create="reloadAfterCreate"
       @save="save"
       @test="testConnection"
       @detect-location="detectLocation"
       @after-leave="clearCredentials"
     />
-    <ProxyBatchTestModal v-model="showBatchTest" :scope="testScope" :search="testSearch" :selected-ids="selectedRowKeys" :test="testSavedProxy" :reload="() => loadProxies({ silent: true })" />
     <ZConfirmDialog v-model="showDisable" title="禁用代理" confirm-text="禁用代理" :loading="disabling" @confirm="confirmDisable">
       <p class="m-0">
         确定禁用“{{ pendingDisable?.name }}”吗？

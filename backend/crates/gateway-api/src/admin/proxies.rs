@@ -10,10 +10,10 @@ use axum::{
     routing::{get, post},
 };
 use gateway_admin::model::{
-    PageSize, Revision,
+    AdminError as ServiceError, PageSize, Revision,
     proxies::{
-        NewProxy, ProxyAccountListQuery, ProxyListQuery, ProxyMutation, ProxyRecord,
-        ProxyTestResult, UpdateProxy,
+        NewProxy, ProxyAccountListQuery, ProxyBatchResult, ProxyListQuery, ProxyMutation,
+        ProxyRecord, ProxyTestResult, TestProxy, UpdateProxy,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -342,38 +342,88 @@ where
     ))
 }
 
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+enum BatchView<T> {
+    Succeeded {
+        data: T,
+    },
+    Failed {
+        #[serde(rename = "httpStatus")]
+        http_status: u16,
+        #[serde(flatten)]
+        error: super::wire::AdminErrorBody,
+    },
+    Skipped,
+}
+
+fn batch_response<T, V: Serialize>(
+    results: Vec<ProxyBatchResult<T>>,
+    project: impl Fn(T) -> V,
+) -> axum::response::Response {
+    let diagnostic = results.iter().find_map(|result| match result {
+        ProxyBatchResult::Completed(Err(error)) if error.error_details().is_some() => {
+            Some(error.clone())
+        }
+        _ => None,
+    });
+    let items: Vec<BatchView<V>> = results
+        .into_iter()
+        .map(|result| match result {
+            ProxyBatchResult::Completed(Ok(value)) => BatchView::Succeeded {
+                data: project(value),
+            },
+            ProxyBatchResult::Completed(Err(error)) => {
+                let (http_status, error) = map_error(error).into_batch_error();
+                BatchView::Failed { http_status, error }
+            }
+            ProxyBatchResult::Skipped => BatchView::Skipped,
+        })
+        .collect();
+    let mut response = AdminResponse::new(StatusCode::OK, AdminEnvelope::ok(items)).into_response();
+    if let Some(diagnostic) = diagnostic {
+        response.extensions_mut().insert(diagnostic);
+    }
+    response
+}
+
 async fn create<S>(
     auth: AdminAuth,
     State(state): State<S>,
-    AdminJson(request): AdminJson<CreateRequest>,
+    AdminJson(requests): AdminJson<Vec<serde_json::Value>>,
 ) -> Result<impl IntoResponse, AdminError>
 where
     S: SessionState + Send + Sync,
 {
     let time = crate::time::TimePresenter::new(state.admin_services().timezone());
-    let proxy = request
-        .proxy_url
-        .0
-        .ok_or_else(|| AdminError::bad_request("代理 URL 不能为空"))?;
-    let result = state
-        .admin_services()
-        .proxies()
-        .create(
-            NewProxy {
+    let commands = requests
+        .into_iter()
+        .map(|value| {
+            // 每项单独解码，格式错误只拒绝当前项，错误文案不能回显代理认证
+            let request: CreateRequest = serde_json::from_value(value)
+                .map_err(|_| ServiceError::invalid("代理参数格式不正确"))?;
+            let proxy = request
+                .proxy_url
+                .0
+                .ok_or_else(|| ServiceError::invalid("代理 URL 不能为空"))?;
+            Ok(NewProxy {
                 auto_location: request.auto_location,
                 test: None,
                 location: request.location,
                 name: request.name,
                 proxy,
-            },
-            &auth.context().mutation_context(),
-        )
+            })
+        })
+        .collect();
+    let results = state
+        .admin_services()
+        .proxies()
+        .create_batch(commands, &auth.context().mutation_context())
         .await
         .map_err(map_error)?;
-    Ok(AdminResponse::new(
-        StatusCode::CREATED,
-        AdminEnvelope::ok(MutationView::from((result, time))),
-    ))
+    Ok(batch_response(results, |value| {
+        MutationView::from((value, time))
+    }))
 }
 
 async fn remove_account<S>(
@@ -492,25 +542,32 @@ where
 async fn test<S>(
     auth: AdminAuth,
     State(state): State<S>,
-    AdminJson(request): AdminJson<TestRequest>,
+    AdminJson(requests): AdminJson<Vec<serde_json::Value>>,
 ) -> Result<impl IntoResponse, AdminError>
 where
     S: SessionState + Send + Sync,
 {
     let time = crate::time::TimePresenter::new(state.admin_services().timezone());
-    let result = state
+    let commands = requests
+        .into_iter()
+        .map(|value| {
+            let request: TestRequest = serde_json::from_value(value)
+                .map_err(|_| ServiceError::invalid("代理参数格式不正确"))?;
+            Ok(TestProxy {
+                id: request.id,
+                revision: revision(request.revision)
+                    .map_err(|error| ServiceError::invalid(error.to_string()))?,
+                detect_location: request.detect_location,
+            })
+        })
+        .collect();
+    let results = state
         .admin_services()
         .proxies()
-        .test(
-            &request.id,
-            revision(request.revision)?,
-            request.detect_location,
-            &auth.context().mutation_context(),
-        )
+        .test_batch(commands, &auth.context().mutation_context())
         .await
         .map_err(map_error)?;
-    Ok(AdminResponse::new(
-        StatusCode::OK,
-        AdminEnvelope::ok(ProxyView::from((result, time))),
-    ))
+    Ok(batch_response(results, |value| {
+        ProxyView::from((value, time))
+    }))
 }
