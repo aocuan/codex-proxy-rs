@@ -13,6 +13,7 @@ pub mod proxy_probe;
 pub mod retention;
 pub mod serve;
 pub mod system_update;
+pub mod typesafe;
 pub mod workers;
 
 use std::sync::Arc;

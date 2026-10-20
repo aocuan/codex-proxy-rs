@@ -2,7 +2,7 @@
 
 use super::COORDINATION_TIMEOUT;
 use super::admission::settle_budget;
-use super::contract::ExecutionSession;
+use super::contract::{ExecutionSession, UncommittedEventCollector};
 use super::scope::{ActiveRequestLease, ExecutionAdmission};
 use crate::{
     engine::{
@@ -133,6 +133,20 @@ impl ExecutionSession for DefaultExecutionSession {
             }
             self.settle_if_finalized().await;
             result
+        })
+    }
+
+    fn collect_uncommitted_into<'a>(
+        &'a mut self,
+        collector: &'a mut dyn UncommittedEventCollector,
+    ) -> BoxFuture<'a, Result<(), EngineError>> {
+        Box::pin(async move {
+            let result = self.core.collect_uncommitted_into(collector).await;
+            if let Ok(state) = result.as_ref() {
+                self.record_continuation(state.as_ref()).await;
+            }
+            self.settle_if_finalized().await;
+            result.map(|_| ())
         })
     }
 

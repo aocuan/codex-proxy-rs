@@ -3,7 +3,7 @@
 use crate::model::{AdminError, AdminErrorKind};
 use crate::ports::store::{AdminStoreError, AdminStoreErrorKind};
 
-pub(super) fn map_store_error(error: AdminStoreError, resource: &'static str) -> AdminError {
+pub(crate) fn map_store_error(error: AdminStoreError, resource: &'static str) -> AdminError {
     let kind = match error.kind() {
         AdminStoreErrorKind::Invalid => AdminErrorKind::Invalid,
         AdminStoreErrorKind::NotFound => AdminErrorKind::NotFound,

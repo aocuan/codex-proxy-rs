@@ -670,7 +670,8 @@ const fn framing_for_response(transport: ClientTransport, status: u16) -> Middle
         ClientTransport::HttpSse => MiddlewareFraming::SseEvent,
         ClientTransport::HttpJson
         | ClientTransport::InternalProbe
-        | ClientTransport::InternalPlugin => MiddlewareFraming::JsonDocument,
+        | ClientTransport::InternalPlugin
+        | ClientTransport::InternalAdmin => MiddlewareFraming::JsonDocument,
     }
 }
 

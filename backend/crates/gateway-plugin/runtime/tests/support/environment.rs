@@ -565,6 +565,9 @@ impl Environment {
             ClientConfig::default(),
             self.store.admin_ports(),
             gateway_admin::AdminRuntimePorts {
+                typesafe: None,
+                execution: core.execution_service(),
+                gateway_version: "test".to_owned(),
                 timezone: Default::default(),
                 service_middleware: {
                     let snapshots = core.snapshots();

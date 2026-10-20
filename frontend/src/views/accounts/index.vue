@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import type { Account } from '@/api'
 
-import { useTableColumns, ZCard, ZCheckbox, ZConfirmDialog, ZPageHeader, ZPagination, ZTable, ZTableColumnSettings } from '@codex-proxy/ui'
+import { useTableColumns, ZButton, ZCard, ZCheckbox, ZConfirmDialog, ZPageHeader, ZPagination, ZTable, ZTableColumnSettings } from '@codex-proxy/ui'
 import { ChevronDown } from '@lucide/vue'
-import { ref, shallowRef } from 'vue'
+import { useMediaQuery } from '@vueuse/core'
+import { computed, ref, shallowRef } from 'vue'
+import { useRouter } from 'vue-router'
 import AccountPlanBadge from '@/components/account/AccountPlanBadge.vue'
 import AccountGroupMarks from '@/components/AccountGroupMarks.vue'
+import EvaluationHistoryStrip from '@/components/evaluation/EvaluationHistoryStrip.vue'
+import EvaluationOutputModal from '@/components/evaluation/EvaluationOutputModal.vue'
 import LastUsedAtCell from '@/components/LastUsedAtCell.vue'
 import ProviderIconGroup from '@/components/ProviderIconGroup.vue'
 import { useAccountGroupCatalog } from '@/composables/useAccountGroupCatalog'
@@ -26,6 +30,7 @@ import AccountUsagePanel from './components/AccountUsagePanel.vue'
 import { useAccountBatchEditor } from './composables/useAccountBatchEditor'
 import { useAccountConnectionTest } from './composables/useAccountConnectionTest'
 import { useAccountEditor } from './composables/useAccountEditor'
+import { useAccountEvaluations } from './composables/useAccountEvaluations'
 import { useAccountImportTasks } from './composables/useAccountImportTasks'
 import { useAccountMutations } from './composables/useAccountMutations'
 import { useAccountsQuery } from './composables/useAccountsQuery'
@@ -39,8 +44,12 @@ function openConcurrency(account: Account) {
   showConcurrency.value = true
 }
 
+const router = useRouter()
 const selectedIds = ref<Set<string>>(new Set())
 const { visibleColumns, columnOptions, setColumnVisible, setColumnOrder, resetColumns } = useTableColumns(accountColumns, 'accounts')
+const wideTable = useMediaQuery('(min-width: 1280px)')
+const inlineEvaluation = computed(() => !wideTable.value && visibleColumns.value.some(column => column.key === 'evaluation'))
+const tableColumns = computed(() => wideTable.value ? visibleColumns.value : visibleColumns.value.filter(column => column.key !== 'evaluation'))
 const {
   loading,
   accounts,
@@ -58,6 +67,9 @@ const {
   handlePageSizeChange,
   handleSortChange,
 } = useAccountsQuery()
+const accountEvaluations = useAccountEvaluations(accounts)
+const { history: evaluationHistory, loading: loadingEvaluations, error: evaluationsError, open: showEvaluationOutput, item: evaluationItem, run: evaluationRun } = accountEvaluations
+const evaluationAccountName = (id: string) => accounts.value.find(account => account.id === id)?.name || id
 
 const {
   groups,
@@ -235,6 +247,9 @@ const {
           @edit-selected="openBatchEdit"
         >
           <template #actions>
+            <ZButton v-if="selectedIds.size" :disabled="selectedIds.size > 20" @click="router.push({ path: '/evaluations', query: { accounts: [...selectedIds].join(',') } })">
+              测评所选{{ selectedIds.size > 20 ? '（最多 20 个）' : '' }}
+            </ZButton>
             <ZTableColumnSettings
               :options="columnOptions"
               @change="setColumnVisible"
@@ -249,7 +264,8 @@ const {
         <div class="flex min-h-0 flex-col xl:h-full">
           <ZTable
             class="h-100! min-h-100 flex-none [--cp-table-row-height:72px] xl:h-auto! xl:min-h-0 xl:flex-1"
-            :columns="visibleColumns"
+            :class="inlineEvaluation ? '[--cp-table-row-height:112px]!' : undefined"
+            :columns="tableColumns"
             :data="accounts"
             :loading="loading"
             :selected-row-keys="selectedRowKeys"
@@ -291,6 +307,7 @@ const {
 
             <template #identity="{ row }">
               <AccountIdentityCell :account="row" show-notes />
+              <EvaluationHistoryStrip v-if="inlineEvaluation" class="mt-2" :items="evaluationHistory.get(row.id) ?? []" :loading="loadingEvaluations" :error="evaluationsError" @inspect="accountEvaluations.inspect" @retry="accountEvaluations.refresh" />
             </template>
 
             <template #provider="{ row }">
@@ -313,6 +330,9 @@ const {
               />
             </template>
 
+            <template #evaluation="{ row }">
+              <EvaluationHistoryStrip :items="evaluationHistory.get(row.id) ?? []" :loading="loadingEvaluations" :error="evaluationsError" @inspect="accountEvaluations.inspect" @retry="accountEvaluations.refresh" />
+            </template>
             <template #planType="{ row }">
               <div class="flex min-w-0 justify-center">
                 <AccountPlanBadge :authentication-kind="row.authenticationKind" :plan-type="row.planType" :plan-type-display="row.planTypeDisplay" />
@@ -501,5 +521,6 @@ const {
         吗？
       </p>
     </ZConfirmDialog>
+    <EvaluationOutputModal v-model="showEvaluationOutput" :item="evaluationItem" :run="evaluationRun" :account-name="evaluationAccountName" />
   </div>
 </template>

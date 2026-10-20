@@ -26,6 +26,7 @@
     "axios": "^1.20.0",
     "circle-flags": "2.8.3",
     "css-tree": "^3.2.1",
+    "dompurify": "^3.4.17",
     "echarts": "^6.1.0",
     "es-toolkit": "^1.52.0",
     "gsap": "^3.15.0",

@@ -25,6 +25,7 @@ export const accountColumns = defineTableColumns<Account>([
     size: '3xl',
     sortable: 'email',
   },
+  { key: 'evaluation', label: '质量测评', kind: 'custom', size: '2xl' },
   {
     key: 'provider',
     label: '平台/类型',

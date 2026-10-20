@@ -18,6 +18,7 @@ use crate::engine::continuation::{
     ContinuationBinding, NativeContinuationPin, NativeContinuationScope, PreviousResponseId,
 };
 
+use crate::engine::execution::{CollectionLimitExceeded, UncommittedEventCollector};
 use crate::engine::provider::{Provider, ProviderCallMetadata, ProviderRequest, ProviderStream};
 use crate::engine::{
     AccountAttemptContext, AttemptContext, AttemptRecord, AttemptTransport, AttemptTrigger,
@@ -657,19 +658,45 @@ where
     ///
     /// 会话已提交、已有待提交结果或执行失败时返回错误
     pub async fn collect_uncommitted(&mut self) -> Result<Vec<ProviderEvent>, EngineError> {
+        let mut collector = BufferedEventCollector(Vec::new());
+        self.collect_uncommitted_into(&mut collector).await?;
+        Ok(collector.0)
+    }
+
+    /// 消费方可只保留需要的事实并限制正文大小；超限仍走统一取消与终结
+    pub async fn collect_uncommitted_into(
+        &mut self,
+        collector: &mut dyn UncommittedEventCollector,
+    ) -> Result<Option<ProviderSessionState>, EngineError> {
         self.resume_finalization().await;
         if self.delivery_committed || self.delivery_pending {
             return Err(EngineError::InvalidDeliveryState);
         }
+        collector.clear();
         if self.is_finalized() {
-            return Ok(Vec::new());
+            return Ok(None);
         }
 
-        let mut events = Vec::new();
+        let mut received = false;
+        let mut session_update = None;
         loop {
             match self.pull().await? {
-                PullOutcome::Events(next) => events.extend(next),
-                PullOutcome::AttemptDiscarded => events.clear(),
+                PullOutcome::Events(next) => {
+                    received |= !next.is_empty();
+                    if session_update.is_none() {
+                        session_update =
+                            next.iter().find_map(ProviderEvent::session_update).cloned();
+                    }
+                    if collector.accept(next).is_err() {
+                        self.cancel_and_finalize().await?;
+                        return Err(EngineError::CollectionLimitExceeded);
+                    }
+                }
+                PullOutcome::AttemptDiscarded => {
+                    collector.clear();
+                    received = false;
+                    session_update = None;
+                }
                 PullOutcome::TerminalFailure {
                     error, send_state, ..
                 } => {
@@ -678,11 +705,11 @@ where
                     return Err(provider_engine_error(error));
                 }
                 PullOutcome::End => {
-                    if events.is_empty() {
+                    if !received {
                         return Err(EngineError::InvalidDeliveryState);
                     }
                     self.delivery_pending = true;
-                    return Ok(events);
+                    return Ok(session_update);
                 }
             }
         }
@@ -2529,6 +2556,19 @@ where
 
     fn record_provider_failure(&mut self, provider_kind: crate::identity::ProviderKind) {
         self.last_observed_provider = Some(provider_kind);
+    }
+}
+
+struct BufferedEventCollector(Vec<ProviderEvent>);
+
+impl UncommittedEventCollector for BufferedEventCollector {
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    fn accept(&mut self, events: Vec<ProviderEvent>) -> Result<(), CollectionLimitExceeded> {
+        self.0.extend(events);
+        Ok(())
     }
 }
 

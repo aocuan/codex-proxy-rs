@@ -1,5 +1,7 @@
 //! 管理控制面 HTTP 接口的测试入口
 
+#[path = "../../../../test-support/evaluation.rs"]
+mod evaluation_fixture;
 mod plugins;
 use std::{
     collections::BTreeMap,
@@ -91,6 +93,7 @@ mod client_keys;
 mod compression;
 mod error_diagnostics;
 mod errors;
+mod evaluations;
 mod observability;
 mod proxies;
 mod settings;
@@ -182,6 +185,7 @@ impl AdminTestFixture {
             unused,
             settings.clone(),
             gateway_admin::ports::backup::BackupStorePorts::disabled(),
+            Arc::new(evaluation_fixture::UnusedEvaluationRepository),
             plugin_ports.clone(),
             plugin_ports.clone(),
             plugin_ports.clone(),
@@ -201,6 +205,9 @@ impl AdminTestFixture {
             ClientConfig::default(),
             stores,
             gateway_admin::AdminRuntimePorts {
+                typesafe: None,
+                execution: Arc::new(evaluation_fixture::UnusedEvaluationExecution),
+                gateway_version: "test".to_owned(),
                 timezone,
                 service_middleware: std::sync::Arc::new(|| None),
                 plugin_preparation: plugin_ports.clone(),

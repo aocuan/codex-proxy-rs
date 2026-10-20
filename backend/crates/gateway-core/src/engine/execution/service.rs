@@ -6,8 +6,8 @@ use super::admission::{AdmissionLease, settle_budget};
 use super::contract::{
     AuthenticatedClient, ClientApiKeyUsageSink, ClientAuthenticationError, ClientKeyVerifier,
     ClientTransport, ExecutionRequestMetadata, ExecutionService, PreparedExecutionRequest,
-    PreparedRootExecution, StartExecution, StartProviderExecution, StartedExecution, duration_ms,
-    new_request_id,
+    PreparedRootExecution, StartAccountExecution, StartExecution, StartProviderExecution,
+    StartedExecution, duration_ms, new_request_id,
 };
 use super::probe_store::{ProbeObservation, TransientExecutionStore};
 use super::scope::{
@@ -286,6 +286,7 @@ impl DefaultExecutionService {
             ExecutionTarget::Model(public_model),
             operation,
             metadata,
+            None,
         )
         .await
     }
@@ -310,6 +311,56 @@ impl DefaultExecutionService {
             },
             operation,
             metadata,
+            None,
+        )
+        .await
+    }
+
+    async fn start_account_execution_inner(
+        &self,
+        request: StartAccountExecution,
+    ) -> Result<StartedExecution, GatewayError> {
+        let StartAccountExecution {
+            client_key_id,
+            account_id,
+            public_model,
+            operation,
+            mut metadata,
+            deadline_at,
+            cancellation,
+        } = request;
+        let deadline = Deadline::from(deadline_at);
+        let client = {
+            let cancelled = cancellation.cancelled().fuse();
+            let timeout = deadline.wait().fuse();
+            let load = self.client_for_key_id(&client_key_id, None).fuse();
+            pin_mut!(cancelled, timeout, load);
+            select_biased! {
+                () = cancelled => return Err(GatewayError::new(
+                    GatewayErrorKind::Cancelled, "admin execution was cancelled",
+                )),
+                () = timeout => return Err(GatewayError::new(
+                    GatewayErrorKind::Timeout, "admin execution deadline elapsed",
+                )),
+                result = load => result?,
+            }
+        };
+        // 每个条目使用当前 Key 设置，后台任务的截止时间只能缩短已有执行期限
+        let settings = RequestSettings::new(client.snapshot.clone());
+        let mut prepared = PreparedRootExecution::new(client.with_request_settings(settings))?;
+        prepared.deadline_at = prepared.deadline_at.min(deadline_at);
+        prepared.cancellation = cancellation.child_token();
+        self.client_api_key_usage
+            .record_used(prepared.client.policy.key_id());
+        metadata.transport = ClientTransport::InternalAdmin;
+        metadata.client_ip = None;
+        metadata.user_agent = None;
+        self.start_prepared_with_target(
+            prepared,
+            ExecutionTarget::Model(public_model),
+            operation,
+            metadata,
+            Some(account_id),
         )
         .await
     }
@@ -350,6 +401,7 @@ impl DefaultExecutionService {
         target: ExecutionTarget,
         operation: Operation,
         metadata: ExecutionRequestMetadata,
+        required_account: Option<ProviderAccountId>,
     ) -> Result<StartedExecution, GatewayError> {
         let PreparedRootExecution {
             extension_scope,
@@ -362,14 +414,23 @@ impl DefaultExecutionService {
             execution_effects,
             execution_effects_baseline,
         } = prepared;
+        let (account_scope, required_provider) = match &required_account {
+            Some(account) => restrict_model_execution_scope(
+                client.policy.account_scope(),
+                None,
+                Some(account),
+                None,
+            )?,
+            None => (Arc::clone(client.policy.account_scope()), None),
+        };
         let authorization = AuthorizedExecution {
             response_control: Some(response_control),
-            account_scope: Arc::clone(client.policy.account_scope()),
+            account_scope,
             deadline_at,
             cancellation,
             extension_scope,
-            required_provider: None,
-            required_account: None,
+            required_provider,
+            required_account,
             nested: None,
             bound: None,
             graph: client
@@ -1672,6 +1733,7 @@ impl ExecutionService for DefaultExecutionService {
                 ExecutionTarget::Model(request.public_model),
                 request.operation,
                 request.metadata,
+                None,
             )
             .await
         })
@@ -1694,6 +1756,7 @@ impl ExecutionService for DefaultExecutionService {
                 },
                 operation,
                 metadata,
+                None,
             )
             .await
         })
@@ -1704,6 +1767,13 @@ impl ExecutionService for DefaultExecutionService {
         request: StartExecution,
     ) -> BoxFuture<'_, Result<StartedExecution, GatewayError>> {
         Box::pin(async move { self.start_inner(request).await })
+    }
+
+    fn start_account_execution(
+        &self,
+        request: StartAccountExecution,
+    ) -> BoxFuture<'_, Result<StartedExecution, GatewayError>> {
+        Box::pin(async move { self.start_account_execution_inner(request).await })
     }
 
     fn start_provider_endpoint(

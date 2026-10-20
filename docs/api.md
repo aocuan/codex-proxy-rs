@@ -11,6 +11,7 @@
 | 账号与授权范围 | [账号](#5-账号) · [代理](#独立代理管理--managed-proxies) · [分组](#6-账号分组) · [Client Key](#7-client-key) |
 | 系统与运维 | [健康检查](#2-健康检查) · [运行设置](#8-运行设置) · [备份](#9-备份) · [统计与诊断](#10-dashboard用量与错误) · [版本与更新](#11-版本更新与重启) |
 | 插件 | [安装包与来源](#安装包与来源) · [运行实例](#121-运行实例) · [管理扩展](#122-管理扩展页面与原始-api) |
+| 模型测评 | [题目、判题设置与定时计划](#13-模型测评) |
 
 ## 1. 鉴权与公共约定
 
@@ -2532,3 +2533,148 @@ GET/HEAD 不接受正文。响应状态码为 200–599，内容类型元数据�
 并发重复或已消费票据均拒绝。宿主在执行前原子消费票据，因此超时或插件失败后不能重放。
 公开调用使用 `public_management` 阶段，插件可以使用宿主回调；票据仍用于关联和消费一次登录流程。
 票据用于受控接收第三方返回结果，不代替敏感管理操作的身份校验
+
+## 13. 模型测评
+
+管理端「模型测评」可自定义题目、输出格式和判分方式，查看回答、对比 HTML 作品和管理定时计划。
+只允许管理员访问，使用正常 Client Key 的账号范围与费用限额，模型调用也消耗上游账号额度。
+题目表现用于观察同条件下的变化，不能据此认证模型身份或自动判定账号降级
+
+| 方法与路径 | 请求 | 返回 data |
+| --- | --- | --- |
+| `GET /api/admin/evaluations/config` | 无 | 题目模板及其 definition、版本、部署时区与限制 |
+| `GET /api/admin/evaluations/settings` | 无 | `{revision, defaults, typesafeConfigured}` |
+| `POST /api/admin/evaluations/settings/update` | `{revision, defaults, typesafeApiKey?}` | 更新后的公开设置，不返回密钥 |
+| `GET /api/admin/evaluations/accounts/history` | 逗号分隔的 `accountIds`（1–100 个）；每账号 `limit` 默认 28、范围 1–28 | 各账号最近一组同条件可判分记录 |
+| `GET /api/admin/evaluations/runs` | `limit` 默认 20、范围 1–100，`offset` 默认 0 | 按创建时间倒序的批次数组 |
+| `POST /api/admin/evaluations/runs/create` | `submissionId`、`parameters` | HTTP 202，已持久化批次 |
+| `GET /api/admin/evaluations/runs/detail` | `id` | `{run, items}` |
+| `POST /api/admin/evaluations/runs/stop` | `{id}` | 更新后的 `{run, items}` |
+| `GET /api/admin/evaluations/items/output` | `id` 为条目 ID | `{responseText, artifactHtml}` |
+| `POST /api/admin/evaluations/items/retry-judgment` | `{id}` 为条目 ID | HTTP 202、`null`，重试失败的 AI 判题 |
+| `GET /api/admin/evaluations/plans` | 无 | 计划数组 |
+| `POST /api/admin/evaluations/plans/create` | 计划设置 | HTTP 201，计划 |
+| `POST /api/admin/evaluations/plans/update` | `{id, revision, settings}` | 更新后的计划 |
+| `POST /api/admin/evaluations/plans/delete` | `{id, revision}` | `null`，历史批次仍保留 |
+
+查询和 JSON 均拒绝未知字段，成功和错误沿用[公共约定](#管理接口)。
+`parameters` 格式如下，保存的是引用 ID，不接收密钥明文或凭据：
+
+```json
+{
+  "kind": "candy",
+  "clientKeyId": "key_example",
+  "accountIds": ["acct_example"],
+  "model": "public-model-id",
+  "reasoningEffort": "high",
+  "repetitions": 3,
+  "timeoutSeconds": 600,
+  "definition": {
+    "name": "自定义问答",
+    "prompt": "六乘七是多少？请在最后一行输出 最终答案：N",
+    "outputFormat": "text",
+    "grader": {"type": "exact", "source": "final_integer", "expected": "42"}
+  }
+}
+```
+
+`definition` 保存自定义题目，名称最多 128 字节、提示词最多 32 KiB，均不能为空；
+`outputFormat` 为 `text` 或 `html`。每批 1–20 个不重复账号，每账号 1–5 次。
+`kind` 为 `candy` 或 `pelican`，仅用于模板来源与旧调用兼容；省略 `definition` 时使用原固定题目，
+其中旧鹈鹕请求仍限定每账号 1 次并要求 HTML 中包含 SVG
+`reasoningEffort` 为小写强度名或 `null`，具体支持由模型与账号配置决定，`null` 表示不额外指定。
+`model` 使用网关公开模型 ID。`timeoutSeconds` 为 1–600 秒，也受当前网关期限约束。
+请求禁用工具，完整 definition、提示词、内容版本、评分版本、请求配置版本与网关版本保存在批次 `profile` 中。
+内容版本包含题目、输出格式及完整判分设置，不含展示名称；修改计划只影响后续批次
+
+### 默认设置
+
+`defaults` 包含可空的 `clientKeyId`、`model`、`reasoningEffort`、`judge`，以及 `repetitions` 和
+`timeoutSeconds`。页面只在新建草稿时带入默认参数，保存默认值不修改已有计划或历史批次。
+`judge` 为 `{type: "model", clientKeyId, accountId, model, reasoningEffort, timeoutSeconds}`，
+或 `{type: "typesafe", model, decisionThreshold, timeoutSeconds}`；各题的评分标准和参考答案保存在 definition 中
+
+更新使用 `revision` 乐观锁，初始版本为 0，冲突返回 409。`typesafeApiKey` 缺省保留、空字符串清除、
+非空值替换，独立存储，不写入批次快照、公开响应或审计详情。选用 TypeSafe 默认判题器时必须已有密钥。
+TypeSafe 判题执行时读取当前密钥，其费用由 TypeSafe 计收，不受网关 Client Key 预算控制
+
+### 判分设置
+
+`definition.grader` 可选以下方式：
+
+| type | 设置 | 行为 |
+| --- | --- | --- |
+| `none` | 无 | 仅保存回答与作品，不计算成绩 |
+| `exact` | `source: full_text`、`expected` | 去除两端空白后严格比较全文，区分大小写 |
+| `exact` | `source: final_integer`、`expected` | 比较最后一行唯一的 `最终答案：N`，expected 为非负整数 |
+| `regex` | `pattern` | 使用有大小限制的 Rust 正则匹配完整回答文本 |
+| `model` | `config` | 独立网关模型按自定义标准评审，保留结论与理由 |
+| `typesafe` | `config` | TypeSafe Jev 返回满足标准的概率，按阈值判分 |
+
+`expected` 最多 4 KiB，`pattern` 最多 4 KiB 且必须可以编译；HTML 输出不会因能提取文档而自动通过。
+模型 `config` 包含 `clientKeyId`、`accountId`、`model`、`reasoningEffort`、`timeoutSeconds`、
+`rubric` 和可选 `referenceAnswer`。引用与执行约束同生成请求，判题账号必须与全部被测账号不同；
+rubric 不能为空且最多 16 KiB，referenceAnswer 最多 32 KiB。模型只接受题目、标准、参考答案与待评回答，
+不接收账号名称和凭据，输出必须包含 `pass: true | false | null` 与非空 `reason`。
+TypeSafe `config` 包含 `model`、`decisionThreshold`、`timeoutSeconds`、`rubric` 和可选
+`referenceAnswer`。模型名称最多 128 字节，阈值为 51–100 的整数，超时为 1–120 秒，标准和答案长度限制同网关判题。
+使用官方 System One 的 Noul 结论：概率大于等于阈值时通过，小于等于 `100 - 阈值` 时未通过，
+其余为 `ungraded`。界面默认固定模型 `jev-1.13.0`、阈值 80，记录实际返回模型和 Token，
+不将判题概率称为可靠性保证，也不生成官方响应未提供的文字推理
+
+HTML 评审仅检查源码，未接入渲染截图或视觉模型
+
+`submissionId` 使用客户端生成的 UUID。同一管理员、同一标识和相同参数重试返回原批次，
+参数不同返回 409；新一轮测评使用新标识。生成与判题共用最多 100 条未完成任务，同时执行最多 2 条，
+同账号串行，TypeSafe 判题也串行并占用上述并发位置，队列满时手动提交返回 409。网关请求执行前重新检查当前 Key、授权范围、账号、预算与路由，
+账号不可用或范围不匹配时记录请求失败，不自动换到其他账号
+
+### 记录与结果
+
+批次计数中 `totalItems` 是最初规模，`retainedItems` 是当前保留条数，`activeItems` 是等待与运行条数，
+`succeededItems` 是生成请求成功数，`correctItems` 为已通过判分数。
+`activeItems` 包含等待或正在判题的条目，不能把成功请求数直接当作正确答案数
+
+条目 `status` 为 `queued`、`running`、`succeeded`、`failed`、`cancelled`、`interrupted` 或 `skipped`。
+`verdict` 独立为 `correct`、`wrong`、`ungraded`、`not_applicable`：
+
+- 糖果题明确允许按手感选择形状，答案为 21，完整回答最后一行唯一的 `最终答案：N` 才参与判断
+- 非完整回答、没有明确终答或相互冲突的终答为 `ungraded`，不会按错误答案计分
+- `none` 不自动评分，使用 `not_applicable`；内置鹈鹕模板默认采用此方式
+- AI 判题等待、失败、格式不符或结论为 null 时均为 `ungraded`，不能当作答错
+- 网络失败、取消、超时、输出超限或中断不参与判分，已保存的部分回答仍可查看
+
+`requestId` 关联正常请求记录；`observation` 只保留已终结请求的模型、强度、Token、费用等已知事实，
+`requestHistoryAvailable=false` 表示尚无可读取的已终结记录，不表示费用为零。`ttftMs`、`durationMs`
+为空时不要按零展示。模型返回名称是上游观测字段，不是身份鉴定
+
+使用 AI 判题时条目 `judgment` 包含最新尝试的 `status`、`attempt`、`requestId`、`verdict`、`reason`、
+`observation` 与时间字段，其请求和用量与生成请求独立。TypeSafe 的 `accountId` 和 `requestId` 为 null，费用未知，不伪造网关请求记录；顶层 `verdict` 投影最新判题结论。
+失败、中断或取消的判题最多尝试 5 次，已停止的批次不可重试。重试使用冻结规则和保存的回答，不重新生成
+
+账号历史每条包含 `name`、`profileVersion`、`graderType`、`judgmentStatus`、请求与判分状态及 `testedAtDisplay`。
+每个账号选取最新可判分系列，按定义内容版本、评分版本、模型和请求推理强度分组；
+纯作品不参与。界面用色条与近期状态概括记录，绿色表示通过、红色表示未通过；
+执行或判题异常单独提示，未判分不按未通过展示。题目、时间和判题方式在悬浮提示中查看
+
+停止后等待生成项跳过、等待判题项取消，在途项取消，停止不撤销已经发生的用量。重启后未确认结束的运行项标为中断并保留证据，
+不会自动重放；等待项继续检查当前资格后执行。输出最多 1 MiB，作品最多 256 KiB，作品始终作为 JSON 字符串返回，
+调用方不能将未清理原文直接插入管理页面。单次判题输出最多 64 KiB。
+历史按最多 30 天、每账号每组定义及模型条件最多 100 条和总输出 512 MiB 清理，
+总输出包含历次判题原文；不删除生成或判题仍活跃的项，已清理记录返回 404
+
+### 定时计划
+
+计划设置为 `{name, parameters, enabled, intervalMinutes}`，名称最多 128 字节，
+`intervalMinutes` 为 1 到 525600 的整数。保存或启用后开始计时，首次在指定分钟数后执行，
+后续按保存的时段推进，不因跨小时或巡检延迟改变间隔
+
+已保存的日历计划也接受 `cronExpression`，它与 `intervalMinutes` 互斥。
+Cron 为 5 段，时区由 `host.timezone` 决定，不接受调用方指定。
+保存后返回 `revision`、`settings.timezone`、`nextRunAt` 和 `nextRunAtDisplay`；
+修改、启停与删除须携带当前 revision，过期返回 409，重新加载后再编辑
+
+计划约每 30 秒检查一次。前一批未结束、队列已满或执行时段过期超过一分钟时记录跳过并推进未来游标，
+不积压补跑。暂停或删除计划不停止已创建批次，停止批次需调用对应接口。
+保存或恢复计划后重新计算未来时段。分钟间隔不受部署时区和夏令时影响；
+日历计划切换部署时区后重算未来游标，夏令时不存在的时刻跳过，重复时刻只执行较早一次

@@ -42,6 +42,8 @@ export function usageTokenDetails(details: UsageTokenDetails): UsageTokenDetails
 }
 
 export function usageTransportType(transport?: string | null) {
+  if (transport === 'internal_admin')
+    return '后台任务'
   if (transport === 'websocket')
     return 'WS'
 

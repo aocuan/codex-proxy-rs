@@ -7,9 +7,9 @@ pub use delivery::ResponseCommit;
 mod failure;
 pub use contract::{
     AuthenticatedClient, ClientApiKeyUsageSink, ClientAuthenticationError, ClientKeyVerifier,
-    ClientTransport, ExecutionRequestMetadata, ExecutionService, ExecutionSession,
-    PreparedExecutionRequest, PreparedRootExecution, StartExecution, StartProviderExecution,
-    StartedExecution,
+    ClientTransport, CollectionLimitExceeded, ExecutionRequestMetadata, ExecutionService,
+    ExecutionSession, PreparedExecutionRequest, PreparedRootExecution, StartAccountExecution,
+    StartExecution, StartProviderExecution, StartedExecution, UncommittedEventCollector,
 };
 mod scope;
 pub use scope::BoundModelExecutionContext;

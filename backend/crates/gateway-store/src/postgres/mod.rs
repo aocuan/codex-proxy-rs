@@ -8,6 +8,7 @@ mod client_budgets;
 mod client_keys;
 mod connection;
 mod control_plane;
+mod evaluation;
 mod execution;
 mod execution_buffer;
 mod observability;
@@ -34,6 +35,7 @@ pub(crate) use connection::connect_read_only;
 pub use control_plane::{
     ControlPlaneReplacement, ControlPlaneRepository, ControlPlaneSnapshot, PgControlPlaneRepository,
 };
+pub use evaluation::PgEvaluationRepository;
 pub use execution::*;
 pub use execution_buffer::*;
 pub use observability::*;

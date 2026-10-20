@@ -24,6 +24,7 @@ mod client_budgets;
 mod client_keys;
 mod connection;
 mod control_plane;
+mod evaluation;
 mod execution;
 mod execution_buffer;
 mod health;

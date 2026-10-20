@@ -54,7 +54,7 @@ pub async fn run() -> Result<(), BootstrapError> {
     ));
     let plugin_distribution = std::sync::Arc::new(or_shutdown!(
         plugin_runtime,
-        gateway_host::plugin_distribution::HttpPluginDistribution::new(plugin_http)
+        gateway_host::plugin_distribution::HttpPluginDistribution::new(plugin_http.clone())
     ));
     let analytics_worker = or_shutdown!(
         plugin_runtime,
@@ -69,6 +69,11 @@ pub async fn run() -> Result<(), BootstrapError> {
             config.client,
             store.admin_ports(),
             gateway_admin::AdminRuntimePorts {
+                typesafe: Some(std::sync::Arc::new(
+                    gateway_host::typesafe::TypeSafeHttpClient::new(plugin_http)
+                )),
+                execution: core.execution_service(),
+                gateway_version: version.clone(),
                 timezone,
                 service_middleware: service_middleware(core.snapshots(), &plugin_runtime),
                 providers: providers.admin,

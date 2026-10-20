@@ -4,6 +4,7 @@ mod account_groups;
 mod audit;
 mod backup;
 mod client_keys;
+mod evaluation;
 mod observability;
 mod plugins;
 mod provider_credentials;

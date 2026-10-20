@@ -569,7 +569,8 @@ const fn wire_transport(
             WireMiddlewareTransport::WebSocket
         }
         gateway_core::engine::execution::ClientTransport::InternalProbe
-        | gateway_core::engine::execution::ClientTransport::InternalPlugin => {
+        | gateway_core::engine::execution::ClientTransport::InternalPlugin
+        | gateway_core::engine::execution::ClientTransport::InternalAdmin => {
             WireMiddlewareTransport::Internal
         }
     }

@@ -7,6 +7,8 @@ mod auth_key;
 mod backup;
 mod client_keys;
 mod credentials;
+#[path = "../../../../test-support/evaluation.rs"]
+mod evaluation_fixture;
 mod freeze_recovery;
 mod import_tasks;
 mod observability;
@@ -273,12 +275,16 @@ impl AdminHarness {
                 self.observability,
                 self.settings,
                 self.backup,
+                Arc::new(evaluation_fixture::UnusedEvaluationRepository),
                 self.plugin_store,
                 Arc::new(plugins::TestPluginPorts),
                 Arc::new(plugins::TestPluginPorts),
                 Arc::new(plugins::TestPluginPorts),
             ),
             gateway_admin::AdminRuntimePorts {
+                typesafe: None,
+                execution: Arc::new(evaluation_fixture::UnusedEvaluationExecution),
+                gateway_version: "test".to_owned(),
                 timezone: Default::default(),
                 service_middleware: self.service_middleware,
                 plugin_preparation: Arc::new(plugins::TestPluginPorts),

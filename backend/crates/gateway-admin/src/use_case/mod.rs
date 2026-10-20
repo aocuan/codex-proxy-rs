@@ -31,5 +31,6 @@ use credential_mutation::{
     validate_authorization_commit, validate_prepared_import, validate_prepared_rotation,
     validate_prepared_rotation_facts,
 };
-use error::{map_provider_error, map_store_error};
+use error::map_provider_error;
+pub(crate) use error::map_store_error;
 use publication::publish_committed;

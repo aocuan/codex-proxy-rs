@@ -1730,6 +1730,7 @@ async fn assert_sdk_transparency(mode: &'static str) {
         (ClientTransport::WebSocket, 503, MiddlewareFraming::JsonDocument, vec![json.clone()]),
         (ClientTransport::InternalProbe, 200, MiddlewareFraming::JsonDocument, vec![json.clone()]),
         (ClientTransport::InternalPlugin, 200, MiddlewareFraming::JsonDocument, vec![json.clone()]),
+        (ClientTransport::InternalAdmin, 200, MiddlewareFraming::JsonDocument, vec![json.clone()]),
         (ClientTransport::HttpJson, 503, MiddlewareFraming::RawBytes, vec![Bytes::from_static(b"unavailable")]),
         (ClientTransport::HttpSse, 503, MiddlewareFraming::RawBytes, vec![Bytes::from_static(b"unavailable")]),
         (ClientTransport::HttpSse, 200, MiddlewareFraming::SseEvent, vec![

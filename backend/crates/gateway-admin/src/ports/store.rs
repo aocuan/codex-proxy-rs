@@ -580,6 +580,7 @@ pub struct AdminStorePorts {
     observability: Arc<dyn ObservabilityStore>,
     settings: Arc<dyn SettingsStore>,
     backup: BackupStorePorts,
+    evaluations: Arc<dyn super::evaluation::EvaluationRepository>,
     plugins: Arc<dyn super::plugins::PluginStore>,
     plugin_state: Arc<dyn super::plugins::PluginStateStore>,
     plugin_resources: Arc<dyn super::plugin_resources::PluginResourceStore>,
@@ -619,6 +620,7 @@ impl AdminStorePorts {
         observability: Arc<dyn ObservabilityStore>,
         settings: Arc<dyn SettingsStore>,
         backup: BackupStorePorts,
+        evaluations: Arc<dyn super::evaluation::EvaluationRepository>,
         plugins: Arc<dyn super::plugins::PluginStore>,
         plugin_state: Arc<dyn super::plugins::PluginStateStore>,
         plugin_resources: Arc<dyn super::plugin_resources::PluginResourceStore>,
@@ -631,6 +633,7 @@ impl AdminStorePorts {
             observability,
             settings,
             backup,
+            evaluations,
             plugins,
             plugin_state,
             plugin_resources,
@@ -681,5 +684,10 @@ impl AdminStorePorts {
     #[must_use]
     pub fn backup(&self) -> BackupStorePorts {
         self.backup.clone()
+    }
+
+    #[must_use]
+    pub fn evaluations(&self) -> Arc<dyn super::evaluation::EvaluationRepository> {
+        self.evaluations.clone()
     }
 }

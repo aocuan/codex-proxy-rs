@@ -17,6 +17,7 @@ use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
 
 pub mod backup;
+pub mod evaluation;
 pub mod freeze_recovery;
 pub mod model;
 pub mod ports;
@@ -226,6 +227,7 @@ pub struct AdminServices {
     _plugin_accounts: Arc<dyn PluginAccountAccess>,
     backups: Arc<dyn BackupService>,
     import_tasks: Arc<dyn ImportTasksService>,
+    evaluations: Arc<evaluation::EvaluationService>,
 }
 
 impl AdminServices {
@@ -316,6 +318,11 @@ impl AdminServices {
     pub fn backups(&self) -> &dyn BackupService {
         self.backups.as_ref()
     }
+
+    #[must_use]
+    pub fn evaluations(&self) -> &evaluation::EvaluationService {
+        self.evaluations.as_ref()
+    }
 }
 
 /// Admin 初始化完成后的封闭能力包
@@ -338,6 +345,9 @@ impl AdminBundle {
 
 /// 组合根提供给控制面的运行能力；与配置和存储端口分别传入
 pub struct AdminRuntimePorts {
+    pub typesafe: Option<Arc<dyn ports::evaluation::TypeSafeJudgeClient>>,
+    pub execution: Arc<dyn gateway_core::engine::execution::ExecutionService>,
+    pub gateway_version: String,
     pub timezone: gateway_core::time::DeploymentTimeZone,
     pub service_middleware: public_service::PlanSource,
     pub plugin_preparation: Arc<dyn ports::plugins::PluginPreparation>,
@@ -388,6 +398,9 @@ async fn initialize_inner(
     plugin_accounts: Option<Arc<dyn PluginAccountAccess>>,
 ) -> Result<AdminBundle, AdminError> {
     let AdminRuntimePorts {
+        typesafe,
+        execution,
+        gateway_version,
         timezone,
         service_middleware,
         plugin_preparation,
@@ -444,6 +457,19 @@ async fn initialize_inner(
         backup_ports.object_store(),
     )
     .with_timezone(timezone);
+    let evaluations = Arc::new(evaluation::EvaluationService::new(
+        store.evaluations(),
+        gateway_version.clone(),
+        timezone,
+    ));
+    let evaluation_task = evaluation::EvaluationTask::new(
+        store.evaluations(),
+        execution,
+        store.observability(),
+        gateway_version,
+        timezone,
+    )
+    .with_typesafe(typesafe);
     let system_preflight = Arc::new(use_case::plugin_update::PluginSystemUpdatePreflight::new(
         store.plugins(),
         plugin_inspector.clone(),
@@ -534,6 +560,7 @@ async fn initialize_inner(
         _plugin_accounts: plugin_accounts,
         import_tasks,
         backups,
+        evaluations,
     };
     let freeze_recovery =
         freeze_recovery::FreezeRecoveryTask::new(freeze_recovery::FreezeRecoveryDeps {
@@ -556,6 +583,20 @@ async fn initialize_inner(
     )
     .map_err(|_| AdminError::internal("导入 Worker 注册信息不合法"))?;
     worker_contributions.push(WorkerContribution::Registration(registration));
+    let id = WorkerId::try_new(WorkerKind::ModelEvaluation, "admin")
+        .map_err(|_| AdminError::internal("测评 Worker ID 不合法"))?;
+    let restart = DaemonRestartPolicy::try_new(Duration::from_secs(1), Duration::from_secs(60))
+        .map_err(|_| AdminError::internal("测评 Worker 重启策略不合法"))?;
+    worker_contributions.push(WorkerContribution::Registration(
+        WorkerRegistration::try_new(
+            id,
+            WorkerRunnable::Daemon {
+                restart,
+                task: Box::new(evaluation_task),
+            },
+        )
+        .map_err(|_| AdminError::internal("测评 Worker 注册失败"))?,
+    ));
     worker_contributions.extend(freeze_recovery_worker_contribution(freeze_recovery)?);
     let id = WorkerId::try_new(WorkerKind::ResetCreditAutomation, "admin")
         .map_err(|_| AdminError::internal("重置卡 Worker ID 不合法"))?;

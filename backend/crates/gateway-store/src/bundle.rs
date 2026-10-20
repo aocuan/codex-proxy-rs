@@ -216,6 +216,7 @@ async fn connect(
             control_plane: postgres::PgControlPlaneRepository::new(pool.clone()),
         }),
         backup_ports(pool.clone(), &config)?,
+        Arc::new(postgres::PgEvaluationRepository::new(pool.clone())),
         plugins.clone(),
         plugins.clone(),
         plugins,

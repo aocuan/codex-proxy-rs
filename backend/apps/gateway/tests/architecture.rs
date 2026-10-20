@@ -329,6 +329,7 @@ const ADAPTER_PUBLIC_MODULES: &[(&str, &[&str])] = &[
             "retention",
             "serve",
             "system_update",
+            "typesafe",
             "workers",
         ],
     ),

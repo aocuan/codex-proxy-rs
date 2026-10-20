@@ -1151,6 +1151,8 @@ pub enum EngineError {
     DownstreamCommitRequired,
     #[error("downstream delivery cannot be committed in the current state")]
     InvalidDeliveryState,
+    #[error("uncommitted response exceeds consumer collection limit")]
+    CollectionLimitExceeded,
 }
 
 /// Engine 只组合 Store 与 Provider Registry；重试算法完全位于 coordinator

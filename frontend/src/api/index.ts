@@ -4,6 +4,9 @@ export * from './modules/accounts'
 // Dashboard 聚合
 export * from './modules/dashboard'
 
+// 模型测评
+export * from './modules/evaluations'
+
 // 账号分组
 export * from './modules/groups'
 

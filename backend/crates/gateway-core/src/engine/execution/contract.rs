@@ -1,6 +1,7 @@
 //! 执行请求、认证事实与对外会话端口
 
 use crate::{
+    account::ProviderAccountId,
     engine::{
         CoordinatedEvent, EngineError, ModelRequestId,
         authentication::ClientAuthenticationRequest,
@@ -38,6 +39,7 @@ pub enum ClientTransport {
     WebSocket,
     InternalProbe,
     InternalPlugin,
+    InternalAdmin,
 }
 
 impl ClientTransport {
@@ -49,6 +51,7 @@ impl ClientTransport {
             Self::WebSocket => "websocket",
             Self::InternalProbe => "internal",
             Self::InternalPlugin => "internal_plugin",
+            Self::InternalAdmin => "internal_admin",
         }
     }
 }
@@ -279,6 +282,17 @@ pub struct PreparedExecutionRequest {
     pub metadata: ExecutionRequestMetadata,
 }
 
+/// 已鉴权的管理后台任务按 Key 当前权限执行指定账号，不接受明文凭据
+pub struct StartAccountExecution {
+    pub client_key_id: ClientApiKeyId,
+    pub account_id: ProviderAccountId,
+    pub public_model: PublicModelId,
+    pub operation: Operation,
+    pub metadata: ExecutionRequestMetadata,
+    pub deadline_at: SystemTime,
+    pub cancellation: CancellationToken,
+}
+
 /// 启动一个由协议 adapter 明确绑定到 Provider 自有端点的请求
 pub struct StartProviderExecution {
     pub client: AuthenticatedClient,
@@ -296,6 +310,16 @@ pub struct StartedExecution {
     pub session: Box<dyn ExecutionSession>,
 }
 
+/// 未提交响应的同步收集器；重试丢弃整次 attempt 时必须清空已收内容
+pub trait UncommittedEventCollector: Send {
+    fn clear(&mut self);
+    fn accept(&mut self, events: Vec<ProviderEvent>) -> Result<(), CollectionLimitExceeded>;
+}
+
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[error("uncommitted response exceeds consumer collection limit")]
+pub struct CollectionLimitExceeded;
+
 pub trait ExecutionSession: Send {
     /// 允许协议层在等待业务事件期间记录传输首字节，保活不提交业务批次
     fn response_commit(&self) -> super::ResponseCommit {
@@ -307,6 +331,13 @@ pub trait ExecutionSession: Send {
     }
     fn next_event(&mut self) -> BoxFuture<'_, Result<Option<CoordinatedEvent>, EngineError>>;
     fn collect_uncommitted(&mut self) -> BoxFuture<'_, Result<Vec<ProviderEvent>, EngineError>>;
+    /// 逐批接收并由调用方限制内存，仍在完整输出保存后才提交下游消费事实
+    fn collect_uncommitted_into<'a>(
+        &'a mut self,
+        _collector: &'a mut dyn UncommittedEventCollector,
+    ) -> BoxFuture<'a, Result<(), EngineError>> {
+        Box::pin(async { Err(EngineError::InvalidDeliveryState) })
+    }
     fn response_headers(&self) -> &[ProviderResponseHeader];
     fn response_status_code(&self) -> Option<u16> {
         None
@@ -387,6 +418,19 @@ pub trait ExecutionService: Send + Sync {
             Err(GatewayError::new(
                 GatewayErrorKind::Unauthorized,
                 "plugin model entry is unavailable",
+            ))
+        })
+    }
+
+    /// 仅供可信管理用例使用，沿普通准入、计量和取消路径执行且不切换目标账号
+    fn start_account_execution(
+        &self,
+        _request: StartAccountExecution,
+    ) -> BoxFuture<'_, Result<StartedExecution, GatewayError>> {
+        Box::pin(async {
+            Err(GatewayError::new(
+                GatewayErrorKind::Unsupported,
+                "admin account execution is unavailable",
             ))
         })
     }

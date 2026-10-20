@@ -58,6 +58,11 @@ export const routes: RouteRecordRaw[] = [
         component: () => import('@/views/usage/index.vue'),
       },
       {
+        path: 'evaluations',
+        name: 'evaluations',
+        component: () => import('@/views/evaluations/index.vue'),
+      },
+      {
         path: 'plugins',
         component: () => import('@/views/plugins/index.vue'),
         children: [
