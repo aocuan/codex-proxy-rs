@@ -1,6 +1,7 @@
 import type { TableSort } from '@codex-proxy/ui'
 import type { Account } from '@/api'
 
+import { useDocumentVisibility, useTimeoutPoll } from '@vueuse/core'
 import { computed, onMounted, shallowRef, watch } from 'vue'
 import { getAccounts } from '@/api'
 import { usePagedQuery } from '@/composables/usePagedQuery'
@@ -11,6 +12,8 @@ export function useAccountsQuery() {
   const statusQuery = shallowRef('')
   const groupQuery = shallowRef('')
   const sort = shallowRef<TableSort>()
+  const refreshInterval = shallowRef('0')
+  const refreshing = shallowRef(false)
   const accountSummary = shallowRef({
     total: 0,
     normal: 0,
@@ -68,6 +71,30 @@ export function useAccountsQuery() {
     return query.items.value.some(account => account.id === updated.id)
   }
 
+  async function refreshAccounts(silent = false) {
+    if (query.loading.value || refreshing.value)
+      return
+    refreshing.value = true
+    try {
+      await query.execute({ background: true, silent })
+    }
+    finally {
+      refreshing.value = false
+    }
+  }
+
+  const visibility = useDocumentVisibility()
+  const poll = useTimeoutPoll(
+    () => refreshAccounts(true),
+    computed(() => Math.max(1, Number(refreshInterval.value)) * 1000),
+    { immediate: false },
+  )
+  watch([visibility, refreshInterval], ([visible, interval]) => {
+    poll.pause()
+    if (visible === 'visible' && interval !== '0')
+      poll.resume()
+  }, { immediate: true })
+
   watch(searchQuery, (_value, _previous, onCleanup) => {
     const timer = setTimeout(() => {
       void query.reloadFromStart()
@@ -88,6 +115,9 @@ export function useAccountsQuery() {
     pageSize: query.pageSize,
     totalAccounts: query.total,
     loading: query.loading,
+    refreshing,
+    refreshInterval,
+    refreshAccounts,
     accounts: query.items,
     loadAccounts: query.execute,
     refreshAccountsSilently: () => query.execute({ silent: true }),

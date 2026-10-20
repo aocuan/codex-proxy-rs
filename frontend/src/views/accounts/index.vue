@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { Account } from '@/api'
 
-import { useTableColumns, ZButton, ZCard, ZCheckbox, ZConfirmDialog, ZPageHeader, ZPagination, ZTable, ZTableColumnSettings } from '@codex-proxy/ui'
-import { ChevronDown } from '@lucide/vue'
+import { useTableColumns, ZButton, ZCard, ZCheckbox, ZConfirmDialog, ZIconButton, ZMenuItem, ZPageHeader, ZPagination, ZPopover, ZTable, ZTableColumnSettings } from '@codex-proxy/ui'
+import { Check, ChevronDown, RefreshCw } from '@lucide/vue'
 import { useMediaQuery } from '@vueuse/core'
 import { computed, ref, shallowRef } from 'vue'
 import { useRouter } from 'vue-router'
@@ -46,12 +46,20 @@ function openConcurrency(account: Account) {
 
 const router = useRouter()
 const selectedIds = ref<Set<string>>(new Set())
+const refreshOptions = [
+  { label: '30 秒刷新', value: '30' },
+  { label: '60 秒刷新', value: '60' },
+  { label: '暂停刷新', value: '0' },
+]
 const { visibleColumns, columnOptions, setColumnVisible, setColumnOrder, resetColumns } = useTableColumns(accountColumns, 'accounts')
 const wideTable = useMediaQuery('(min-width: 1280px)')
 const inlineEvaluation = computed(() => !wideTable.value && visibleColumns.value.some(column => column.key === 'evaluation'))
 const tableColumns = computed(() => wideTable.value ? visibleColumns.value : visibleColumns.value.filter(column => column.key !== 'evaluation'))
 const {
   loading,
+  refreshing,
+  refreshInterval,
+  refreshAccounts,
   accounts,
   loadAccounts,
   refreshAccountsSilently,
@@ -250,6 +258,50 @@ const {
             <ZButton v-if="selectedIds.size" :disabled="selectedIds.size > 20" @click="router.push({ path: '/evaluations', query: { accounts: [...selectedIds].join(',') } })">
               测评所选{{ selectedIds.size > 20 ? '（最多 20 个）' : '' }}
             </ZButton>
+            <div class="flex shrink-0 items-center gap-1">
+              <ZIconButton
+                aria-label="刷新账号列表"
+                variant="solid"
+                :loading="refreshing"
+                :disabled="loading || refreshing"
+                @click="refreshAccounts()"
+              >
+                <template #loading>
+                  <RefreshCw class="size-4 animate-spin motion-reduce:animate-none" />
+                </template>
+                <RefreshCw class="size-4" />
+              </ZIconButton>
+              <ZPopover placement="bottom-end">
+                <template #reference="{ open }">
+                  <ZButton
+                    v-if="refreshInterval !== '0'"
+                    :aria-label="`自动刷新设置，当前每 ${refreshInterval} 秒刷新`"
+                    :aria-expanded="open"
+                  >
+                    {{ refreshInterval }} 秒
+                    <ChevronDown class="size-3.5" />
+                  </ZButton>
+                  <ZIconButton v-else aria-label="自动刷新设置，当前已暂停" variant="solid" :pressed="open">
+                    <ChevronDown class="size-3.5" />
+                  </ZIconButton>
+                </template>
+                <template #default="{ close }">
+                  <div class="w-36 p-1.5">
+                    <ZMenuItem
+                      v-for="option in refreshOptions"
+                      :key="option.value"
+                      :aria-pressed="refreshInterval === option.value"
+                      @click="(refreshInterval = option.value, close())"
+                    >
+                      <template #icon>
+                        <Check v-if="refreshInterval === option.value" class="size-3.5 text-cp-link" />
+                      </template>
+                      {{ option.label }}
+                    </ZMenuItem>
+                  </div>
+                </template>
+              </ZPopover>
+            </div>
             <ZTableColumnSettings
               :options="columnOptions"
               @change="setColumnVisible"
