@@ -588,11 +588,11 @@ OAuth 恢复开关为 `host.logging.oauth_recovery`，默认关闭，与普通�
 
 ### 自研测评镜像
 
-`aocuan/codex-proxy-rs` 的 `codex/model-evaluation` 分支使用 `Fork image` 工作流。
+`aocuan/codex-proxy-rs` 的 `main` 分支包含自研功能，使用 `Fork image` 工作流。
 相关源码、构建或部署配置推送后，原生构建 `linux/amd64` 和 `linux/arm64`，
 两个平台均通过容器扫描、启动、持久化和关闭检查后，发布到 `ghcr.io/aocuan/codex-proxy-rs`：
 
-- `evaluation` 指向最近一次验证通过的测评分支构建
+- `evaluation` 指向最近一次验证通过的自研 `main` 构建
 - `sha-<完整提交 SHA>` 标识对应源码；需要固定镜像字节时使用该镜像的 digest
 
 工作流复用 `deploy/Dockerfile` 的 `runtime` 目标和容器验证组件，使用 GitHub 自动提供的

@@ -3,7 +3,7 @@ name: Fork image
 on:
   push:
     branches:
-      - codex/model-evaluation
+      - main
     paths:
       - 'backend/**'
       - 'frontend/**'
@@ -26,7 +26,7 @@ env:
 
 jobs:
   build:
-    if: github.repository == 'aocuan/codex-proxy-rs' && github.ref == 'refs/heads/codex/model-evaluation'
+    if: github.repository == 'aocuan/codex-proxy-rs' && github.ref == 'refs/heads/main'
     name: Build and verify (${{ matrix.arch }})
     strategy:
       fail-fast: false
