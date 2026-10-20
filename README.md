@@ -100,6 +100,9 @@ API Key 持有者可在登录页切换身份，查看自己的用量与额度，
 
 执行限制、历史保留和定时规则见[模型测评接口](docs/api.md#13-模型测评)
 
+包含测评功能的 fork 镜像使用 `ghcr.io/aocuan/codex-proxy-rs:evaluation`，
+部署方式见[自研测评镜像](deploy/README.md#自研测评镜像)
+
 ## 客户端接入
 
 **Codex CLI / 桌面端**：在「使用密钥」中按操作系统复制配置，或通过 CCSwitch 导入，合并配置后重启 Codex

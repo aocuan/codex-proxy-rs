@@ -586,6 +586,35 @@ OAuth 恢复开关为 `host.logging.oauth_recovery`，默认关闭，与普通�
 
 ## 镜像升级与源码构建
 
+### 自研测评镜像
+
+`aocuan/codex-proxy-rs` 的 `codex/model-evaluation` 分支使用 `Fork image` 工作流。
+相关源码、构建或部署配置推送后，原生构建 `linux/amd64` 和 `linux/arm64`，
+两个平台均通过容器扫描、启动、持久化和关闭检查后，发布到 `ghcr.io/aocuan/codex-proxy-rs`：
+
+- `evaluation` 指向最近一次验证通过的测评分支构建
+- `sha-<完整提交 SHA>` 标识对应源码；需要固定镜像字节时使用该镜像的 digest
+
+工作流复用 `deploy/Dockerfile` 的 `runtime` 目标和容器验证组件，使用 GitHub 自动提供的
+`GITHUB_TOKEN` 发布，无需另存 PAT。首次发布后的 GHCR 包默认私有；在包设置中改为 Public
+后可匿名拉取，否则部署主机需要使用具有 `read:packages` 权限的账号登录 GHCR
+
+从同一提交准备 `deploy/config.yaml` 和数据目录后，在仓库根目录使用 fork 覆盖文件：
+
+```bash
+docker compose -f deploy/compose.yaml -f deploy/compose.fork.yaml pull codex-proxy-rs
+docker compose -f deploy/compose.yaml -f deploy/compose.fork.yaml up -d --no-build --wait
+```
+
+这两个文件共同保留原有 PostgreSQL、Redis、配置和数据挂载；更新已有实例前先备份数据，
+只重建应用时在 `up` 命令末尾加 `codex-proxy-rs`。设置 `CPR_IMAGE` 可选择指定提交标签或 digest，
+拉取和启动时需使用相同的值。本地构建也应携带 fork 覆盖文件
+
+镜像版本为上游基础版本加 `+aocuan.<提交短 SHA>`，构建类型为 `source`，通过替换镜像升级；
+管理端不提供官方在线升级。镜像工作流不创建 GitHub Release，也不更新 `latest` 标签
+
+### 上游发行镜像
+
 每个 Release 独立提供 `config.example.yaml`、默认镜像固定到该版本的 `compose.yaml` 和校验和；
 各平台归档也包含 `deploy/config.example.yaml`。配置模板来自构建该版本的同一提交。
 使用二进制归档手动部署时，将模板中的 `api.asset_directory` 改为 `../web/dist`，指向归档内的静态资源。
@@ -599,6 +628,8 @@ OAuth 恢复开关为 `host.logging.oauth_recovery`，默认关闭，与普通�
 docker compose -f deploy/compose.yaml pull codex-proxy-rs
 docker compose -f deploy/compose.yaml up -d --no-build --wait codex-proxy-rs
 ```
+
+### 源码构建
 
 源码构建需要克隆源码仓库并准备配置与数据目录，构建过程自动准备前端依赖，无需初始化子模块或准备额外 build context。以下命令从仓库根目录执行：
 

@@ -1,0 +1,9 @@
+# 与 compose.yaml 合并使用，沿用同一配置、网络与数据目录
+services:
+  codex-proxy-rs:
+    image: ${CPR_IMAGE:-ghcr.io/aocuan/codex-proxy-rs:evaluation}
+    build:
+      args:
+        CPR_BUILD_TYPE: source
+    environment:
+      CPR_UPDATE_REPOSITORY: aocuan/codex-proxy-rs
