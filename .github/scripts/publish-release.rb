@@ -16,8 +16,8 @@ module ReleasePublication
     JSON.parse(output.split(/\r?\n\r?\n/, 2).fetch(1)).fetch('tag_name')
   end
 
-  def self.latest_image(image)
-    ref = "#{image}:latest"
+  def self.latest_image(image, tag = 'latest')
+    ref = "#{image}:#{tag}"
     output, error, status = Open3.capture3('docker', 'buildx', 'imagetools', 'inspect', ref, '--format', '{{json .Image}}')
     # 只把明确的缺失标签当作首次发布，鉴权和网络错误必须终止提升
     return nil if !status.success? && error.include?("#{ref}: not found")

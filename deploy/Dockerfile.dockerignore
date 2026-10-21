@@ -8,6 +8,8 @@ frontend/.vite/
 dist/*
 !dist/docker/
 !dist/docker/**
+!dist/plugin-release-assets/
+!dist/plugin-release-assets/plugin-release-manifest.json
 
 # Application runtime state.
 .runtime/

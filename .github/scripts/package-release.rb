@@ -19,7 +19,7 @@ module ReleasePackage
     File.chmod(0o555, directory)
   end
 
-  def self.archives
+  def self.archives(compose_path: 'deploy/compose.yaml')
     platforms = JSON.parse(ENV.fetch('PLATFORM_MATRIX')).fetch('include')
     release_dir = 'dist/release'
     FileUtils.rm_rf(release_dir)
@@ -29,10 +29,10 @@ module ReleasePackage
     FileUtils.rm_rf('package')
     config = 'deploy/config.example.yaml'
     FileUtils.cp(config, release_dir)
-    compose = File.read('deploy/compose.yaml')
+    compose = File.read(compose_path)
     image = "#{ENV.fetch('REGISTRY')}/#{ENV.fetch('IMAGE_NAME')}"
     default_image = "${CPR_IMAGE:-#{image}:latest}"
-    raise 'Expected exactly one default application image in deploy/compose.yaml' unless compose.scan(default_image).length == 1
+    raise "Expected exactly one default application image in #{compose_path}" unless compose.scan(default_image).length == 1
     File.write("#{release_dir}/compose.yaml", compose.sub(default_image, "${CPR_IMAGE:-#{image}:#{ENV.fetch('DOCKER_VERSION')}}"))
     FileUtils.cp(MANIFEST, release_dir)
 

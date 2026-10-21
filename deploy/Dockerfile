@@ -82,6 +82,17 @@ COPY --from=backend-builder --chown=cpr:cpr /tmp/codex-proxy-rs /app/bin/codex-p
 COPY --from=frontend-builder --chown=cpr:cpr /app/frontend/dist ./web/dist
 USER cpr
 
+FROM runtime AS runtime-fork
+
+ENV CPR_UPDATE_REPOSITORY=aocuan/codex-proxy-rs
+USER root
+COPY --chown=cpr:cpr dist/plugin-release-assets/plugin-release-manifest.json /app/bin/plugins/official/plugin-release-manifest.json
+RUN chown cpr:cpr /app/bin/plugins /app/bin/plugins/official \
+    && chmod 0755 /app/bin/plugins \
+    && chmod 0555 /app/bin/plugins/official \
+    && chmod 0444 /app/bin/plugins/official/plugin-release-manifest.json
+USER cpr
+
 FROM runtime-base AS runtime-prebuilt
 
 ARG TARGETARCH

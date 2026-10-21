@@ -588,30 +588,42 @@ OAuth 恢复开关为 `host.logging.oauth_recovery`，默认关闭，与普通�
 
 ### 自研测评镜像
 
-`aocuan/codex-proxy-rs` 的 `main` 分支包含自研功能，使用 `Fork image` 工作流。
+`aocuan/codex-proxy-rs` 的 `main` 分支包含自研功能，使用 `Fork release` 工作流。
 相关源码、构建或部署配置推送后，原生构建 `linux/amd64` 和 `linux/arm64`，
-两个平台均通过容器扫描、启动、持久化和关闭检查后，发布到 `ghcr.io/aocuan/codex-proxy-rs`：
+质量检查和两个平台的容器验收通过后，发布 GitHub Pre-release、在线更新包与
+`ghcr.io/aocuan/codex-proxy-rs` 镜像：
 
 - `evaluation` 指向最近一次验证通过的自研 `main` 构建
+- 版本标签将版本号中的 `+` 替换为 `-`，固定到该次发行
 - `sha-<完整提交 SHA>` 标识对应源码；需要固定镜像字节时使用该镜像的 digest
 
-工作流复用 `deploy/Dockerfile` 的 `runtime` 目标和容器验证组件，使用 GitHub 自动提供的
-`GITHUB_TOKEN` 发布，无需另存 PAT。首次发布后的 GHCR 包默认私有；在包设置中改为 Public
+工作流复用宿主的归档、校验和、发行清单及容器验证组件，更新包直接从已验收镜像提取。
+使用 GitHub 自动提供的 `GITHUB_TOKEN` 发布，无需另存 PAT。
+首次发布后的 GHCR 包默认私有；在包设置中改为 Public
 后可匿名拉取，否则部署主机需要使用具有 `read:packages` 权限的账号登录 GHCR
 
 从同一提交准备 `deploy/config.yaml` 和数据目录后，在仓库根目录使用 fork 覆盖文件：
 
 ```bash
 docker compose -f deploy/compose.yaml -f deploy/compose.fork.yaml pull codex-proxy-rs
-docker compose -f deploy/compose.yaml -f deploy/compose.fork.yaml up -d --no-build --wait
+docker compose -f deploy/compose.yaml -f deploy/compose.fork.yaml up -d --no-build --wait codex-proxy-rs
 ```
 
 这两个文件共同保留原有 PostgreSQL、Redis、配置和数据挂载；更新已有实例前先备份数据，
-只重建应用时在 `up` 命令末尾加 `codex-proxy-rs`。设置 `CPR_IMAGE` 可选择指定提交标签或 digest，
+设置 `CPR_IMAGE` 可选择指定版本、提交标签或 digest，
 拉取和启动时需使用相同的值。本地构建也应携带 fork 覆盖文件
 
-镜像版本为上游基础版本加 `+aocuan.<提交短 SHA>`，构建类型为 `source`，通过替换镜像升级；
-管理端不提供官方在线升级。镜像工作流不创建 GitHub Release，也不更新 `latest` 标签
+发行版本为 `<上游基础版本>-beta.<构建序号>+aocuan.<提交短 SHA>`，构建类型为 `release`。
+构建序号随工作流递增，使用既有 Beta 更新规则；构建元数据只标识源码，不参与版本排序。
+工作流不修改上游版本文件、不发布到上游仓库，也不更新 GitHub Latest 或镜像 `latest` 标签
+
+已使用二开 Beta 镜像的实例可在管理端「系统更新」检查、下载并安装新版本，完成后点击重启。
+更新源必须为 `CPR_UPDATE_REPOSITORY=aocuan/codex-proxy-rs`；fork 覆盖文件、发行附件中的 Compose
+和镜像默认环境均已配置。沿用上游 Compose 且仅替换镜像时，也要修改该环境变量
+
+`source` 构建不支持在线更新，首次接入需先执行上述镜像替换命令；源码本地构建仍保留这一限制。
+在线更新替换容器内的程序与资源，后续重建容器前应拉取对应版本镜像。
+直接使用 Linux 归档运行时，也需配置上述更新源，并按[管理端在线更新](#管理端在线更新)设置重启与路径
 
 ### 上游发行镜像
 
