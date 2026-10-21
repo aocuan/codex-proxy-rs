@@ -286,15 +286,39 @@ jobs:
           digest="$(docker buildx imagetools inspect "$IMAGE_NAME:sha-$GITHUB_SHA" --format '{{.Manifest.Digest}}')"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare release assets
+        id: prepare
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ steps.manifest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          ruby .github/scripts/fork-release.rb collect "$DIGEST"
+          ruby .github/scripts/fork-release.rb prepare >> "$GITHUB_OUTPUT"
+
+      - name: Upload GitHub Release assets
+        id: release
+        if: steps.prepare.outputs.release_id == ''
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: ${{ needs.metadata.outputs.tag }}
+          name: Codex Proxy RS 自研 ${{ needs.metadata.outputs.version }}
+          prerelease: true
+          draft: true
+          make_latest: 'false'
+          body_path: dist/fork-release-notes.md
+          fail_on_unmatched_files: true
+          files: dist/release/*
+
       - name: Publish release and advance evaluation
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DIGEST: ${{ steps.manifest.outputs.digest }}
+          RELEASE_ID: ${{ steps.prepare.outputs.release_id || steps.release.outputs.id }}
           VERSION: ${{ needs.metadata.outputs.version }}
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
         run: |
           set -euo pipefail
-          ruby .github/scripts/fork-release.rb collect "$DIGEST"
           ruby .github/scripts/fork-release.rb publish "$DIGEST"
           {
             echo '### 自研测评发行'

@@ -121,22 +121,28 @@ class ForkReleaseTest < Minitest::Test
     end
   end
 
-  def test_draft_release_is_found_when_tag_endpoint_only_returns_published_releases
-    tag = 'v3.29.7-beta.1+aocuan.aaaaaaaaaaaa'
-    draft = { 'id' => 123, 'tag_name' => tag, 'draft' => true, 'prerelease' => true, 'assets' => [] }
-    runner = lambda do |*args|
-      assert_includes args, '--paginate'
-      assert_includes args, ".[] | select(.tag_name == #{JSON.generate(tag)})"
-      JSON.generate(draft)
-    end
-    ForkRelease.stub(:github_optional, nil) do
-      ReleasePublication.stub(:run, runner) { assert_equal draft, ForkRelease.find_release(tag) }
-      ReleasePublication.stub(:run, '') { assert_nil ForkRelease.find_release(tag) }
-    end
-    published = draft.merge('draft' => false)
-    ForkRelease.stub(:github_optional, published) do
-      ReleasePublication.stub(:run, ->(*) { flunk 'Published release must not scan draft pages' }) do
-        assert_equal published, ForkRelease.find_release(tag)
+  def test_release_preparation_leaves_drafts_to_action_and_preserves_published_assets
+    in_workspace do
+      data = metadata.merge('upstream_version' => '3.29.7', 'tag' => "v#{metadata.fetch('version')}")
+      File.write(ForkRelease::METADATA, JSON.generate(data))
+      ForkRelease.stub(:ensure_tag, nil) do
+        ForkRelease.stub(:github_optional, nil) do
+          ReleasePublication.stub(:run, ->(*) { flunk 'Draft creation belongs to the release action' }) do
+            assert_nil ForkRelease.prepare
+          end
+        end
+        assert_includes File.read('dist/fork-release-notes.md'), data.fetch('docker_version')
+        published = { 'id' => 123, 'draft' => false, 'prerelease' => true }
+        verify = lambda do |release, tag|
+          assert_equal published, release
+          assert_equal data.fetch('tag'), tag
+        end
+        ForkRelease.stub(:github_optional, published) do
+          ForkRelease.stub(:verify_published_assets, verify) { assert_equal '123', ForkRelease.prepare }
+        end
+        ForkRelease.stub(:github_optional, published.merge('prerelease' => false)) do
+          assert_raises(RuntimeError) { ForkRelease.prepare }
+        end
       end
     end
   end

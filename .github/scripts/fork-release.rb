@@ -93,15 +93,6 @@ module ForkRelease
     JSON.parse(output.split(/\r?\n\r?\n/, 2).fetch(1))
   end
 
-  def self.find_release(tag)
-    published = github_optional("repos/#{REPOSITORY}/releases/tags/#{URI.encode_www_form_component(tag)}")
-    return published if published
-    # 按标签查询只返回已公开发行，草稿需从有写入权限的发行列表中查找
-    draft = ReleasePublication.run('gh', 'api', '--paginate', "repos/#{REPOSITORY}/releases?per_page=100",
-                                   '--jq', ".[] | select(.tag_name == #{JSON.generate(tag)})")
-    draft.empty? ? nil : JSON.parse(draft)
-  end
-
   def self.ensure_tag(tag, sha)
     encoded = URI.encode_www_form_component(tag)
     unless github_optional("repos/#{REPOSITORY}/git/ref/tags/#{encoded}")
@@ -124,7 +115,7 @@ module ForkRelease
     end
   end
 
-  def self.publish(digest)
+  def self.prepare
     data = JSON.parse(File.read(METADATA))
     tag = data.fetch('tag')
     notes = <<~MARKDOWN
@@ -142,27 +133,24 @@ module ForkRelease
     MARKDOWN
     File.write('dist/fork-release-notes.md', notes)
     ensure_tag(tag, data.fetch('git_sha'))
-    release = find_release(tag)
-    if release.nil?
-      ReleasePublication.run('gh', 'release', 'create', tag, '--repo', REPOSITORY,
-                             '--target', data.fetch('git_sha'), '--draft', '--prerelease', '--latest=false',
-                             '--title', "Codex Proxy RS 自研 #{data.fetch('version')}",
-                             '--notes-file', 'dist/fork-release-notes.md')
-      release = find_release(tag)
-    end
+    # 草稿创建与附件上传复用上游发行 action，直接消费它返回的 ID，避免立即读回草稿
+    release = github_optional("repos/#{REPOSITORY}/releases/tags/#{URI.encode_www_form_component(tag)}")
+    return nil unless release
     raise 'Fork release must remain a prerelease' unless release.fetch('prerelease')
-    if release.fetch('draft')
-      ReleasePublication.run('gh', 'release', 'upload', tag, '--repo', REPOSITORY, '--clobber', *Dir.glob('dist/release/*').sort)
-    else
-      verify_published_assets(release, tag)
-    end
+    return nil if release.fetch('draft')
+    verify_published_assets(release, tag)
+    release.fetch('id').to_s
+  end
+
+  def self.publish(digest)
+    data = JSON.parse(File.read(METADATA))
     ReleasePublication.publish(version: data.fetch('version'), image: IMAGE, digest: digest,
-                               repository: REPOSITORY, release_id: release.fetch('id').to_s)
+                               repository: REPOSITORY, release_id: ENV.fetch('RELEASE_ID'))
     current = ReleasePublication.latest_image(IMAGE, 'evaluation')
     if can_promote?(data.fetch('version'), current)
       ReleasePublication.tag(IMAGE, digest, 'evaluation')
     else
-      puts "Published #{tag}; evaluation remains at #{current}"
+      puts "Published #{data.fetch('tag')}; evaluation remains at #{current}"
     end
   end
 end
@@ -171,9 +159,10 @@ if $PROGRAM_NAME == __FILE__
   begin
     case ARGV
     when ['metadata'] then ForkRelease.metadata
+    when ['prepare'] then puts "release_id=#{ForkRelease.prepare}"
     else
       command, value = ARGV
-      raise 'usage: fork-release.rb metadata|package ARCH|collect DIGEST|publish DIGEST' unless ARGV.length == 2
+      raise 'usage: fork-release.rb metadata|prepare|package ARCH|collect DIGEST|publish DIGEST' unless ARGV.length == 2
       case command
       when 'package' then ForkRelease.package(value)
       when 'collect' then ForkRelease.collect(value)
