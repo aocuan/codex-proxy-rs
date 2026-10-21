@@ -66,6 +66,7 @@ impl TypeSafeJudgeClient for TypeSafeHttpClient {
                         ("content-type".to_owned(), b"application/json".to_vec()),
                     ],
                     body,
+                    maximum_body_bytes: 16 * 1024 * 1024,
                 },
                 None,
                 // 固定官方 HTTPS 地址属于可信宿主调用，沿用宿主网络以兼容代理 DNS

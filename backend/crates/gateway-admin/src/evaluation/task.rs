@@ -7,7 +7,7 @@ use futures::{StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
 use gateway_core::{
     engine::execution::ExecutionService,
     lifecycle::CancellationToken,
-    task::{DaemonTask, WorkerTaskError},
+    task::{DaemonTask, WorkerDaemonContext, WorkerTaskError},
     time::DeploymentTimeZone,
 };
 
@@ -128,7 +128,8 @@ impl EvaluationTask {
         Ok(())
     }
 
-    async fn run_daemon(&self, parent: CancellationToken) -> Result<(), WorkerTaskError> {
+    async fn run_daemon(&self, context: WorkerDaemonContext) -> Result<(), WorkerTaskError> {
+        let parent = context.cancellation();
         self.runner
             .repository
             .recover_running(Utc::now())
@@ -158,8 +159,9 @@ impl EvaluationTask {
                 }
                 _ = interval.tick(), if !cancellation.is_cancelled() => {
                     let now = Utc::now();
+                    let maintenance_due = last_maintenance.is_none_or(|last| now.signed_duration_since(last) >= chrono::Duration::seconds(30));
                     let maintenance = async {
-                        if last_maintenance.is_none_or(|last| now.signed_duration_since(last) >= chrono::Duration::seconds(30)) {
+                        if maintenance_due {
                             self.advance_schedules(now).await?;
                             self.runner.repository.prune_history(EvaluationRetention::standard(now)).await.map_err(store_error)?;
                             last_maintenance = Some(now);
@@ -170,6 +172,9 @@ impl EvaluationTask {
                     if let Err(error) = maintenance {
                         failure = Some(error);
                         cancellation.cancel();
+                    } else if maintenance_due {
+                        // 计划、清理与领取检查均成功后再报告健康，空队列也有真实仓储检查
+                        context.succeeded();
                     }
                 }
             }
@@ -212,7 +217,7 @@ impl EvaluationTask {
 }
 
 impl DaemonTask for EvaluationTask {
-    fn run(&self, cancellation: CancellationToken) -> BoxFuture<'_, Result<(), WorkerTaskError>> {
-        Box::pin(self.run_daemon(cancellation))
+    fn run(&self, context: WorkerDaemonContext) -> BoxFuture<'_, Result<(), WorkerTaskError>> {
+        Box::pin(self.run_daemon(context))
     }
 }

@@ -24,7 +24,7 @@ use gateway_core::{
     lifecycle::CancellationToken,
     operation::Operation,
     routing::PublicModelId,
-    task::DaemonTask,
+    task::{DaemonTask, WorkerDaemonContext},
 };
 use gateway_store::postgres::PgEvaluationRepository;
 
@@ -298,7 +298,7 @@ fn start(
     let token = cancellation.clone();
     (
         cancellation,
-        tokio::spawn(async move { task.run(token).await }),
+        tokio::spawn(async move { task.run(WorkerDaemonContext::new(token)).await }),
     )
 }
 async fn wait_finished(repository: &PgEvaluationRepository, id: &str) -> EvaluationRunDetail {
@@ -323,6 +323,37 @@ async fn wait_started(execution: &Execution) {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn idle_worker_reports_health_after_successful_store_maintenance() {
+    let Some(db) = TestDatabase::create("eval_worker_health").await else {
+        return;
+    };
+    let (_, execution, task, _) = setup(&db, Reply::Answer);
+    let daemon = WorkerDaemonContext::new(CancellationToken::new());
+    let worker_context = daemon.clone();
+    let handle = tokio::spawn(async move { task.run(worker_context).await });
+    tokio::time::timeout(Duration::from_secs(10), daemon.progress_since(0))
+        .await
+        .expect("空队列完成仓储检查后应报告健康");
+    daemon.cancellation().cancel();
+    handle.await.unwrap().unwrap();
+    assert!(execution.accounts.lock().unwrap().is_empty());
+    db.close().await;
+}
+
+#[tokio::test]
+async fn worker_does_not_report_health_when_store_recovery_fails() {
+    let Some(db) = TestDatabase::create("eval_worker_health_failure").await else {
+        return;
+    };
+    let (_, _, task, _) = setup(&db, Reply::Answer);
+    let daemon = WorkerDaemonContext::new(CancellationToken::new());
+    db.pool.close().await;
+    assert!(task.run(daemon.clone()).await.is_err());
+    assert_eq!(daemon.completed_cycles(), 0);
+    db.close().await;
 }
 
 #[tokio::test]
