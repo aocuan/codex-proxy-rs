@@ -94,7 +94,12 @@ module ForkRelease
   end
 
   def self.find_release(tag)
-    github_optional("repos/#{REPOSITORY}/releases/tags/#{URI.encode_www_form_component(tag)}")
+    published = github_optional("repos/#{REPOSITORY}/releases/tags/#{URI.encode_www_form_component(tag)}")
+    return published if published
+    # 按标签查询只返回已公开发行，草稿需从有写入权限的发行列表中查找
+    draft = ReleasePublication.run('gh', 'api', '--paginate', "repos/#{REPOSITORY}/releases?per_page=100",
+                                   '--jq', ".[] | select(.tag_name == #{JSON.generate(tag)})")
+    draft.empty? ? nil : JSON.parse(draft)
   end
 
   def self.ensure_tag(tag, sha)
