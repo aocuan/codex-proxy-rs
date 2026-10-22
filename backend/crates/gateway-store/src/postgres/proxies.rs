@@ -778,7 +778,12 @@ impl ProxyStore for PgProxyRepository {
             .bind(command.enabled).bind(command.max_websocket_connections.map(i64::from))
             .execute(&mut *transaction).await.map_err(|source| store_error(unavailable(source)))?;
         if changed.rows_affected() != 1 {
-            return Err(store_error(conflict(&command.id)));
+            // 过期编辑也要等待回滚释放代理锁，避免误挡紧接着使用新版本的编辑
+            let error = match transaction.rollback().await {
+                Ok(()) => conflict(&command.id),
+                Err(cleanup) => conflict(&command.id).with_cleanup(cleanup),
+            };
+            return Err(store_error(error));
         }
         if let Some(location) = &command.location {
             save_location(&mut transaction, &command.id, location.as_ref())

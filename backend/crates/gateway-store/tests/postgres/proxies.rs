@@ -730,6 +730,15 @@ async fn rejected_import_reservations_release_proxy_lock_before_returning() {
 
 #[tokio::test]
 async fn stale_proxy_test_releases_lock_before_next_update() {
+    stale_proxy_mutation_releases_lock_before_next_update(false).await;
+}
+
+#[tokio::test]
+async fn stale_proxy_update_releases_lock_before_next_update() {
+    stale_proxy_mutation_releases_lock_before_next_update(true).await;
+}
+
+async fn stale_proxy_mutation_releases_lock_before_next_update(stale_update: bool) {
     let Some(database) = TestDatabase::create("stale_proxy_test_lock").await else {
         return;
     };
@@ -777,10 +786,30 @@ async fn stale_proxy_test_releases_lock_before_next_update() {
         .await
         .unwrap();
     let stale_writer = PgProxyRepository::new(rejected_pool.clone());
-    let error = stale_writer
-        .record_test(&saved.id, stale_revision, success(), &context)
-        .await
-        .unwrap_err();
+    let error = if stale_update {
+        stale_writer
+            .update(
+                UpdateProxy {
+                    max_websocket_connections: None,
+                    enabled: None,
+                    id: saved.id.clone(),
+                    revision: stale_revision,
+                    name: saved.name.clone(),
+                    proxy: None,
+                    auto_location: None,
+                    location: None,
+                    test: None,
+                },
+                &context,
+            )
+            .await
+            .unwrap_err()
+    } else {
+        stale_writer
+            .record_test(&saved.id, stale_revision, success(), &context)
+            .await
+            .unwrap_err()
+    };
     let update = store
         .update(
             UpdateProxy {
@@ -801,7 +830,7 @@ async fn stale_proxy_test_releases_lock_before_next_update() {
     rejected_pool.close().await;
     database.close().await;
     assert_eq!(error.kind(), AdminStoreErrorKind::Conflict);
-    assert!(update.is_ok(), "过期检测结果不应阻挡后续编辑: {update:?}");
+    assert!(update.is_ok(), "过期变更不应阻挡后续编辑: {update:?}");
 }
 
 #[tokio::test]
