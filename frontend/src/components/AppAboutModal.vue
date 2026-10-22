@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { Github } from '@boxicons/vue'
-import { ZDialog } from '@codex-proxy/ui'
+import { ZButton, ZDialog, ZPopover } from '@codex-proxy/ui'
 import { ExternalLink } from '@lucide/vue'
 
 import { computed } from 'vue'
+import { formatVersionLabel } from '@/utils/format'
 
 const props = defineProps<{
   version: { version: string, gitSha: string } | null
@@ -24,19 +25,9 @@ function normalizeBuildValue(value: string | undefined) {
   return ['unknown', 'null'].includes(normalized.toLowerCase()) ? '' : normalized
 }
 
-const versionDisplay = computed(() => {
-  const versionText = normalizeBuildValue(props.version?.version).replace(/^v/i, '')
-  return versionText ? `v${versionText}` : ''
-})
-const gitShaDisplay = computed(() => {
-  const gitSha = normalizeBuildValue(props.version?.gitSha)
-  return gitSha ? gitSha.slice(0, 8) : ''
-})
-
-const versionLine = computed(() => {
-  const parts = [versionDisplay.value, gitShaDisplay.value].filter(Boolean)
-  return parts.length ? `版本 ${parts.join(' · ')}` : '版本信息不可用'
-})
+const fullVersion = computed(() => normalizeBuildValue(props.version?.version))
+const gitSha = computed(() => normalizeBuildValue(props.version?.gitSha))
+const versionDisplay = computed(() => formatVersionLabel(fullVersion.value))
 
 const linkItems = [
   {
@@ -104,9 +95,36 @@ const linkItems = [
         </div>
       </section>
 
-      <p class="m-0 font-mono text-cp-xs leading-none font-emphasis text-cp-text-quaternary">
-        {{ versionLine }}
-      </p>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <p class="m-0 font-mono text-cp-xs leading-none font-emphasis text-cp-text-quaternary">
+          {{ versionDisplay ? `版本 ${versionDisplay}` : '版本信息不可用' }}
+        </p>
+        <ZPopover v-if="fullVersion || gitSha" placement="top-end">
+          <template #reference>
+            <ZButton variant="text" size="small">
+              构建信息
+            </ZButton>
+          </template>
+          <dl class="m-0 grid w-72 max-w-[calc(100vw-2rem)] gap-2 p-3 text-cp-sm">
+            <div v-if="fullVersion" class="grid gap-1">
+              <dt class="text-cp-text-secondary">
+                完整版本
+              </dt>
+              <dd class="m-0 font-mono wrap-anywhere text-cp-text">
+                {{ fullVersion }}
+              </dd>
+            </div>
+            <div v-if="gitSha" class="grid gap-1">
+              <dt class="text-cp-text-secondary">
+                代码提交
+              </dt>
+              <dd class="m-0 font-mono wrap-anywhere text-cp-text">
+                {{ gitSha }}
+              </dd>
+            </div>
+          </dl>
+        </ZPopover>
+      </div>
     </div>
   </ZDialog>
 </template>

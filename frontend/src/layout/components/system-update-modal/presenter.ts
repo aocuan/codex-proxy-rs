@@ -1,5 +1,6 @@
 import type { SystemUpdateDetail, SystemVersion } from '@/api'
 import { ArrowUpCircle, CheckCircle2, RefreshCw, XCircle } from '@lucide/vue'
+import { formatVersionLabel } from '@/utils/format'
 
 interface SystemUpdatePresentationInput {
   version: SystemVersion | null
@@ -22,7 +23,7 @@ export function resolveSystemUpdatePresentation(input: SystemUpdatePresentationI
     status: resolveStatus(input),
     summaryItems: resolveSummaryItems(input),
     confirmRows: resolveConfirmRows(input),
-    releaseVersion: displayValue(input.updateInfo?.latestVersion),
+    releaseVersion: versionLabel(input.updateInfo?.latestVersion),
     streamStatusLabel: input.updateStreaming
       ? '实时'
       : input.updateStreamError ? '断开' : '待连接',
@@ -108,14 +109,14 @@ function resolveSummaryItems(input: SystemUpdatePresentationInput) {
 
 function resolveConfirmRows(input: SystemUpdatePresentationInput) {
   return [
-    { key: 'current', label: '当前版本', value: versionLabel(input.version?.version) },
-    { key: 'previous', label: '已显示目标', value: versionLabel(input.previousTargetVersion) },
-    { key: 'target', label: '远端最新目标', value: versionLabel(input.confirmedTargetVersion) },
+    { key: 'current', label: '当前版本', value: versionLabel(input.version?.version), title: input.version?.version },
+    { key: 'previous', label: '已显示目标', value: versionLabel(input.previousTargetVersion), title: input.previousTargetVersion },
+    { key: 'target', label: '远端最新目标', value: versionLabel(input.confirmedTargetVersion), title: input.confirmedTargetVersion },
   ]
 }
 
 function versionLabel(value?: string | null) {
-  return value ? `v${value}` : '-'
+  return formatVersionLabel(value) || '-'
 }
 
 function displayValue(value: unknown) {

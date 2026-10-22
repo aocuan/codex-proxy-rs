@@ -35,6 +35,7 @@ import { useAuthStore } from '@/stores/modules/auth'
 import { usePluginViewsStore } from '@/stores/modules/plugin-views'
 import { useSystemUpdateStore } from '@/stores/modules/system-update'
 import { useThemeStore } from '@/stores/modules/theme'
+import { formatVersionLabel } from '@/utils/format'
 import { pluginPageLocation, shortPluginInstanceId } from '@/utils/plugin'
 
 const props = withDefaults(
@@ -182,9 +183,7 @@ const expandedSidebarWidth = 251
 const sidebarWidth = computed(() => (isCollapsed.value ? collapsedSidebarWidth : expandedSidebarWidth))
 const brandLabelVisible = shallowRef(!isCollapsed.value)
 const themeToggleLabel = computed(() => (effectiveTheme.value === 'dark' ? '切换浅色模式' : '切换暗黑模式'))
-const versionText = computed(() => version.value?.version.trim() ?? '')
-const hasVersionLabel = computed(() => versionText.value.length > 0)
-const versionLabel = computed(() => `v${versionText.value}`)
+const versionLabel = computed(() => formatVersionLabel(version.value?.version))
 const updateButtonLabel = computed(() => (hasUpdate.value ? '发现新版本，打开系统更新' : '打开系统更新'))
 
 function prefersReducedMotion() {
@@ -402,9 +401,8 @@ onBeforeUnmount(() => {
       <span v-show="brandLabelVisible" ref="brandLabelEl" class="grid min-w-33 content-center overflow-hidden">
         <strong class="text-base leading-[1.1] font-heavy text-cp-text"> Codex Proxy </strong>
         <span class="mt-1.5 flex h-4.5 min-w-0 items-center gap-2">
-          <span class="shrink-0 text-xs leading-none font-emphasis text-cp-text-secondary"> Rust build </span>
           <button
-            v-if="hasVersionLabel"
+            v-if="versionLabel"
             type="button"
             class="inline-flex h-4.5 min-w-0 cursor-pointer items-center gap-1 rounded-cp-sm border-0 px-1.5 font-mono text-[10px] leading-none font-bold transition-colors outline-none focus-visible:ring-2 focus-visible:ring-cp-control-outline focus-visible:ring-offset-2 focus-visible:ring-offset-cp-bg-container"
             :class="[
@@ -415,7 +413,7 @@ onBeforeUnmount(() => {
             :title="updateButtonLabel"
             @click="openSystemUpdate"
           >
-            <span>{{ versionLabel }}</span>
+            <span class="whitespace-nowrap">{{ versionLabel }}</span>
             <ArrowUpCircle v-if="hasUpdate" class="size-3 shrink-0 text-cp-success" />
           </button>
         </span>

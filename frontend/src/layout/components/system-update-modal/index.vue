@@ -18,6 +18,7 @@ import { storeToRefs } from 'pinia'
 import { computed, nextTick, shallowRef, useTemplateRef, watch } from 'vue'
 import { checkSystemRestart } from '@/api'
 import { normalizeSystemVersion, useSystemUpdateStore } from '@/stores/modules/system-update'
+import { formatVersionLabel } from '@/utils/format'
 import { errorMessage } from '@/utils/operation'
 import {
   resolveSystemUpdateLogClasses,
@@ -337,7 +338,7 @@ watch(
           </template>
           <div class="grid w-80 max-w-[calc(100vw-2rem)] gap-2 p-3 text-cp-sm">
             <div v-if="lastFailedOperation.targetVersion || lastFailedOperation.finishedAt" class="flex flex-wrap gap-x-3 gap-y-1 text-cp-xs text-cp-text-quaternary">
-              <span v-if="lastFailedOperation.targetVersion">目标版本 v{{ lastFailedOperation.targetVersion }}</span>
+              <span v-if="lastFailedOperation.targetVersion" :title="lastFailedOperation.targetVersion">目标版本 {{ formatVersionLabel(lastFailedOperation.targetVersion) }}</span>
               <span v-if="lastFailedOperation.finishedAt">{{ lastFailedOperation.finishedAtDisplay }}</span>
             </div>
             <p class="m-0 wrap-anywhere text-cp-text-secondary">
@@ -355,7 +356,7 @@ watch(
           <p class="m-0 text-cp font-heavy text-cp-text">
             发布说明
           </p>
-          <span class="font-mono text-cp-xs font-emphasis text-cp-text-quaternary">
+          <span class="font-mono text-cp-xs font-emphasis text-cp-text-quaternary" :title="updateInfo?.latestVersion">
             <ZSkeleton v-if="releaseNotesLoading" shape="text" class="w-14" aria-hidden="true" />
             <template v-else>{{ presentation.releaseVersion }}</template>
           </span>
@@ -507,7 +508,7 @@ watch(
     <div class="grid gap-4">
       <div v-if="restartPlan?.targetVersion" class="flex items-center justify-between gap-3 text-cp-sm">
         <span class="text-cp-text-secondary">重启后版本</span>
-        <span class="font-mono font-emphasis text-cp-text">v{{ restartPlan.targetVersion }}</span>
+        <span class="font-mono font-emphasis text-cp-text" :title="restartPlan.targetVersion">{{ formatVersionLabel(restartPlan.targetVersion) }}</span>
       </div>
       <ul class="m-0 max-h-64 list-none overflow-y-auto p-0" aria-label="不兼容插件">
         <li v-for="plugin in restartPlan?.incompatiblePlugins" :key="plugin.instanceId" class="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
@@ -542,6 +543,7 @@ watch(
           </span>
           <span
             class="truncate font-mono text-cp leading-none font-heavy text-cp-text"
+            :title="item.title || item.value"
           >
             {{ item.value }}
           </span>
