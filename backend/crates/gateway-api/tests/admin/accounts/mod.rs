@@ -181,7 +181,13 @@ mod query {
 
     #[test]
     fn account_query_should_reject_unknown_fields() {
-        assert!(serde_json::from_value::<ListQuery>(json!({"id": "cred_1"})).is_err());
+        let mut query = json!({"page": 1, "pageSize": 20});
+        serde_json::from_value::<ListQuery>(query.clone())
+            .unwrap()
+            .validate()
+            .expect("valid account query");
+        query["unknownField"] = json!(true);
+        assert!(serde_json::from_value::<ListQuery>(query).is_err());
     }
 }
 

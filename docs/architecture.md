@@ -1156,8 +1156,15 @@ PostgreSQL 备份恢复属于人工维护操作。当前没有部署级维护模
 ```bash
 cargo +1.99.1 fmt --all --manifest-path backend/Cargo.toml -- --check
 RUST_MIN_STACK=16777216 cargo +1.99.1 clippy --manifest-path backend/Cargo.toml --all-targets --all-features --locked -- -D warnings
-RUST_MIN_STACK=16777216 cargo +1.99.1 test --manifest-path backend/Cargo.toml --test main --locked
+RUST_MIN_STACK=16777216 cargo +1.99.1 nextest run --manifest-path backend/Cargo.toml --test main --locked --no-tests fail
 ```
+
+测试使用 [nextest](https://nexte.st/docs/installation/pre-built-binaries/)，版本与[质量工作流](../.github/workflows/_quality.yml)一致
+各 crate 的 `main` 测试入口统一构建，用例按可用 CPU 数跨 crate 并发执行
+局部验证可追加 `-E 'package(=gateway-store) & test(/^redis::/)'` 等过滤条件；资源受限时用
+`--test-threads 4` 限制同时运行的用例数，编译并发另由 `--build-jobs` 控制
+未安装 nextest 时可使用 `cargo +1.99.1 test --manifest-path backend/Cargo.toml --test main --locked`，
+同样设置 `RUST_MIN_STACK=16777216`；该入口只在单个测试二进制内并发，跨 crate 依次运行
 
 线程栈设置与当前 CI 一致。Store 与插件 Runtime 的 PostgreSQL/Redis 集成测试需按
 [本地测试库](../backend/migrations/README.md#本地测试库) 配置专用服务；未设置环境变量时，本地相关测试会跳过。

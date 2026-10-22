@@ -4257,6 +4257,7 @@ async fn websocket_midstream_error_frame_surfaces_upstream_message_after_deliver
     create_account(&store, ACCOUNT_ID).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let (release_error, error_released) = oneshot::channel();
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.expect("accept WebSocket");
         let mut websocket = accept_codex_test_websocket(stream).await;
@@ -4288,7 +4289,9 @@ async fn websocket_midstream_error_frame_surfaces_upstream_message_after_deliver
             ))
             .await
             .expect("send response.in_progress");
-        tokio::time::sleep(Duration::from_millis(1_600)).await;
+        error_released
+            .await
+            .expect("prelude delivered to the client");
         websocket
             .send(Message::Text(
                 json!({
@@ -4317,6 +4320,16 @@ async fn websocket_midstream_error_frame_surfaces_upstream_message_after_deliver
         )
         .await
         .expect("prepare midstream-failure stream");
+    for kind in ["response.created", "response.in_progress"] {
+        let event = timeout(
+            Duration::from_secs(2),
+            precommit::next_client_event(&mut stream),
+        )
+        .await
+        .expect("upstream prelude must reach the client");
+        assert_eq!(event.wire_event().unwrap().event_type(), Some(kind));
+    }
+    release_error.send(()).unwrap();
     let mut failure = loop {
         match stream.next().await {
             Some(Ok(_)) => {}
@@ -5892,7 +5905,6 @@ async fn websocket_opening_account_rejection_keeps_replay_safe_without_transport
         "before-payload rejection is replay safe"
     );
     // 回放安全的账号级拒绝必须把换号决策留给 Core，不得钉死同账号传输重试
-    // （旧行为会携带小时级 retry-after 的同账号重试标记，请求必然超时）
     assert_eq!(error.pre_delivery_retry(), None);
 }
 
