@@ -4660,15 +4660,10 @@ fn transient_backoff_can_be_cancelled_before_the_next_attempt() {
             cancellation.clone(),
         ))
         .expect("start execution");
-        let cancel = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
-            cancellation.cancel();
-        });
-        assert!(matches!(
-            block_on(session.collect_uncommitted()),
-            Err(EngineError::Cancelled)
-        ));
-        cancel.join().expect("cancel task");
+        let mut collection = Box::pin(session.collect_uncommitted());
+        assert!(block_on(async { futures::poll!(&mut collection) }).is_pending());
+        cancellation.cancel();
+        assert!(matches!(block_on(collection), Err(EngineError::Cancelled)));
         assert_eq!(provider.contexts.lock().expect("contexts").len(), 1);
     }
 }
@@ -6085,63 +6080,69 @@ fn connection_recovery_rotates_only_after_retrying_the_first_account() {
 
 #[test]
 fn connection_recovery_keeps_one_account_and_http_transport_until_success() {
-    for unavailable in [
+    let cases = [
         ProviderErrorKind::NoEligibleAccount,
         ProviderErrorKind::AccountCapacityUnavailable,
         ProviderErrorKind::QuotaExhausted,
         ProviderErrorKind::ConcurrencyQueueFull,
         ProviderErrorKind::ConcurrencyQueueTimeout,
-    ] {
-        let operation = generate_operation();
-        let route_plan = plan(&operation);
-        let failure = || Script::Stream {
-            account_id: "acct_only",
-            items: vec![Err(ProviderError::new(
-                ProviderErrorKind::Transport,
-                UpstreamSendState::NotSent,
-            )
-            .with_connection_retry(AttemptTransport::Fallback))],
-        };
-        let (coordinator, store, provider) = coordinator(vec![
-            failure(),
-            failure(),
-            Script::Error(ProviderError::new(unavailable, UpstreamSendState::NotSent)),
-            failure(),
-            Script::Stream {
+    ];
+    // 各场景独立持有存储与 Provider，并发等待各自的真实连接退避
+    block_on(futures::future::join_all(cases.into_iter().map(
+        |unavailable| async move {
+            let operation = generate_operation();
+            let route_plan = plan(&operation);
+            let failure = || Script::Stream {
                 account_id: "acct_only",
-                items: complete_stream(None),
-            },
-        ]);
-        let mut session = block_on(coordinator.start(
-            model_request(&operation, SystemTime::now() + Duration::from_secs(30)),
-            operation,
-            route_plan,
-            None,
-            None,
-            CancellationToken::new(),
-        ))
-        .unwrap();
-        block_on(session.collect_uncommitted()).unwrap();
-        block_on(session.commit_downstream(Some(200))).unwrap();
-        let contexts = provider.contexts.lock().unwrap();
-        assert_eq!(contexts.len(), 5);
-        let account = ProviderAccountId::new("acct_only").unwrap();
-        assert!(contexts[2].required_account().is_none());
-        assert!(contexts[2].excluded_accounts().contains(&account));
-        assert_eq!(contexts[2].transport(), AttemptTransport::Fallback);
-        for index in [1, 3, 4] {
-            let context = &contexts[index];
-            assert_eq!(context.required_account(), Some(&account));
-            assert_eq!(context.transport(), AttemptTransport::Fallback);
-            assert!(!context.excluded_accounts().contains(&account));
-        }
-        let state = store.state.lock().unwrap();
-        assert_eq!(state.intermediate_failures, 3);
-        assert_eq!(state.finalizations[0].outcome, ExecutionOutcome::Succeeded);
-        assert_eq!(provider.released_leases.load(Ordering::SeqCst), 3);
-        drop(session);
-        assert_eq!(provider.released_leases.load(Ordering::SeqCst), 4);
-    }
+                items: vec![Err(ProviderError::new(
+                    ProviderErrorKind::Transport,
+                    UpstreamSendState::NotSent,
+                )
+                .with_connection_retry(AttemptTransport::Fallback))],
+            };
+            let (coordinator, store, provider) = coordinator(vec![
+                failure(),
+                failure(),
+                Script::Error(ProviderError::new(unavailable, UpstreamSendState::NotSent)),
+                failure(),
+                Script::Stream {
+                    account_id: "acct_only",
+                    items: complete_stream(None),
+                },
+            ]);
+            let mut session = coordinator
+                .start(
+                    model_request(&operation, SystemTime::now() + Duration::from_secs(30)),
+                    operation,
+                    route_plan,
+                    None,
+                    None,
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            session.collect_uncommitted().await.unwrap();
+            session.commit_downstream(Some(200)).await.unwrap();
+            let contexts = provider.contexts.lock().unwrap();
+            assert_eq!(contexts.len(), 5);
+            let account = ProviderAccountId::new("acct_only").unwrap();
+            assert!(contexts[2].required_account().is_none());
+            assert!(contexts[2].excluded_accounts().contains(&account));
+            assert_eq!(contexts[2].transport(), AttemptTransport::Fallback);
+            for index in [1, 3, 4] {
+                let context = &contexts[index];
+                assert_eq!(context.required_account(), Some(&account));
+                assert_eq!(context.transport(), AttemptTransport::Fallback);
+                assert!(!context.excluded_accounts().contains(&account));
+            }
+            let state = store.state.lock().unwrap();
+            assert_eq!(state.intermediate_failures, 3);
+            assert_eq!(state.finalizations[0].outcome, ExecutionOutcome::Succeeded);
+            assert_eq!(provider.released_leases.load(Ordering::SeqCst), 3);
+            drop(session);
+            assert_eq!(provider.released_leases.load(Ordering::SeqCst), 4);
+        },
+    )));
 }
 
 #[test]
@@ -6385,15 +6386,10 @@ fn connection_backoff_cancellation_releases_account_without_another_attempt() {
         cancellation.clone(),
     ))
     .expect("start execution");
-    let cancel = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(50));
-        cancellation.cancel();
-    });
-    assert!(matches!(
-        block_on(session.collect_uncommitted()),
-        Err(EngineError::Cancelled)
-    ));
-    cancel.join().expect("cancel task");
+    let mut collection = Box::pin(session.collect_uncommitted());
+    assert!(block_on(async { futures::poll!(&mut collection) }).is_pending());
+    cancellation.cancel();
+    assert!(matches!(block_on(collection), Err(EngineError::Cancelled)));
     assert_eq!(provider.contexts.lock().expect("contexts").len(), 1);
     assert_eq!(provider.released_leases.load(Ordering::SeqCst), 1);
 }
