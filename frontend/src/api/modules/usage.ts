@@ -1,6 +1,7 @@
 import type { RequestOptions } from '../request'
 import type { AnalyticsMetadata } from './analytics'
-import request, { requestRaw } from '../request'
+import { API_BASE_URL } from '../constants'
+import request from '../request'
 
 export interface UsageTokenDetails {
   inputTokens: number | null
@@ -439,15 +440,6 @@ export function getUsageRecordInsightsDiagnostics(data: UsageDiagnosticsQuery, o
   })
 }
 
-export function downloadDiagnostics(data: DiagnosticsDownloadParams, options: RequestOptions = {}) {
-  return requestRaw({
-    url: '/api/admin/diagnostics/export',
-    method: 'GET',
-    params: data,
-    timeout: 25_000,
-    ...options,
-  }, {
-    maximumBytes: 16 * 1024 * 1024,
-    accept: response => response.status === 200 && !!response.header('content-type')?.startsWith('application/json'),
-  })
+export function getDiagnosticsDownloadUrl(data: DiagnosticsDownloadParams) {
+  return `${API_BASE_URL}/api/admin/diagnostics/export?${new URLSearchParams(data)}`
 }

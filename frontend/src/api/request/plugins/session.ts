@@ -68,9 +68,16 @@ export async function sessionPlugin(context: RequestContext, send: RequestNext) 
     return expireSession(new ApiError('登录已失效，请重新登录', 401, SESSION_REQUIRED), config, generation)
   if (config.signal?.aborted || generation !== sessionGeneration)
     throw new ApiError('请求已取消', 0, undefined, undefined, 'cancelled')
+  const sendCurrent: RequestNext = async () => {
+    const response = await send()
+    if (context.isCurrent())
+      return response
+    // 身份已切换时丢弃迟到结果，流式传输由请求层终止
+    throw new ApiError('请求已取消', 0, undefined, undefined, 'cancelled')
+  }
   const recovered = successfulRecoveries
   try {
-    return await send()
+    return await sendCurrent()
   }
   catch (error) {
     if (!isSessionRequired(error) || config.signal?.aborted || generation !== sessionGeneration)
@@ -81,7 +88,7 @@ export async function sessionPlugin(context: RequestContext, send: RequestNext) 
       if (config.signal?.aborted || generation !== sessionGeneration)
         throw error
       try {
-        return await send()
+        return await sendCurrent()
       }
       catch (retryError) {
         if (!isSessionRequired(retryError))

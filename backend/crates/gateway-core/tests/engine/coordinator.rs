@@ -530,6 +530,8 @@ struct FakeStore {
     failures: BTreeSet<StoreWriteFailure>,
     create_gate: Mutex<Option<oneshot::Receiver<()>>>,
     finalize_gate: Mutex<Option<oneshot::Receiver<()>>>,
+    send_gate: Mutex<Option<oneshot::Receiver<()>>>,
+    intermediate_gate: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -587,6 +589,10 @@ impl ExecutionStore for FakeStore {
             .expect("store lock")
             .send_states
             .push(state);
+        let gate = self.send_gate.lock().expect("send gate lock").take();
+        if let Some(gate) = gate {
+            gate.await.expect("send state write released");
+        }
         Ok(())
     }
 
@@ -620,14 +626,24 @@ impl ExecutionStore for FakeStore {
         &self,
         failure: IntermediateFailure,
     ) -> Result<(), StoreError> {
-        let mut state = self.state.lock().expect("store lock");
-        state.intermediate_failures += 1;
-        state
-            .intermediate_status_codes
-            .push(failure.upstream_status_code);
-        state
-            .intermediate_request_ids
-            .push(failure.upstream_request_id);
+        {
+            let mut state = self.state.lock().expect("store lock");
+            state.intermediate_failures += 1;
+            state
+                .intermediate_status_codes
+                .push(failure.upstream_status_code);
+            state
+                .intermediate_request_ids
+                .push(failure.upstream_request_id);
+        }
+        let gate = self
+            .intermediate_gate
+            .lock()
+            .expect("intermediate gate lock")
+            .take();
+        if let Some(gate) = gate {
+            gate.await.expect("intermediate failure write released");
+        }
         Ok(())
     }
 
@@ -1429,6 +1445,16 @@ fn success_updates_one_model_request_and_persists_usage() {
     assert!(finalization.committed);
     assert_eq!(finalization.client_status_code, Some(200));
     assert_eq!(finalization.total_tokens, Some(12));
+    let trace: Value =
+        serde_json::from_str(finalization.diagnostic_trace_json.as_deref().unwrap()).unwrap();
+    let evidence = trace["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["stage"] == "request.usage")
+        .unwrap();
+    assert_eq!(evidence["data"]["totalTokens"], 12);
+    assert_eq!(evidence["data"]["downstreamCommitted"], true);
     assert!(finalization.latency_ms.is_some());
     assert_eq!(finalization.client_response_id.as_deref(), Some(started_id));
     assert_eq!(
@@ -1714,6 +1740,16 @@ fn failure_request_id_prefers_error_then_response_observation() {
             Some(error_request_id.unwrap_or("upstream-opening"))
         );
         assert_eq!(finalization.upstream_status_code, Some(400));
+        let trace: Value =
+            serde_json::from_str(finalization.diagnostic_trace_json.as_deref().unwrap()).unwrap();
+        assert!(
+            trace["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["stage"] == "request.usage"
+                    && event["data"]["boundary"] == "finalization_prepared")
+        );
     }
 }
 
@@ -5433,6 +5469,169 @@ fn interrupted_first_attempt_write_never_restarts_selection_or_creates_a_zero_at
             assert!(state.finalizations.is_empty());
             drop(state);
             drop(session);
+            assert_eq!(provider.released_leases.load(Ordering::SeqCst), 1);
+        }
+    });
+}
+
+#[test]
+fn interrupted_stream_failure_preserves_the_original_attempt_and_retry_decision() {
+    block_on(async {
+        for (retryable, intermediate) in [(false, false), (true, false), (true, true)] {
+            let (release, gate) = oneshot::channel();
+            let operation = generate_operation();
+            let mut items = Vec::new();
+            if !retryable {
+                items.push(Ok(GatewayEvent::Started(ResponseMeta::new(
+                    "original", "gpt-5",
+                ))));
+            }
+            items.push(Err(ProviderError::new(
+                ProviderErrorKind::Transport,
+                if retryable {
+                    UpstreamSendState::NotSent
+                } else {
+                    UpstreamSendState::Sent
+                },
+            )));
+            let (coordinator, store, provider) = coordinator_with_store(
+                vec![
+                    Script::Stream {
+                        account_id: "acct_first",
+                        items,
+                    },
+                    Script::Stream {
+                        account_id: "acct_second",
+                        items: complete_stream(None),
+                    },
+                ],
+                Arc::new(FakeStore::default()),
+            );
+            let mut session = coordinator
+                .start(
+                    model_request(&operation, SystemTime::now() + Duration::from_secs(30)),
+                    operation.clone(),
+                    plan(&operation),
+                    None,
+                    None,
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            if !retryable {
+                session.next_event().await.unwrap().unwrap();
+                session.commit_downstream(Some(200)).await.unwrap();
+            }
+            if intermediate {
+                *store.intermediate_gate.lock().unwrap() = Some(gate);
+            } else {
+                *store.send_gate.lock().unwrap() = Some(gate);
+            }
+            let mut next = Box::pin(session.next_event());
+            assert!(futures::poll!(next.as_mut()).is_pending());
+            drop(next);
+            let mut resumed = Box::pin(session.next_event());
+            assert!(futures::poll!(resumed.as_mut()).is_pending());
+            assert_eq!(provider.contexts.lock().unwrap().len(), 1);
+            assert_eq!(provider.released_leases.load(Ordering::SeqCst), 0);
+            release
+                .send(())
+                .expect("the original write still owns its receiver");
+            let result = resumed.await;
+            if retryable {
+                assert!(result.unwrap().is_some());
+                assert_eq!(provider.contexts.lock().unwrap().len(), 2);
+                assert_eq!(store.state.lock().unwrap().intermediate_failures, 1);
+            } else {
+                let Err(EngineError::Provider(error)) = result else {
+                    panic!("original failure must be returned")
+                };
+                assert_eq!(error.kind(), ProviderErrorKind::Transport);
+                assert_eq!(error.send_state(), UpstreamSendState::Sent);
+                assert_eq!(provider.contexts.lock().unwrap().len(), 1);
+                assert_eq!(
+                    store.state.lock().unwrap().finalizations[0].outcome,
+                    ExecutionOutcome::Incomplete
+                );
+            }
+            drop(session);
+            assert_eq!(
+                provider.released_leases.load(Ordering::SeqCst),
+                if retryable { 2 } else { 1 }
+            );
+        }
+    });
+}
+
+#[test]
+fn cancelling_a_pending_failure_write_keeps_atomic_usage_and_cost() {
+    block_on(async {
+        for intermediate in [false, true] {
+            let (release, gate) = oneshot::channel();
+            let operation = generate_operation();
+            let mut failure = bare_atomic_response_failed("charged-failure");
+            let mut events = failure.take_atomic_client_events();
+            events.extend([
+                ProviderEvent::observation(
+                    ProviderResponseObservation::new(UpstreamTransport::new("http_sse").unwrap())
+                        .with_status_code(429)
+                        .with_request_id(OpaqueUpstreamValue::new("charged-upstream"))
+                        .with_timings(ProviderResponseTimings {
+                            headers_ms: Some(13),
+                            ..ProviderResponseTimings::default()
+                        }),
+                ),
+                ProviderEvent::canonical(GatewayEvent::Usage(Usage {
+                    total_tokens: Some(7),
+                    ..Usage::new()
+                })),
+                ProviderEvent::canonical(GatewayEvent::ProviderCost(
+                    ProviderReportedCost::from_usd_ticks(25).unwrap(),
+                )),
+            ]);
+            let (coordinator, store, provider) = coordinator(vec![Script::Stream {
+                account_id: "acct_first",
+                items: vec![Err(failure.with_atomic_client_events(events))],
+            }]);
+            let mut session = coordinator
+                .start(
+                    model_request(&operation, SystemTime::now() + Duration::from_secs(30)),
+                    operation.clone(),
+                    plan(&operation),
+                    None,
+                    None,
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            if intermediate {
+                *store.intermediate_gate.lock().unwrap() = Some(gate);
+            } else {
+                *store.send_gate.lock().unwrap() = Some(gate);
+            }
+            let mut next = Box::pin(session.next_event());
+            assert!(futures::poll!(next.as_mut()).is_pending());
+            drop(next);
+            session.cancel_and_finalize().await.unwrap();
+            assert!(
+                release.is_canceled(),
+                "explicit cancellation drops the pending write"
+            );
+            assert_eq!(session.budget_charge().amount_usd.scaled(), 25);
+            let state = store.state.lock().unwrap();
+            assert_eq!(state.finalizations.len(), 1);
+            assert_eq!(state.finalizations[0].total_tokens, Some(7));
+            assert_eq!(state.finalizations[0].cost_ticks, Some(25));
+            assert_eq!(state.finalizations[0].send_state, UpstreamSendState::Sent);
+            assert_eq!(state.finalizations[0].upstream_status_code, Some(429));
+            assert_eq!(state.finalizations[0].headers_ms, Some(13));
+            assert_eq!(
+                state.finalizations[0].upstream_request_id.as_deref(),
+                Some("charged-upstream")
+            );
+            drop(state);
+            drop(session);
+            assert_eq!(provider.contexts.lock().unwrap().len(), 1);
             assert_eq!(provider.released_leases.load(Ordering::SeqCst), 1);
         }
     });

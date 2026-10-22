@@ -163,6 +163,7 @@ const tabOptions = [
       :replacements="management.pendingEnable.value?.replacements ?? []"
       :saving="management.savingInstance.value"
       @confirm="management.confirmInstanceEnable"
+      @closed="management.pendingEnable.value = null"
     />
 
     <ZConfirmDialog

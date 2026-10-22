@@ -43,11 +43,9 @@ export const presets: { key: string, name: string, steps: Partial<PrivacyStep>[]
     key: 'workspace',
     name: '统一工作区信息',
     steps: [
+      // 只改写附加元数据中的路径，正文路径供本地工具执行使用
       { scope: 'turn_metadata', selector: '$.workspaces', action: 'rename_key', pattern: String.raw`(?i)^((?:[a-z]:)?[/\\](?:home|users)[/\\])[^/\\]+`, replacement: `\${1}user` },
-      { scope: 'environment_text', selector: '$', action: 'regex_replace', pattern: String.raw`(?i)((?:[a-z]:)?[/\\](?:home|users)[/\\])[^/\\<>"'\r\n]+`, replacement: `\${1}user` },
-      // 路径隐藏本机目录布局，项目名和 Git 状态仍取自实际请求
-      { scope: 'turn_metadata', selector: '$.workspaces', action: 'rename_key', pattern: String.raw`(?s)^(?:[a-zA-Z]:)?[/\\](?:.*[/\\])?([^/\\]+)[/\\]*$`, replacement: `/workspace/\${1}` },
-      { scope: 'environment_text', selector: '$', action: 'regex_replace', pattern: String.raw`(<cwd>\s*)(?:[a-zA-Z]:)?[/\\](?:[^<>\r\n]*[/\\])?([^/\\<>\r\n]+?)[/\\]*\s*(</cwd>)`, replacement: `\${1}/workspace/\${2}\${3}` },
+      { scope: 'turn_metadata', selector: '$.workspaces.*.associated_remote_urls.*', action: 'regex_replace', pattern: String.raw`(?i)^((?:(?:https?|ssh|git)://[^/?#]+/|[^/@:\s]+@[^/:\s]+:))[^/?#]+/([^/?#]+)(/?)$`, replacement: `\${1}alex/\${2}\${3}` },
     ],
   },
 ]

@@ -1760,6 +1760,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "zip",
  "zstd",
 ]
 

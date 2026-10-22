@@ -121,8 +121,8 @@ type ThemeMode = 'system' | 'light' | 'dark'
 type ThemeColorId = 'relay-blue' | 'deep-teal' | 'signal-violet' | 'graphite' | 'custom'
 
 interface ThemeCustomization {
-  seed?: Partial<ThemeSeedOverrides>
-  component?: Partial<ThemeComponentOverrides>
+  seed?: ThemeSeedOverrides
+  component?: ThemeComponentOverrides
   tokenOverrides?: Partial<ThemeTokens>
 }
 ```
@@ -134,7 +134,8 @@ interface ThemeCustomization {
 | 中性色 | `colorTextBase`、`colorBgBase` |
 | 尺寸 | `fontSize`、`sizeUnit`、`sizeStep`、`controlHeight` |
 | 风格 | `borderRadius`、`shadowStrength` |
-| 组件尺寸 | `tableRowHeight`、`cardBorderRadius` |
+
+表格行高与卡片圆角通过 `customization.component` 的 `tableRowHeight`、`cardBorderRadius` 配置，属于组件尺寸覆盖
 
 持久化键为 `codex-proxy-rs-theme`。Store 不保存完整色板或 CSS Variables，损坏的模式、颜色与自定义值会在
 初始化时规范化并回退到默认配置
@@ -234,8 +235,8 @@ Token 直接覆盖时不会自动重算同组件的其他状态；需要保持�
 | 角色 | 状态与可读性约束 |
 | --- | --- |
 | 主按钮 | 白字背景至少达到 4.5:1；Hover / Active 加深，不反向改写 Primary Seed |
-| 输入控件 | Input、Select、Textarea、NumberInput 共用 Token；常态无边，Hover 与 Focus 保持相同背景和外圈 |
-| 次级操作 | 普通按钮与图标按钮各用自己的 Secondary Token；透明填充与宿主表面合成，`ghost` 无常态底色 |
+| 输入控件 | Input、Select、Textarea、InputNumber 共用 Token；常态无边，Hover 与 Focus 保持相同背景和外圈 |
+| 次级操作 | 普通按钮与图标按钮各用自己的 Secondary Token；透明填充与宿主表面合成，`text` 与 `link` 无常态底色 |
 | 表格 | 表头、斑马纹、Hover 独立派生；固定列使用不透明合成背景，选中行保留 Primary 语义 |
 | 错误与焦点 | Hover / Focus 不覆盖错误反馈；焦点外圈不受装饰性阴影强度影响 |
 | 浮层头部 | 浅色取 Secondary Fill，深色取 Tertiary Fill；箭头与头部使用同一 Token，不借用表格背景 |
@@ -383,7 +384,7 @@ Store 在其他入口发生变化时更新保存基线；没有未保存修改�
 共享包的 `styles/tailwind.css` 是唯一 `@theme inline` 注册表，只注册 Tailwind 名称，不保存主题值。注册表按基础、排版、颜色、圆角、阴影、间距与尺寸排序；
 颜色再按基元、表面、主色与链接、语义、预设、数据、组件分组。
 Preset 家族按字母排序，每个家族固定使用 `container → container-strong → border → solid → text → on-container`。主题值由
-`initializeTheme()` 在 Vue 挂载前动态生成并提交，不增加 `theme:generate`、`theme:check` 或构建期快照
+`initializeTheme()` 在 Vue 挂载前动态生成并提交，不维护构建期快照
 
 全局元素基线统一放进共享包 `styles/base.css` 的 `@layer base`，确保组件 utility 可以按 Tailwind 层级正常覆盖；可复用的
 原生滚动条声明使用 Tailwind CSS 4 `@utility`。组件内能等价表达的简单 SVG、渐变、原生外观与伪元素优先使用

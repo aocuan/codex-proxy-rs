@@ -101,6 +101,7 @@ pub(super) struct AdminHarness {
     proxy_probe: Arc<dyn gateway_admin::ports::proxy::ProxyProbe>,
     account_runtime: Arc<dyn AccountRuntimeStore>,
     account_groups: Arc<dyn AccountGroupStore>,
+    snapshot: Arc<dyn SnapshotControl>,
     auth: Arc<dyn AuthStore>,
     client_keys: Arc<dyn ClientKeyStore>,
     observability: Arc<dyn ObservabilityStore>,
@@ -127,6 +128,7 @@ impl AdminHarness {
             proxy_probe: Arc::new(proxies::TestProxies::default()),
             account_runtime: unavailable.clone(),
             account_groups: Arc::new(UnavailableAccountGroupStore),
+            snapshot: Arc::new(NoopSnapshot),
             auth: Arc::new(BootstrapAuthStore::default()),
             client_keys: unavailable.clone(),
             observability: unavailable.clone(),
@@ -167,6 +169,11 @@ impl AdminHarness {
 
     pub(super) fn account_groups(mut self, store: Arc<dyn AccountGroupStore>) -> Self {
         self.account_groups = store;
+        self
+    }
+
+    pub(super) fn snapshot(mut self, snapshot: Arc<dyn SnapshotControl>) -> Self {
+        self.snapshot = snapshot;
         self
     }
 
@@ -297,7 +304,7 @@ impl AdminHarness {
                     self.providers,
                 )
                 .unwrap(),
-                snapshot: Arc::new(NoopSnapshot),
+                snapshot: self.snapshot,
                 account_probe: self.probe,
                 proxy_probe: self.proxy_probe,
                 client_distribution: Arc::new(NoopClientDistribution),
