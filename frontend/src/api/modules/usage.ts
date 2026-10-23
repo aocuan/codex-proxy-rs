@@ -371,6 +371,16 @@ export interface UsageDiagnosticsResponse {
   items: UsageDiagnosticItem[]
 }
 
+export interface OperationsError {
+  id: string
+  requestId: string | null
+  message: string
+  errorDetails: string | null
+  providerErrorCode: string | null
+  upstreamStatusCode: number | null
+  metadata: { source: string }
+}
+
 // 请求参数类型：仅定义 API 边界的形状，调用方不依赖显式声明。
 interface UsageRangeQuery {
   startTime: string
@@ -394,6 +404,15 @@ interface UsageDetailQuery {
 type UsageDiagnosticsQuery = UsageRangeQuery & { dimension: string }
 
 type DiagnosticsDownloadParams = { requestId: string } | { errorId: string }
+
+export function getOperationsErrors(data: PageQuery & { requestId: string, period: '7d', asOf: number }, options: RequestOptions = {}) {
+  return request<{ items: OperationsError[], total: number, currentPage: number, pageSize: number }>({
+    url: '/api/admin/operations/errors',
+    method: 'GET',
+    params: data,
+    ...options,
+  })
+}
 
 export function getUsageRecords(data: UsagePageQuery, options: RequestOptions = {}) {
   return request<UsageRecordsResponse>({

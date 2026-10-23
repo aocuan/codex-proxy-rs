@@ -70,8 +70,8 @@ const open = defineModel<boolean>({ required: true })
         </template>
         <template #actions="{ row }">
           <div class="flex gap-2">
-            <ZButton size="small" :disabled="!row.hasOutput" @click="emit('output', row, detail.run)">
-              查看回答
+            <ZButton size="small" :disabled="!row.hasOutput && row.status !== 'failed'" @click="emit('output', row, detail.run)">
+              {{ row.status === 'failed' ? '查看错误' : '查看回答' }}
             </ZButton>
             <ZButton
               v-if="row.judgment && ['failed', 'interrupted', 'cancelled'].includes(row.judgment.status) && row.judgment.attempt < 5 && !detail.run.stopRequested"

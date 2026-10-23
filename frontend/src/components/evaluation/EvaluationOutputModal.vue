@@ -5,6 +5,7 @@ import { useDocumentVisibility, useIntervalFn } from '@vueuse/core'
 import { computed, shallowRef, watch } from 'vue'
 import { getEvaluationDetail, getEvaluationOutput } from '@/api'
 import { useRequestState } from '@/composables/useRequestState'
+import EvaluationErrorDetails from './EvaluationErrorDetails.vue'
 import EvaluationJudgmentSummary from './EvaluationJudgmentSummary.vue'
 import EvaluationPreview from './EvaluationPreview.vue'
 import { durationText, verdictLabels } from './presenter'
@@ -88,7 +89,7 @@ useIntervalFn(() => {
 </script>
 
 <template>
-  <ZDialog v-model="open" title="测评回答" width="64rem">
+  <ZDialog v-model="open" :title="item?.status === 'failed' ? '测评错误' : '测评回答'" width="64rem">
     <template v-if="item">
       <dl class="mb-5 grid grid-cols-2 gap-x-5 gap-y-3 text-cp-sm sm:grid-cols-3">
         <div>
@@ -155,8 +156,18 @@ useIntervalFn(() => {
           </dd>
         </div>
       </dl>
+      <EvaluationErrorDetails
+        v-if="item.status === 'failed'"
+        :active="open" :request-id="item.requestId" :completed-at="item.completedAt"
+        :message="item.message" :error-code="item.errorCode"
+      />
       <EvaluationJudgmentSummary v-if="item.judgment" :judgment="item.judgment" :config="judgeConfig" :account-name="accountName" />
-      <p v-else-if="item.message" class="mb-4 text-cp-sm text-cp-warning-text">
+      <EvaluationErrorDetails
+        v-if="item.judgment?.status === 'failed' && item.judgment.requestId"
+        :active="open" :request-id="item.judgment.requestId" :completed-at="item.judgment.completedAt"
+        :message="item.judgment.reason" title="判题请求错误"
+      />
+      <p v-if="!item.judgment && item.status !== 'failed' && item.message" class="mb-4 text-cp-sm text-cp-warning-text">
         {{ item.message }}
       </p>
       <ZButton v-if="statusError" variant="text" size="small" @click="refreshStatus">
@@ -173,11 +184,11 @@ useIntervalFn(() => {
         </ZButton>
       </template>
     </ZEmpty>
-    <template v-else-if="output">
+    <template v-else-if="output && (output.responseText || output.artifactHtml || item?.status !== 'failed')">
       <ZSegmented v-model="tab" :options="tabs" aria-label="回答显示方式" class="mb-4" />
       <EvaluationPreview v-if="open && tab === 'preview' && output.artifactHtml" :html="output.artifactHtml" />
       <pre v-else class="m-0 max-h-[50dvh] overflow-auto rounded-cp bg-cp-fill-quaternary p-4 font-mono text-cp-sm whitespace-pre-wrap wrap-anywhere">{{ output.responseText || '没有文本输出' }}</pre>
     </template>
-    <ZEmpty v-else title="没有保存的回答" description="可查看上方执行状态和原因" />
+    <ZEmpty v-else-if="item?.status !== 'failed'" title="没有保存的回答" description="可查看上方执行状态和原因" />
   </ZDialog>
 </template>
