@@ -67,7 +67,7 @@ const COMPLETED_SESSION_SSE: &str = concat!(
 );
 
 #[tokio::test]
-async fn plan_display_should_distinguish_pro_tiers_and_preserve_other_official_names() {
+async fn plan_display_should_distinguish_pro_tiers_and_business_premium() {
     let config = valid_config();
     let bundle = provider_openai::initialize(config.config.clone(), provider_ports())
         .await
@@ -81,7 +81,7 @@ async fn plan_display_should_distinguish_pro_tiers_and_preserve_other_official_n
         ("go", "Go"),
         ("plus", "Plus"),
         ("team", "Team"),
-        ("self_serve_business_prolite", "Self Serve Business ProLite"),
+        ("self_serve_business_prolite", "Business Premium"),
         (
             "self_serve_business_usage_based",
             "Self Serve Business Usage Based",
