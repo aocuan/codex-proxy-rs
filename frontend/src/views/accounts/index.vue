@@ -5,6 +5,7 @@ import { useTableColumns, ZButton, ZCard, ZCheckbox, ZConfirmDialog, ZIconButton
 import { Check, ChevronDown, RefreshCw } from '@lucide/vue'
 import { useMediaQuery } from '@vueuse/core'
 import { computed, ref, shallowRef } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import AccountPlanBadge from '@/components/account/AccountPlanBadge.vue'
 import AccountGroupMarks from '@/components/AccountGroupMarks.vue'
@@ -37,6 +38,8 @@ import { useAccountsQuery } from './composables/useAccountsQuery'
 import { useAccountsTable } from './composables/useAccountsTable'
 import { accountColumns } from './constants'
 
+const { t } = useI18n({ useScope: 'global' })
+
 const concurrencyAccount = shallowRef<Account | null>(null)
 const showConcurrency = shallowRef(false)
 function openConcurrency(account: Account) {
@@ -46,11 +49,11 @@ function openConcurrency(account: Account) {
 
 const router = useRouter()
 const selectedIds = ref<Set<string>>(new Set())
-const refreshOptions = [
-  { label: '30 秒刷新', value: '30' },
-  { label: '60 秒刷新', value: '60' },
-  { label: '暂停刷新', value: '0' },
-]
+const refreshOptions = computed(() => [
+  { label: t('accounts.evaluationActions.refreshEvery', { seconds: 30 }), value: '30' },
+  { label: t('accounts.evaluationActions.refreshEvery', { seconds: 60 }), value: '60' },
+  { label: t('accounts.evaluationActions.refreshPaused'), value: '0' },
+])
 const { visibleColumns, columnOptions, setColumnVisible, setColumnOrder, resetColumns } = useTableColumns(accountColumns, 'accounts')
 const wideTable = useMediaQuery('(min-width: 1280px)')
 const inlineEvaluation = computed(() => !wideTable.value && visibleColumns.value.some(column => column.key === 'evaluation'))
@@ -199,7 +202,6 @@ const {
 const {
   apiKey: editingApiKey,
   oauthTransport: editingOAuthTransport,
-  configurationLoading,
   configurationReady,
   showEditModal,
   editingAccount,
@@ -225,8 +227,8 @@ const {
   <div class="flex min-h-0 w-full flex-col xl:h-full xl:overflow-hidden">
     <ZPageHeader
       class="h-17"
-      title="账号管理"
-      description="维护账号池，查看可用性、配额与使用状态"
+      :title="t('navigation.accounts')"
+      :description="t('accounts.page.description')"
     />
 
     <AccountOverviewCards :summary="accountSummary" />
@@ -256,11 +258,11 @@ const {
         >
           <template #actions>
             <ZButton v-if="selectedIds.size" :disabled="selectedIds.size > 20" @click="router.push({ path: '/evaluations', query: { accounts: [...selectedIds].join(',') } })">
-              测评所选{{ selectedIds.size > 20 ? '（最多 20 个）' : '' }}
+              {{ selectedIds.size > 20 ? t('accounts.evaluationActions.evaluateMax') : t('accounts.evaluationActions.evaluateSelected') }}
             </ZButton>
             <div class="flex shrink-0 items-center gap-1">
               <ZIconButton
-                aria-label="刷新账号列表"
+                :aria-label="t('accounts.evaluationActions.refreshList')"
                 variant="solid"
                 :loading="refreshing"
                 :disabled="loading || refreshing"
@@ -275,13 +277,13 @@ const {
                 <template #reference="{ open }">
                   <ZButton
                     v-if="refreshInterval !== '0'"
-                    :aria-label="`自动刷新设置，当前每 ${refreshInterval} 秒刷新`"
+                    :aria-label="t('accounts.evaluationActions.refreshSetting', { seconds: refreshInterval })"
                     :aria-expanded="open"
                   >
-                    {{ refreshInterval }} 秒
+                    {{ t('accounts.evaluationActions.seconds', { seconds: refreshInterval }) }}
                     <ChevronDown class="size-3.5" />
                   </ZButton>
-                  <ZIconButton v-else aria-label="自动刷新设置，当前已暂停" variant="solid" :pressed="open">
+                  <ZIconButton v-else :aria-label="t('accounts.evaluationActions.refreshSettingPaused')" variant="solid" :pressed="open">
                     <ChevronDown class="size-3.5" />
                   </ZIconButton>
                 </template>
@@ -323,14 +325,14 @@ const {
             :selected-row-keys="selectedRowKeys"
             :expanded-row-keys="expandedRowKeys"
             :sort="sort"
-            empty-text="暂无账号数据"
+            :empty-text="t('accounts.page.noAccountDataYet')"
             @sort-change="handleSortChange"
           >
             <template #expander="{ row }">
               <button
                 type="button"
                 class="inline-flex size-6 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-cp-text-secondary transition hover:bg-cp-bg-text-hover hover:text-cp-text"
-                :title="expandedAccountIds.has(row.id) ? '收起统计' : '展开统计'"
+                :title="expandedAccountIds.has(row.id) ? t('accounts.page.collapseStatistics') : t('accounts.page.expandStatistics')"
                 @click.stop="toggleExpanded(row.id)"
               >
                 <ChevronDown
@@ -344,7 +346,7 @@ const {
               <ZCheckbox
                 :model-value="allSelected"
                 :indeterminate="indeterminate"
-                aria-label="选择当前页账号"
+                :aria-label="t('accounts.page.selectAccountOnCurrentPage')"
                 @update:model-value="toggleAll"
               />
             </template>
@@ -352,7 +354,7 @@ const {
             <template #selection="{ row }">
               <ZCheckbox
                 :model-value="selectedIds.has(row.id)"
-                aria-label="选择账号"
+                :aria-label="t('accounts.page.selectAccount')"
                 @update:model-value="toggleSelection(row.id)"
               />
             </template>
@@ -402,7 +404,7 @@ const {
             </template>
 
             <template #lastUsedAt="{ row }">
-              <LastUsedAtCell :value="row.usage.lastUsedAt" :display="row.usage.lastUsedAtDisplay" :full-display="row.usage.lastUsedAtFullDisplay" />
+              <LastUsedAtCell :value="row.usage.lastUsedAt" :full-display="row.usage.lastUsedAtFullDisplay" />
             </template>
 
             <template #actions="{ row }">
@@ -512,7 +514,6 @@ const {
       v-model:proxy-mode="editingProxyMode"
       v-model:proxy-id="editingProxyId"
       v-model:selected-group-ids="editingGroupIds"
-      :configuration-loading="configurationLoading"
       :configuration-ready="configurationReady"
       :account="editingAccount"
       :groups="groups"
@@ -541,36 +542,32 @@ const {
 
     <ZConfirmDialog
       v-model="showDeleteModal"
-      title="确认删除"
-      description="删除后该账号将不再参与调度，此操作不可撤销"
+      :title="t('common.actions.delete')"
+      :description="t('accounts.page.deleteDescription')"
       destructive
-      confirm-text="确认删除"
+      :confirm-text="t('common.actions.delete')"
       :loading="batchDeleting"
       @confirm="handleBatchDelete"
     >
       <p class="m-0">
-        确定要删除选中的 {{ deleteCount }} 个账号吗？此操作不可撤销
+        {{ t('accounts.page.batchDeleteDescription', { count: deleteCount }) }}
       </p>
     </ZConfirmDialog>
 
     <ZConfirmDialog
       v-model="showSingleDeleteModal"
-      title="删除账号"
-      description="删除后该账号将不再参与调度，此操作不可撤销"
+      :title="t('accounts.actions.deleteAccount')"
+      :description="t('accounts.page.deleteDescription')"
       destructive
-      confirm-text="确认删除"
+      :confirm-text="t('common.actions.delete')"
       :loading="deletingAccount"
       @confirm="handleDelete"
     >
       <p class="m-0">
-        确定要删除
-        {{
-          pendingDeleteAccount?.email
-            || pendingDeleteAccount?.accountId
-            || pendingDeleteAccount?.id
-            || '该账号'
-        }}
-        吗？
+        {{ t('accounts.page.delete', { value: pendingDeleteAccount?.email
+          || pendingDeleteAccount?.accountId
+          || pendingDeleteAccount?.id
+          || t('accounts.page.thisAccount') }) }}
       </p>
     </ZConfirmDialog>
     <EvaluationOutputModal v-model="showEvaluationOutput" :item="evaluationItem" :run="evaluationRun" :account-name="evaluationAccountName" />

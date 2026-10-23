@@ -386,8 +386,6 @@ interface UsageRangeQuery {
   startTime: string
   endTime: string
   provider?: string
-  model?: string
-  statusCode?: number
 }
 
 interface PageQuery {
@@ -395,13 +393,18 @@ interface PageQuery {
   pageSize: number
 }
 
-type UsagePageQuery = UsageRangeQuery & PageQuery & { search?: string, status?: UsageRecordStatus }
+type UsagePageQuery = UsageRangeQuery & PageQuery & {
+  clientApiKeyName?: string
+  accountName?: string
+  model?: string
+  status?: UsageRecordStatus
+}
 
 interface UsageDetailQuery {
   id: string
 }
 
-type UsageDiagnosticsQuery = UsageRangeQuery & { dimension: string }
+type UsageDiagnosticsQuery = UsageRangeQuery & { dimension: string, model?: string, statusCode?: number }
 
 type DiagnosticsDownloadParams = { requestId: string } | { errorId: string }
 

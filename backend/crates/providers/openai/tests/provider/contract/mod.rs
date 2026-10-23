@@ -1873,7 +1873,7 @@ async fn provider_should_send_the_request_snapshot_location_to_the_upstream() {
         "model": "gpt-5.4",
         "input": [{
             "role": "user",
-            "content": [{"type": "input_text", "text": "<environment_context><timezone>UTC</timezone></environment_context>"}],
+            "content": [{"type": "input_text", "text": "<environment_context><current_date>2026-10-22</current_date><timezone>UTC</timezone></environment_context>"}],
             "internal_chat_message_metadata_passthrough": {
                 "content_item_kinds": ["environments.environment_context"],
                 "create_time": 1789293131.822
@@ -1899,7 +1899,7 @@ async fn provider_should_send_the_request_snapshot_location_to_the_upstream() {
     assert_eq!(
         body.pointer("/input/0/content/0/text"),
         Some(&json!(
-            "<environment_context><timezone>Pacific/Auckland</timezone></environment_context>"
+            "<environment_context><current_date>2026-10-22</current_date><timezone>Pacific/Auckland</timezone></environment_context>"
         ))
     );
     assert_eq!(
@@ -1925,8 +1925,8 @@ async fn provider_should_override_unclassified_time_contexts_over_websocket() {
         }).to_string().into())).await.expect("complete response");
         body
     });
-    let environment = "<environment_context><cwd>/home/example/项目</cwd><timezone>Asia/Shanghai</timezone></environment_context>";
-    let desktop = "<codex_apps_client_time_context><timezone>Asia/Shanghai</timezone></codex_apps_client_time_context>";
+    let environment = "<environment_context><cwd>/home/example/项目</cwd><current_date>2026-10-22</current_date><timezone>Asia/Shanghai</timezone></environment_context>";
+    let desktop = "<codex_apps_client_time_context><timezone>Asia/Shanghai</timezone><current_date>2026-10-21</current_date></codex_apps_client_time_context>";
     let payload = ProtocolPayload::json_object(
         "openai",
         json!({
@@ -2789,13 +2789,7 @@ async fn image_endpoints_bypass_only_the_text_catalog_and_preserve_the_current_c
         Mock::given(method("POST"))
             .and(path(*endpoint))
             .and(header("originator", "codex_cli_rs"))
-            .and(|request: &wiremock::Request| {
-                request
-                    .headers
-                    .get("x-codex-image-turn-id")
-                    .and_then(|value| value.to_str().ok())
-                    .is_some_and(|value| uuid::Uuid::parse_str(value).is_ok())
-            })
+            .and(header("x-codex-image-turn-id", "turn_image_contract"))
             .and(header("version", "0.144.0"))
             .and(header("accept", "*/*"))
             .and(body_bytes(body.to_vec()))
@@ -3636,7 +3630,7 @@ async fn standalone_search_preserves_wire_and_scopes_turn_metadata_to_the_select
     let metadata: Value = serde_json::from_slice(&metadata_values[0]).expect("turn metadata JSON");
     assert_scoped_id(metadata["session_id"].as_str().unwrap(), "session");
     assert_scoped_id(metadata["thread_id"].as_str().unwrap(), "thread");
-    assert_scoped_id(metadata["turn_id"].as_str().unwrap(), "turn");
+    assert_eq!(metadata["turn_id"], "turn");
     assert_eq!(metadata.get("future"), Some(&json!(true)));
     assert!(metadata.get("account_id").is_none());
     assert_ne!(
