@@ -111,7 +111,7 @@
       },
       "dashboard": {
         "justUpdated": "刚刚更新",
-        "demoKey": "演示 Key",
+        "demoKey": "演示 API密钥",
         "requestHealthTimeline": "请求健康时间线",
         "validRequestAvailability": "有效请求可用性",
         "todaySToken": "今日 Token",
@@ -132,7 +132,9 @@
         "recovery": "恢复 100%",
         "enlargeArtboard": "放大画板",
         "adaptToArtboard": "适应画板"
-      }
+      },
+      "open": "预览",
+      "edit": "编辑"
     },
     "componentTokens": {
       "cardsAndContainers": "卡片与容器",

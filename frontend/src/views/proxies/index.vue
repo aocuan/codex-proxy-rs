@@ -68,7 +68,6 @@ watch(search, () => {
 <template>
   <div class="flex h-full min-h-0 w-full flex-col overflow-hidden">
     <ZPageHeader
-      class="h-17"
       :title="t('navigation.proxies')"
       :description="t('proxies.page.description')"
     />
@@ -140,7 +139,7 @@ watch(search, () => {
             </template>
             <template #latency="{ row }">
               <span v-if="testingIds.has(row.id)" class="text-cp-text-secondary">{{ t('proxies.page.underTest') }}</span>
-              <span v-else-if="row.lastTest?.success" class="tabular-nums text-cp-success">
+              <span v-else-if="row.lastTest?.success" class="whitespace-nowrap tabular-nums text-cp-success">
                 {{ row.lastTest.latencyMs }} ms
               </span>
               <span v-else-if="row.lastTest" class="text-cp-error" :title="t('proxies.page.ms', { message: row.lastTest.message, latencyMs: row.lastTest.latencyMs })">{{ t('common.status.failed') }}</span>

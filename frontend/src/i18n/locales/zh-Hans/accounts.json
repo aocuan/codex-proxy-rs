@@ -44,7 +44,7 @@
       "usageRate": "使用率",
       "moreGroups": "另有 {count} 个额度组，可展开账号查看",
       "windows": {
-        "fiveHour": "5h 额度",
+        "fiveHour": "5小时额度",
         "daily": "日额度",
         "weekly": "周额度",
         "monthly": "月额度",
@@ -66,7 +66,6 @@
       "loadingModels": "加载模型中",
       "modelPlaceholder": "选择上游模型",
       "noModels": "上游没有返回模型",
-      "running": "检测中",
       "completedAt": "完成时间",
       "events": {
         "title": "事件轨迹",
@@ -133,15 +132,14 @@
         "urlLength": "上游 API 地址不能超过 2048 个字符",
         "urlFormat": "请输入不含认证、查询参数或片段的 HTTP 或 HTTPS 地址",
         "urlRequired": "请输入完整的上游 API 地址",
-        "apiKeyFormat": "API Key 不能包含空格或控制字符",
+        "apiKeyFormat": "API密钥不能包含空格或控制字符",
         "transportRequired": "请选择传输方式"
       },
-      "apiKeyRequired": "请输入 API Key"
+      "apiKeyRequired": "请输入 API密钥"
     },
     "batchEdit": {
       "title": "批量编辑账号",
       "selectionTitle": "编辑 {count} 个账号",
-      "saveChanges": "保存更改",
       "proxyRequired": "请选择已通过测试的代理",
       "saved": "已更新 {count} 个账号",
       "staleAccount": "账号 {accountId} 的页面数据已失效，请重新选择"
@@ -169,7 +167,7 @@
       "loadError": "上游设置读取失败",
       "notesHelp": "最多 500 字，留空可清除备注",
       "oauthUnavailable": "该账号没有 OAuth 上游设置",
-      "apiKeyUnavailable": "该账号没有 API Key 上游设置",
+      "apiKeyUnavailable": "该账号没有 API密钥上游设置",
       "saved": "账号已更新"
     },
     "filters": {
@@ -180,8 +178,8 @@
       "searchLabel": "搜索账号",
       "statusLabel": "按账号状态筛选",
       "groupLabel": "按账号分组筛选",
-      "deleteSelected": "删除选中 ({count})",
-      "exportSelected": "导出选中 ({count})",
+      "deleteSelected": "删除 ({count})",
+      "exportSelected": "导出 ({count})",
       "importTasks": "导入任务",
       "importAccount": "导入账号",
       "batchActions": "批量操作 ({count})"
@@ -197,7 +195,7 @@
       "searchOrEnterIdAndPressEnter": "搜索或输入 ID，回车添加",
       "selectModel": "选择模型",
       "notInCurrentModelCatalog": "{id}（当前目录未返回）",
-      "loadingModel": "加载模型中…",
+      "loadingModel": "加载模型中",
       "noMatchingModels": "无匹配模型",
       "noModels": "暂无模型",
       "modelListLoadingFailed": "模型列表加载失败",
@@ -349,8 +347,8 @@
       "accountAdded": "账号已添加",
       "providerRequired": "请选择账号平台",
       "accountPlatformIsNotSupported": "账号平台不受支持",
-      "apiKeyUnsupported": "当前平台不支持 API Key 账号",
-      "apiKeyAccountAdded": "API Key 账号已添加",
+      "apiKeyUnsupported": "当前平台不支持 API密钥账号",
+      "apiKeyAccountAdded": "API密钥账号已添加",
       "importTasksCreated": "已创建 {submitted} 个导入任务",
       "importTaskCreated": "导入任务已创建",
       "partialSubmission": "部分导入任务已创建，保持输入不变重试可继续提交",
@@ -361,8 +359,8 @@
       "needProcessing": "需处理",
       "importTaskDetails": "导入任务详情",
       "created": "{createdAtDisplay} 创建",
-      "waitForCurrentEntryToEnd": "等待当前条目结束",
-      "stopUnstartedEntries": "停止未开始条目",
+      "waitForCurrentEntryToEnd": "收尾中",
+      "stopUnstartedEntries": "停止后续",
       "viewAccount": "查看账号",
       "entryProgress": "条目进度",
       "accountsImported": "已入库 {importedAccounts} 个账号",
@@ -399,7 +397,8 @@
       "thisArticleIsNotImplemented": "本条未执行",
       "entryFailed": "本条导入未成功",
       "checkAccountList": "请检查账号列表，确认是否已入库",
-      "progressReadingFailedTryAgain": "进度读取失败，请重试"
+      "progressReadingFailedTryAgain": "进度读取失败，请重试",
+      "stopHelp": "停止后仍会完成当前条目"
     },
     "profile": {
       "activity": {
@@ -541,7 +540,7 @@
       "refreshCredits": "刷新主动重置卡",
       "resetCardLoadingFailed": "重置卡加载失败",
       "refreshRequired": "请刷新重试",
-      "queryingAvailableResetTimes": "正在查询可用重置次数…",
+      "queryingAvailableResetTimes": "正在查询可用重置次数",
       "useResetCredit": "使用重置：{title}，{expiry}",
       "useReset": "使用重置",
       "noResetCardAvailableYet": "暂无可用重置卡",

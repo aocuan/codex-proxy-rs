@@ -152,6 +152,11 @@ impl Execution {
         if invocation.operation.protocol() != declaration.protocol
             || invocation.metadata.provider().as_str() != declaration.provider.as_str()
             || invocation.metadata.provider_account_id() != invocation.account.account_id()
+            || (!declaration.account_ids.is_empty()
+                && !declaration
+                    .account_ids
+                    .iter()
+                    .any(|id| id == invocation.account.account_id().as_str()))
             || !declaration
                 .authentication_kinds
                 .iter()
@@ -162,7 +167,7 @@ impl Execution {
         let timeout = invocation
             .context
             .deadline()
-            .bounded(self.adapter.session.maximum_call_timeout());
+            .bounded(self.adapter.session.budget(Stage::Upstream));
         if timeout.is_zero() || invocation.context.cancellation().is_cancelled() {
             return Err(ProviderError::new(
                 ProviderErrorKind::Cancelled,

@@ -14,10 +14,7 @@ use gateway_core::event::{
 };
 use gateway_core::metering::Usage;
 use gateway_core::upstream::UpstreamSendState;
-use gateway_protocol::openai::events::{
-    ResponseModelObservation, TokenUsage, billable_usage_is_complete, extract_usage,
-    observed_model_name,
-};
+use gateway_protocol::openai::events::{TokenUsage, billable_usage_is_complete, extract_usage};
 use gateway_protocol::openai::sse::{SseEvent, SseEventDecoder, SseFrame, sse_frame_is_done};
 use serde_json::Value;
 use thiserror::Error;
@@ -59,8 +56,6 @@ pub struct CodexCanonicalDecoder {
     response_service_tier: Option<String>,
     upstream_response_ms: Option<u64>,
     upstream_timing_metrics: ResponseTimingMetrics,
-    response_model: ResponseModelObservation,
-    reported_model: Option<String>,
     web_search_pricing: Option<WebSearchPricing>,
     timing_signals: ResponseEventSignals,
     raw_sse_passthrough: bool,
@@ -171,8 +166,6 @@ impl CodexCanonicalDecoder {
             response_service_tier: None,
             upstream_response_ms: None,
             upstream_timing_metrics: ResponseTimingMetrics::default(),
-            response_model: ResponseModelObservation::default(),
-            reported_model: None,
             web_search_pricing: None,
             pricing: None,
             timing_signals: ResponseEventSignals::default(),
@@ -288,28 +281,6 @@ impl CodexCanonicalDecoder {
         self.upstream_timing_metrics
     }
 
-    /// 真实 HTTP 响应头提供初始报告；流内请求级报告可覆盖它
-    #[must_use]
-    pub fn with_reported_model(mut self, model: Option<&str>) -> Self {
-        self.reported_model = model.and_then(observed_model_name).map(str::to_owned);
-        self
-    }
-
-    /// 接收 transport 已解析的内部 metadata 报告，内部帧无需交付客户端
-    pub(crate) fn observe_reported_model(&mut self, model: &str) {
-        if let Some(model) = observed_model_name(model) {
-            self.reported_model = Some(model.to_owned());
-        }
-    }
-
-    /// 官方服务端报告优先；缺少报告时仅使用正文明确声明，不使用请求兜底值
-    #[must_use]
-    pub fn response_model(&self) -> Option<&str> {
-        self.reported_model
-            .as_deref()
-            .or_else(|| self.response_model.model())
-    }
-
     fn decode(&mut self, events: Vec<SseEvent>) -> CodexCanonicalOutcome {
         let mut output = Vec::new();
         for event in events {
@@ -419,10 +390,6 @@ impl CodexCanonicalDecoder {
             }
         }
         self.observe_response_service_tier(&value);
-        self.response_model.observe(event_type, &value);
-        if let Some(model) = super::response_meta::reported_model_from_event(&value) {
-            self.reported_model = Some(model.to_owned());
-        }
         let signals = response_event_signals(event_type, &value);
         self.merge_timing_signals(signals);
         if matches!(event_type, Some("response.failed" | "error")) {
@@ -901,8 +868,7 @@ impl CodexCanonicalDecoder {
         output: &mut Vec<GatewayEvent>,
     ) -> Result<(), ProviderError> {
         self.require_started()?;
-        let output_index = event_index(value, "output_index")?;
-        let part_index = optional_event_index(value, "content_index")?.unwrap_or_default();
+        let index = event_content_index(value)?;
         let part = value
             .get("part")
             .or_else(|| value.get("summary_part"))
@@ -912,7 +878,8 @@ impl CodexCanonicalDecoder {
             Some("summary_text" | "reasoning_text") => ContentKind::Reasoning,
             _ => return Ok(()),
         };
-        self.add_content(content_index(output_index, part_index)?, kind, output)
+        // reasoning 项已声明首段，后续 part 复用同一内容；类型冲突仍由共享登记逻辑拒绝
+        self.ensure_content(index, kind, output)
     }
 
     fn text_delta(

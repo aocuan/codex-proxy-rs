@@ -39,8 +39,20 @@ const customLocation = defineModel<boolean>('customLocation', { required: true }
 const location = defineModel<RequestLocation>('location', { required: true })
 const mode = shallowRef('single')
 const testAfterCreate = shallowRef(true)
-const modeOptions = computed(() => ([{ label: t('proxies.editor.single'), value: 'single' }, { label: t('proxies.editor.batch'), value: 'batch' }]))
-const batch = useProxyBatchCreate({ test: (proxy, options, detectLocation) => props.testSavedProxies(proxy, options, detectLocation), reload: () => props.reloadAfterCreate() })
+const modeOptions = computed(() => ([
+  {
+    label: t('proxies.editor.single'),
+    value: 'single',
+  },
+  {
+    label: t('proxies.editor.batch'),
+    value: 'batch',
+  },
+]))
+const batch = useProxyBatchCreate({
+  test: (proxy, options, detectLocation) => props.testSavedProxies(proxy, options, detectLocation),
+  reload: () => props.reloadAfterCreate(),
+})
 const {
   text: batchText,
   prefix: batchPrefix,
@@ -64,7 +76,9 @@ const manualLocationWarning = computed(() => {
   return ''
 })
 const busy = computed(() => props.saving || props.testingConnection || props.detectingLocation || batchBusy.value)
-const title = computed(() => props.proxy ? t('proxies.actions.edit') : t('proxies.editor.createTitle'))
+const title = computed(() => props.proxy
+  ? t('proxies.actions.edit')
+  : t('proxies.editor.createTitle'))
 const connectionDescription = computed(() => props.proxy
   ? t('proxies.editor.connectionHelp')
   : t('proxies.editor.protocolHelp'))
@@ -118,6 +132,9 @@ function clearForm() {
     <ProxyBatchCreateFields v-else-if="!batchItems.length" v-model="batchText" v-model:prefix="batchPrefix" v-model:protocol="batchProtocol" :rows="parsed" :error="inputError" :disabled="busy" />
     <div v-else class="grid min-w-0 gap-5">
       <ProxyBatchResults :items="batchItems" :tests="batchTestItems" />
+      <p v-if="batchBusy" class="m-0 text-cp-xs text-cp-text-secondary">
+        {{ t('proxies.editor.stopHelp') }}
+      </p>
       <p v-if="batchItems.some(item => item.status === 'unknown')" class="m-0 text-cp-xs text-cp-warning-text" role="alert">
         {{ t('proxies.editor.pendingResultsHelp') }}
       </p>
@@ -131,7 +148,7 @@ function clearForm() {
           <template #icon>
             <Wifi class="size-4" />
           </template>
-          {{ t('accounts.connectionTest.title') }}
+          {{ t('proxies.actions.test') }}
         </ZButton>
         <ZButton type="primary" :loading="saving" :disabled="testingConnection || detectingLocation" @click="emit('save')">
           <template #icon>

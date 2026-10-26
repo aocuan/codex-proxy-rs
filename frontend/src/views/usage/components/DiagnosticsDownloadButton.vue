@@ -12,16 +12,18 @@ function download() {
   const id = props.requestId || props.errorId
   if (!id || !props.active)
     return
-  const target = props.requestId ? { requestId: props.requestId } : { errorId: id }
+  const target = props.requestId
+    ? { requestId: props.requestId }
+    : { errorId: id }
   window.open(getDiagnosticsDownloadUrl(target), '_blank', 'noopener,noreferrer')
 }
 </script>
 
 <template>
-  <ZButton type="primary" variant="plain" :disabled="!active || (!requestId && !errorId)" @click="download">
+  <ZButton type="primary" variant="plain" :aria-label="t('usage.diagnostics.downloadDiagnosticPackage')" :title="t('usage.diagnostics.downloadDiagnosticPackage')" :disabled="!active || (!requestId && !errorId)" @click="download">
     <template #icon>
       <Download :size="16" />
     </template>
-    {{ t('usage.diagnostics.downloadDiagnosticPackage') }}
+    {{ t('usage.diagnostics.download') }}
   </ZButton>
 </template>

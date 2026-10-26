@@ -242,6 +242,10 @@ async fn connect(
         )?);
     let (admissions, admission_release_writer) =
         redis::BufferedClientAdmissionPort::new(admissions, diagnostics.clone());
+    let (budgets, budget_writer) = postgres::BufferedClientBudgetStore::new(
+        postgres::PgClientBudgetStore::new(pool.clone()).with_timezone(config.timezone),
+        diagnostics.clone(),
+    );
     let core_ports = CoreStorePorts::new(
         execution,
         (
@@ -261,9 +265,7 @@ async fn connect(
         Arc::new(client_key_usage),
         diagnostics.clone(),
     )
-    .with_budget(Arc::new(
-        postgres::PgClientBudgetStore::new(pool.clone()).with_timezone(config.timezone),
-    ))
+    .with_budget(Arc::new(budgets))
     .with_session_affinity(Arc::clone(&provider_session_affinity))
     .with_client_retry_store(Arc::new(redis::RedisClientRetryRepository::new(
         redis_connection.clone(),
@@ -305,6 +307,7 @@ async fn connect(
                 execution_writer,
                 client_key_usage_writer,
                 admission_release_writer,
+                budget_writer,
             )?,
             None,
         ),
@@ -314,6 +317,7 @@ async fn connect(
                 execution: execution_writer,
                 client_key_usage: client_key_usage_writer,
                 admission_release: admission_release_writer,
+                budget: budget_writer,
             }),
         ),
     };

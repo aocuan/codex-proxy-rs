@@ -34,10 +34,18 @@ const status = defineModel<string>('status', { required: true })
 const provider = defineModel<string>('provider', { required: true })
 const group = defineModel<string>('group', { required: true })
 const groupOptions = computed(() => [
-  { label: t('accounts.filters.allGroups'), value: '' },
-  { label: t('accounts.filters.ungroupedAccounts'), value: 'ungrouped' },
+  {
+    label: t('accounts.filters.allGroups'),
+    value: '',
+  },
+  {
+    label: t('accounts.filters.ungroupedAccounts'),
+    value: 'ungrouped',
+  },
   ...props.groups.map(group => ({
-    label: group.enabled ? group.name : t('accounts.filters.disabled', { name: group.name }),
+    label: group.enabled
+      ? group.name
+      : t('accounts.filters.disabled', { name: group.name }),
     value: group.id,
   })),
 ])
@@ -54,6 +62,7 @@ const groupOptions = computed(() => [
     >
       <ZInput
         v-model="search"
+        :aria-label="t('accounts.filters.searchLabel')"
         :placeholder="t('accounts.filters.searchLabel')"
         class="col-span-2 min-w-0 sm:col-span-3 xl:w-48 xl:min-w-40 xl:max-w-80 xl:flex-1"
       >

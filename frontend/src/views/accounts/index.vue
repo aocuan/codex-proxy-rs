@@ -89,7 +89,10 @@ const {
 } = useAccountGroupCatalog()
 
 const importTasks = useAccountImportTasks({
-  reload: () => Promise.all([loadAccounts(), loadGroups()]),
+  reload: () => Promise.all([
+    loadAccounts(),
+    loadGroups(),
+  ]),
 })
 const {
   open: showImportTasks,
@@ -142,7 +145,10 @@ const {
   onImportTaskCreated: importTasks.created,
   accounts,
   selectedIds,
-  reload: () => Promise.all([loadAccounts(), loadGroups()]),
+  reload: () => Promise.all([
+    loadAccounts(),
+    loadGroups(),
+  ]),
   replaceAccount,
 })
 
@@ -226,7 +232,6 @@ const {
 <template>
   <div class="flex min-h-0 w-full flex-col xl:h-full xl:overflow-hidden">
     <ZPageHeader
-      class="h-17"
       :title="t('navigation.accounts')"
       :description="t('accounts.page.description')"
     />

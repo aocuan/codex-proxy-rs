@@ -26,7 +26,16 @@ const { t } = useI18n({ useScope: 'global' })
 const recordView = shallowRef<UsageRecordStatus>('success')
 const recordColumns = computed<TableColumn<UsageListRecord>[]>(() => recordView.value === 'error'
   ? usageRecordColumns.value.flatMap(column => column.key === 'route'
-      ? [column, { key: 'errorMessage', label: t('usage.filters.error'), kind: 'custom', size: '4xl', hideable: false }]
+      ? [
+          column,
+          {
+            key: 'errorMessage',
+            label: t('usage.filters.error'),
+            kind: 'custom',
+            size: '4xl',
+            hideable: false,
+          },
+        ]
       : [column])
   : usageRecordColumns.value)
 const { visibleColumns, columnOptions, setColumnVisible, setColumnOrder, resetColumns } = useTableColumns(recordColumns, 'usage-records')
@@ -68,24 +77,26 @@ watch(timeRange, () => {
 </script>
 
 <template>
-  <div class="w-full">
+  <div class="@container w-full">
     <ZPageHeader :title="t('navigation.usage')" :description="t('usage.page.description')">
       <template #actions>
-        <ZDatePicker
-          v-model="timeRange"
-          type="daterange"
-          :clearable="false"
-          :editable="false"
-          :disabled-date="disabledDate"
-          single-panel
-          :aria-label="t('usage.page.dateRangeLabel')"
-          class="w-60 max-w-full"
-        />
-        <ProviderFilter
-          v-model="providerQuery"
-          :disabled="refreshingList"
-          class="shrink-0"
-        />
+        <div class="flex w-[100cqw] max-w-[100cqw] flex-wrap items-center justify-end gap-2 @min-[28rem]:w-auto">
+          <ZDatePicker
+            v-model="timeRange"
+            type="daterange"
+            :clearable="false"
+            :editable="false"
+            :disabled-date="disabledDate"
+            single-panel
+            :aria-label="t('usage.page.dateRangeLabel')"
+            class="min-w-0 w-full @min-[28rem]:w-60"
+          />
+          <ProviderFilter
+            v-model="providerQuery"
+            :disabled="refreshingList"
+            class="shrink-0"
+          />
+        </div>
       </template>
     </ZPageHeader>
 

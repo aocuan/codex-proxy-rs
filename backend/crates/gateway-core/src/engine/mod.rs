@@ -575,11 +575,48 @@ impl AttemptContext {
         &self,
         provider: &ProviderKind,
         model: &UpstreamModelId,
+    ) -> Result<upstream_adapter::UpstreamAdapterSelection, ProviderError> {
+        let account = self
+            .required_account()
+            .or_else(|| match self.continuation_attempt() {
+                ContinuationAttempt::Native => self
+                    .continuation()
+                    .and_then(continuation::ContinuationBinding::pinned)
+                    .map(|pin| pin.account()),
+                ContinuationAttempt::ReplayOwner => self
+                    .account_state_owner()
+                    .filter(|owner| owner.provider() == provider)
+                    .map(|owner| owner.account()),
+                ContinuationAttempt::None | ContinuationAttempt::ReplayAny => None,
+            });
+        self.request.upstream_adapters.as_ref().map_or(
+            Ok(upstream_adapter::UpstreamAdapterSelection::Native),
+            |plan| plan.select(self, provider, model, account),
+        )
+    }
+
+    /// 账号候选资格检查和最终执行解析使用同一冻结计划，不调用插件进程
+    pub fn upstream_adapter_for_account(
+        &self,
+        provider: &ProviderKind,
+        model: &UpstreamModelId,
+        account: &ProviderAccountId,
     ) -> Result<Option<Arc<dyn upstream_adapter::UpstreamAdapter>>, ProviderError> {
         self.request
             .upstream_adapters
             .as_ref()
-            .map_or(Ok(None), |plan| plan.select(self, provider, model))
+            .map_or(Ok(None), |plan| {
+                match plan.select(self, provider, model, Some(account))? {
+                    upstream_adapter::UpstreamAdapterSelection::Native => Ok(None),
+                    upstream_adapter::UpstreamAdapterSelection::Adapter(adapter) => {
+                        Ok(Some(adapter))
+                    }
+                    // 已知账号的解析必须给出最终执行端，不能绕过资格检查进入原生路径
+                    upstream_adapter::UpstreamAdapterSelection::PendingAccount => Err(
+                        ProviderError::new(ProviderErrorKind::Protocol, UpstreamSendState::NotSent),
+                    ),
+                }
+            })
     }
 
     #[must_use]
@@ -740,12 +777,57 @@ impl AttemptContext {
         } else {
             terminal
         };
-        let context = middleware::MiddlewareContext::new(
+        let context = self.middleware_context(
+            middleware::MiddlewareMount::Attempt,
+            Some(operation.kind()),
+            provider,
+            model,
+            account_id,
+        );
+        provider::execute_attempt_middleware(
+            self.request.middleware.as_ref(),
+            context,
+            operation,
+            self.request.client_transport,
+            terminal,
+        )
+        .await
+    }
+
+    /// 为当前实际账号冻结出站准备链，无此阶段时保留 Provider 原生路径
+    #[must_use]
+    pub fn outbound_middleware(
+        &self,
+        provider: ProviderKind,
+        model: Option<String>,
+        account_id: ProviderAccountId,
+    ) -> Option<middleware::outbound::Pipeline> {
+        let plan = self.request.middleware.as_ref()?;
+        let context = self.middleware_context(
+            middleware::MiddlewareMount::Outbound,
+            None,
+            provider,
+            model,
+            account_id,
+        );
+        plan.has_outbound(&context)
+            .then(|| middleware::outbound::Pipeline::new(plan.clone(), context))
+    }
+
+    fn middleware_context(
+        &self,
+        mount: middleware::MiddlewareMount,
+        operation: Option<crate::operation::OperationKind>,
+        provider: ProviderKind,
+        model: Option<String>,
+        account_id: ProviderAccountId,
+    ) -> middleware::MiddlewareContext {
+        middleware::MiddlewareContext::new(
             middleware::MiddlewareTarget {
                 request_id: self.request.request_id.clone(),
-                mount: middleware::MiddlewareMount::Attempt,
+                mount,
                 attempt_index: Some(self.attempt_index),
-                operation: Some(operation.kind()),
+                operation,
                 endpoint: self.request.endpoint.clone(),
                 transport: self.request.client_transport,
                 provider: Some(provider),
@@ -761,15 +843,7 @@ impl AttemptContext {
                 execution_effects: self.request.execution_effects.as_ref().map(Arc::clone),
             },
         )
-        .with_request_body_limit(self.request.request_body_limit);
-        provider::execute_attempt_middleware(
-            self.request.middleware.as_ref(),
-            context,
-            operation,
-            self.request.client_transport,
-            terminal,
-        )
-        .await
+        .with_request_body_limit(self.request.request_body_limit)
     }
 
     #[must_use]
@@ -996,7 +1070,6 @@ pub struct ModelRequestFinalization {
     pub http_version: Option<String>,
     pub websocket_pool: Option<String>,
     pub service_tier: Option<String>,
-    pub upstream_response_model: Option<String>,
     /// Provider 已筛选的专有观测 JSON；Core 不解释字段
     pub provider_metadata_json: Option<String>,
     /// 请求全程的有界诊断快照，跨 Provider 与重试保留

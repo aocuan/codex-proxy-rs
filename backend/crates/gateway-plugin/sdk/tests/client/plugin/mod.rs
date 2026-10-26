@@ -1,5 +1,7 @@
 //! 验证类型化插件处理器的组合注册、分派与能力声明一致性
 
+mod outbound;
+
 use std::{
     collections::BTreeMap,
     sync::{
@@ -438,7 +440,6 @@ async fn start_session<H: PluginHandler + 'static>(
                 maximum_callbacks: 4,
                 maximum_buffered_stream_chunks: 16,
                 handshake_timeout: Duration::from_secs(1),
-                maximum_call_timeout: Duration::from_secs(2),
             },
         )
         .await?
@@ -471,6 +472,7 @@ async fn start_session<H: PluginHandler + 'static>(
             message: Message::Ready {
                 protocol_version: PROTOCOL_VERSION,
                 ref incarnation,
+                ..
             },
             ref payload,
         } if incarnation == "test-incarnation" && payload.is_empty()

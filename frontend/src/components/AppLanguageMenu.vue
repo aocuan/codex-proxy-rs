@@ -2,12 +2,13 @@
 import type { IconButtonProps } from '@codex-proxy/ui'
 import type { Locale } from '@/i18n/locale'
 import { ZIconButton, ZMenuItem, ZPopover } from '@codex-proxy/ui'
-import { Check, Languages } from '@lucide/vue'
+import { Check, Languages, LoaderCircle } from '@lucide/vue'
 import chineseFlag from 'circle-flags/flags/cn.svg?url&no-inline'
 import englishFlag from 'circle-flags/flags/us.svg?url&no-inline'
-import { computed, useTemplateRef } from 'vue'
+import { computed, shallowRef, useTemplateRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useLocale } from '@/composables/useLocale'
+import { notification } from '@/utils/notification'
 
 withDefaults(defineProps<{ size?: IconButtonProps['size'], variant?: IconButtonProps['variant'] }>(), {
   size: 'small',
@@ -16,6 +17,7 @@ withDefaults(defineProps<{ size?: IconButtonProps['size'], variant?: IconButtonP
 
 const { t } = useI18n({ useScope: 'global' })
 const { locale, localeOptions, setLocale } = useLocale()
+const pendingLocale = shallowRef<Locale>()
 const localeFlags: Record<Locale, string> = {
   'zh-Hans': chineseFlag,
   'zh-Hant': chineseFlag,
@@ -30,9 +32,21 @@ function focusSelected() {
   choices.value?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.focus()
 }
 
-function selectLocale(value: Locale, close: () => void) {
-  setLocale(value)
-  close()
+async function selectLocale(value: Locale, close: () => void) {
+  pendingLocale.value = value
+  try {
+    if (await setLocale(value))
+      close()
+  }
+  catch {
+    notification.error({
+      message: t('navigation.languageLoadFailed'),
+    })
+  }
+  finally {
+    if (pendingLocale.value === value)
+      pendingLocale.value = undefined
+  }
 }
 </script>
 
@@ -49,6 +63,8 @@ function selectLocale(value: Locale, close: () => void) {
           v-for="option in localeOptions"
           :key="option.value"
           :aria-pressed="option.value === locale"
+          :disabled="pendingLocale === option.value"
+          :aria-busy="pendingLocale === option.value || undefined"
           class="aria-pressed:bg-cp-control-item-bg-active aria-pressed:text-cp-primary-text aria-pressed:hover:bg-cp-control-item-bg-active"
           @click="selectLocale(option.value, close)"
         >
@@ -57,7 +73,10 @@ function selectLocale(value: Locale, close: () => void) {
           </template>
           <span class="flex items-center justify-between gap-3">
             <span :lang="option.value">{{ option.label }}</span>
-            <Check v-if="option.value === locale" class="size-4 shrink-0" aria-hidden="true" />
+            <span class="inline-grid size-4 shrink-0 place-items-center" aria-hidden="true">
+              <LoaderCircle v-if="pendingLocale === option.value" class="size-4 animate-spin motion-reduce:animate-none" />
+              <Check v-else-if="option.value === locale" class="size-4" />
+            </span>
           </span>
         </ZMenuItem>
       </div>

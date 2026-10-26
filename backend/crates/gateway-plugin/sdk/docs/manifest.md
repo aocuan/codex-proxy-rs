@@ -26,7 +26,7 @@
 | 版本字段 | 当前值 | 对应合同 |
 | --- | --- | --- |
 | `manifestVersion` / `manifest_schema_versions` | `2` | 插件清单格式 |
-| `package.protocolVersion` / `protocol_versions` | `5` | 插件进程 RPC 封装，不是 OpenAI 或 xAI 的业务协议 |
+| `package.protocolVersion` / `protocol_versions` | `6` | 插件进程 RPC 封装，不是 OpenAI 或 xAI 的业务协议 |
 | `contributes.<capability>.version` / `capabilities[].versions` | 见[扩展项简写](#扩展项简写) | 指定扩展能力的行为合同 |
 | 宿主声明的 `schema_version` | `2` | 宿主兼容声明自身的格式 |
 
@@ -34,7 +34,7 @@
 
 清单不接受 `permissions` 字段；插件按[完整信任](#完整信任)运行
 
-RPC v5 的帧布局、编码与会话生命周期见[通信边界](../README.md#通信边界)。插件使用 SDK 构建，并由 CLI 生成包含协议版本的安装包
+RPC v6 的帧布局、编码与会话生命周期见[通信边界](../README.md#通信边界)。插件使用 SDK 构建，并由 CLI 生成包含协议版本的安装包
 
 安装包清单校验与已安装元数据读取是两个边界：清单拒绝未知字段，并检查必需字段、类型和版本；
 数据库元数据的读取规则见[制品与发布](../../../../../docs/architecture.md#制品配置与发布)，不改变清单或 RPC 合同。
@@ -53,9 +53,9 @@ RPC v5 的帧布局、编码与会话生命周期见[通信边界](../README.md#
 
 | 能力 | 当前版本 |
 | --- | --- |
-| `middleware` | `5` |
+| `middleware` | `6` |
 | `scheduler` | `3` |
-| `upstream_adapter` | `4` |
+| `upstream_adapter` | `5` |
 | `frontend_authentication`、`model_router`、`retry_policy`、`observer`、`management` | `2` |
 | `model_catalog`、`command_line`、`maintenance` | `1` |
 
@@ -67,7 +67,7 @@ RPC v5 的帧布局、编码与会话生命周期见[通信边界](../README.md#
     "management": { "version": 2 },
     "command_line": {},
     "middleware": {
-      "version": 5,
+      "version": 6,
       "stages": ["request"],
       "inputFormats": ["openai"],
       "outputFormats": ["openai"]
@@ -90,7 +90,7 @@ capability 固定并由工具生成：
 
 `observer` 使用一个处理器接收完成与上游 WebSocket 事件，实例绑定按 `event` 选择订阅类型；具体合同见[观察事件](capabilities.md#路由调度与观察)
 
-`middleware` 必须从 `http`、`websocket`、`service`、`request`、`attempt` 中显式选择挂载；同一处理器可覆盖多个边界，协议格式等真实业务选择也不能省略。
+`middleware` 必须从 `http`、`websocket`、`service`、`request`、`attempt`、`outbound` 中显式选择挂载；同一处理器可覆盖多个边界，协议格式等真实业务选择也不能省略。
 安装清单若携带不同的固定阶段会被拒绝，而不是在加载时静默改写
 
 ## 完整信任

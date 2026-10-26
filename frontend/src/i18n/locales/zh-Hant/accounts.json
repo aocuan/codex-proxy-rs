@@ -44,7 +44,7 @@
       "usageRate": "使用率",
       "moreGroups": "另有 {count} 個額度組，可展開賬號查看",
       "windows": {
-        "fiveHour": "5h 額度",
+        "fiveHour": "5小時額度",
         "daily": "日額度",
         "weekly": "周額度",
         "monthly": "月額度",
@@ -66,7 +66,6 @@
       "loadingModels": "加載模型中",
       "modelPlaceholder": "選擇上游模型",
       "noModels": "上游沒有返回模型",
-      "running": "檢測中",
       "completedAt": "完成時間",
       "events": {
         "title": "事件軌跡",
@@ -133,15 +132,14 @@
         "urlLength": "上游 API 地址不能超過 2048 個字符",
         "urlFormat": "請輸入不含認證、查詢參數或片段的 HTTP 或 HTTPS 地址",
         "urlRequired": "請輸入完整的上游 API 地址",
-        "apiKeyFormat": "API Key 不能包含空格或控制字符",
+        "apiKeyFormat": "API密鑰不能包含空格或控制字符",
         "transportRequired": "請選擇傳輸方式"
       },
-      "apiKeyRequired": "請輸入 API Key"
+      "apiKeyRequired": "請輸入 API密鑰"
     },
     "batchEdit": {
       "title": "批量編輯賬號",
       "selectionTitle": "編輯 {count} 個賬號",
-      "saveChanges": "保存更改",
       "proxyRequired": "請選擇已通過測試的代理",
       "saved": "已更新 {count} 個賬號",
       "staleAccount": "賬號 {accountId} 的頁面數據已失效，請重新選擇"
@@ -169,7 +167,7 @@
       "loadError": "上游設置讀取失敗",
       "notesHelp": "最多 500 字，留空可清除備註",
       "oauthUnavailable": "該賬號沒有 OAuth 上游設置",
-      "apiKeyUnavailable": "該賬號沒有 API Key 上游設置",
+      "apiKeyUnavailable": "該賬號沒有 API密鑰上游設置",
       "saved": "賬號已更新"
     },
     "filters": {
@@ -180,8 +178,8 @@
       "searchLabel": "搜索賬號",
       "statusLabel": "按賬號狀態篩選",
       "groupLabel": "按賬號分組篩選",
-      "deleteSelected": "刪除選中 ({count})",
-      "exportSelected": "導出選中 ({count})",
+      "deleteSelected": "刪除 ({count})",
+      "exportSelected": "導出 ({count})",
       "importTasks": "導入任務",
       "importAccount": "導入賬號",
       "batchActions": "批量操作 ({count})"
@@ -197,7 +195,7 @@
       "searchOrEnterIdAndPressEnter": "搜索或輸入 ID，回車添加",
       "selectModel": "選擇模型",
       "notInCurrentModelCatalog": "{id}（當前目錄未返回）",
-      "loadingModel": "加載模型中…",
+      "loadingModel": "加載模型中",
       "noMatchingModels": "無匹配模型",
       "noModels": "暫無模型",
       "modelListLoadingFailed": "模型列表加載失敗",
@@ -349,8 +347,8 @@
       "accountAdded": "賬號已添加",
       "providerRequired": "請選擇賬號平臺",
       "accountPlatformIsNotSupported": "賬號平臺不受支持",
-      "apiKeyUnsupported": "當前平臺不支持 API Key 賬號",
-      "apiKeyAccountAdded": "API Key 賬號已添加",
+      "apiKeyUnsupported": "當前平臺不支持 API密鑰賬號",
+      "apiKeyAccountAdded": "API密鑰賬號已添加",
       "importTasksCreated": "已創建 {submitted} 個導入任務",
       "importTaskCreated": "導入任務已創建",
       "partialSubmission": "部分導入任務已創建，保持輸入不變重試可繼續提交",
@@ -361,8 +359,8 @@
       "needProcessing": "需處理",
       "importTaskDetails": "導入任務詳情",
       "created": "{createdAtDisplay} 創建",
-      "waitForCurrentEntryToEnd": "等待當前條目結束",
-      "stopUnstartedEntries": "停止未開始條目",
+      "waitForCurrentEntryToEnd": "收尾中",
+      "stopUnstartedEntries": "停止後續",
       "viewAccount": "查看賬號",
       "entryProgress": "條目進度",
       "accountsImported": "已入庫 {importedAccounts} 個賬號",
@@ -399,7 +397,8 @@
       "thisArticleIsNotImplemented": "本條未執行",
       "entryFailed": "本條導入未成功",
       "checkAccountList": "請檢查賬號列表，確認是否已入庫",
-      "progressReadingFailedTryAgain": "進度讀取失敗，請重試"
+      "progressReadingFailedTryAgain": "進度讀取失敗，請重試",
+      "stopHelp": "停止後仍會完成當前條目"
     },
     "profile": {
       "activity": {
@@ -541,7 +540,7 @@
       "refreshCredits": "刷新主動重置卡",
       "resetCardLoadingFailed": "重置卡加載失敗",
       "refreshRequired": "請刷新重試",
-      "queryingAvailableResetTimes": "正在查詢可用重置次數…",
+      "queryingAvailableResetTimes": "正在查詢可用重置次數",
       "useResetCredit": "使用重置：{title}，{expiry}",
       "useReset": "使用重置",
       "noResetCardAvailableYet": "暫無可用重置卡",

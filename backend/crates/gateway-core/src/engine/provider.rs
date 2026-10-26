@@ -894,7 +894,10 @@ fn unprepared_middleware_response(
     }
 }
 
-fn middleware_error(error: MiddlewareError, send_state: UpstreamSendState) -> ProviderError {
+pub(super) fn middleware_error(
+    error: MiddlewareError,
+    send_state: UpstreamSendState,
+) -> ProviderError {
     match error {
         MiddlewareError::Provider(error) => error,
         MiddlewareError::Rejected | MiddlewareError::Remote { rejected: true, .. } => {

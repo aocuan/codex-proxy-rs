@@ -138,8 +138,8 @@ Provider 不支持刷新（如 OpenAI URL + Key 账号）返回 `invalid_input`�
 ### 自有资源与维护
 
 声明 `maintenance` 并注册 `methods::RECONCILE`，宿主会在实例启用发布、进程恢复及配置变更后调用
-`plugin.reconcile`，并每 30 秒补偿一次。处理器必须幂等；调用可能重复，配置通知会合并，不表示逐条账号事件。
-每个实例串行执行，不同实例相互独立；调用限时 30 秒，返回值不消费，调用失败后等待 5 秒重试。维护失败不回滚已经提交的资源，
+`plugin.reconcile`，每轮完成后等待 30 秒补偿。处理器必须幂等；调用可能重复，配置通知会合并，不表示逐条账号事件。
+每个实例串行执行，不同实例相互独立；处理预算按[会话声明](../README.md#声明调用预算)生效，返回值不消费，调用失败后等待 5 秒重试。维护失败不回滚已经提交的资源，
 下一次对账继续补齐。只读校验、准备候选与 CLI 帮助不会启动维护；停用、替换和宿主关闭时取消旧任务
 
 维护与其他处理器共用以下资源方法：
@@ -216,7 +216,7 @@ SDK 不自动重试。超时或断连不能证明写入未提交；重试上限�
 `invalid_input`，不启动模型执行。上游适配器的请求 `GPAQ` 也使用请求预算，响应事件仍受
 原有 8 MiB 编码上限、Runtime 缓冲预算及流控窗口限制
 
-HTTP 和 request 中间件中的模型回调沿用有效请求设置；attempt、路由、调度、重试和上游适配器
+HTTP 和 request 中间件中的模型回调沿用有效请求设置；attempt、outbound、路由、调度、重试和上游适配器
 沿用该次模型请求冻结的正文预算。显式 Key 模型调用的预检与执行使用同一绑定快照，
 同一父调用内复用 Key 时不受后续配置发布影响；父调用结束后重新绑定才读取新配置，无需重新启用插件
 
@@ -245,7 +245,7 @@ HTTP 和 request 中间件中的模型回调沿用有效请求设置；attempt�
 `host.http.do/do_stream` 和流读取／关闭方法提供受管 HTTP。正文使用独立二进制载荷，Host 统一执行代理、超时和背压，不按插件身份限制目标地址段。DNS 由宿主解析，连接保留目标 Host 与 TLS 域名校验；重定向不会自动跟随。
 受管 HTTP（包括 `host.upstream.http.do[_stream]`）的请求正文按有效设置
 `responses_max_decompressed_body_bytes` 检查。HTTP/request 中间件使用有效请求设置；
-attempt、路由、调度、重试和上游适配器使用执行冻结预算，其余调用读取当前发布配置。
+attempt、outbound、路由、调度、重试和上游适配器使用执行冻结预算，其余调用读取当前发布配置。
 超限返回带 HTTP 413 的 `invalid_input` 和 `not_sent`，不向目标发送请求。
 注册阶段沿用正在编译的配置预算，首次发布前也可发送非空正文。
 非空正文无法取得有效配置时拒绝调用；无正文查询不消耗正文预算。
@@ -258,7 +258,7 @@ attempt、路由、调度、重试和上游适配器使用执行冻结预算，�
 
 ### 洋葱中间件
 
-`middleware.version: 5` 的所有挂载使用同一个 `ctx + next` 组合器。清单显式选择处理边界，绑定决定顺序；
+`middleware.version: 6` 的所有挂载使用同一个 `ctx + next` 组合器。清单显式选择处理边界，绑定决定顺序；
 不按 URL、消息类型或每个内部步骤增加处理器。仅处理一个边界可直接声明其调用类型；跨边界插件使用 `MiddlewareCall`
 在一个处理器内匹配类型化视图，不感兴趣的调用交给 `call.forward().await`
 
@@ -269,6 +269,7 @@ attempt、路由、调度、重试和上游适配器使用执行冻结预算，�
 | `service` | `ServiceCall` / `TypedServiceCall<O>` | 已登记的公开业务服务 |
 | `request` | `RequestCall` | 一次逻辑模型请求 |
 | `attempt` | `RequestCall` | 本次已选 Provider 和账号的执行 |
+| `outbound` | `OutboundCall` | 原样返回准备结果，不发送网络 |
 
 `PluginBuilder::middleware` 与 `MiddlewarePlugin::new` 共用 `MiddlewareInput` / `MiddlewareOutput`。
 `next.run(input)` 消费自身，最多执行一次；结果按相反顺序经过外层。重试或独立子请求通过宿主执行服务发起
@@ -381,6 +382,50 @@ Ping 的自动 Pong 与关闭握手属于底层 WebSocket 协议事实；插件�
 重写消息不能撤销已经发生的发送。文本必须是 UTF-8，控制帧长度和关闭格式仍遵守 WebSocket 协议。
 每条消息组合有独立 RPC 期限；自定义会话持有一个受管流式调用。连接结束会取消仍在处理的消息与发送
 
+#### 上游出站准备
+
+`outbound` 在 Provider 完成请求序列化后、提交发送前执行；无绑定或未命中范围时保留原生请求构造，不进入出站准备链。
+`OutboundCall.request` 包含
+`head.target`、Provider 已生成的完整 `head.headers` 和二进制 `body`；`target` 为 `Http { method, uri }`
+或 `WebSocket { uri }`，不能在准备过程中切换传输类型。HTTP 正文是已经序列化、完成内容编码的实际字节，
+插件自行处理压缩与 `Content-Encoding` 等头部的一致性；宿主不解码正文、补回字段或修复请求
+
+`OutboundCall.metadata` 提供真实请求、Client Key、分组、Provider、模型、账号与 attempt 序号。
+这些归属由宿主冻结，返回值只有请求；修改 URL、认证头或正文不改变账号租约、凭据版本与计费归属。
+宿主不从最终字节重建模型、选号或续接事实；需要改变这些业务含义时，插件应在相应的 request / attempt 阶段保持一致。
+头部保留重复项与原始字节，正文不经 JSON 编码。
+这些头部是交给 transport 的字段集合；原生 HTTP 客户端 reqwest 会在缺少 `Accept` 时发送 `Accept: */*`，本能力不支持禁用该默认行为。
+最终结果仍须符合原生 transport 的可编码格式与目标约束；xAI 的内置 transport 只接受固定官方推理端点，
+当前原生 WebSocket 客户端不接受非 ASCII 握手头值，不可表示的值在发送前报错
+
+`next.run(request)` 只进入下层准备链并返回完整请求，不打开连接、不发送消息；外层仍可修改返回值。
+所有外层处理结束后，Provider 才把结果交给 transport 发送。插件错误、非法传输值或正文超限在原生发送前结束，
+不自动跳过、重放或切换传输；取消、请求截止与回调资源沿用当前 attempt
+
+身份策略可在 `request` / `attempt` 读取原始输入，以真实 Key 与账号标识调用私有状态服务维护映射，
+再在 `outbound` 自行改写完整请求中的身份及关联字段。UUID 生成、并发创建、持久化、会话与缓存标识派生均由插件负责；
+通用中间件层不解释 installation ID、device ID 等策略字段，也不在插件输出后重新派生业务字段
+
+WebSocket 的 `body` 是准备发送的一条完整 UTF-8 文本消息，`headers` 和 `uri` 是候选 opening。
+新响应链按出站改写产生的 URI / 握手头差异分区，精确续接仍使用持有原响应链的连接。
+复用连接时不能改写已发生的握手；宿主不为插件主动重连、重放消息或重建续接。
+插件需要握手身份与消息内容一致时，应结合实际连接与续接语义选择改写
+
+```rust
+use gateway_plugin_sdk::client::{OutboundCall, PluginBuilder};
+
+let plugin = PluginBuilder::from_json(manifest_json)?
+    .middleware(|call: OutboundCall| async move {
+        let mut request = call.next.run(call.request).await?;
+        request.head.headers.retain(|header| header.name != "x-optional");
+        Ok(request)
+    })?
+    .build()?;
+```
+
+该处理器的清单声明 `middleware.version: 6` 和 `stages: ["outbound"]`，不需要单独注册网络发送方法。
+当前内置 Provider 接入其模型执行所用的 HTTP 与 WebSocket 文本发送边界；OAuth、额度刷新等后台网络不属于模型出站准备
+
 #### 模型请求与 attempt
 
 `RequestCall.request.head` 包含完整 Client Key 与分组归属。request 中间件改写正文后，OpenAI 在进入 attempt 前应用宿主 Fast 策略；
@@ -389,10 +434,11 @@ request 与 attempt 阶段通过 `append_header` 添加的请求头会进入上�
 OpenAI 与 xAI 的上游 headers 先由账号和画像生成，插件同名字段覆盖基线，同名多值按插件顺序保留；不存在按认证、Cookie 或会话名称划分的保护列表。
 实际账号租约、凭据版本与计费归属仍记录真实选中事实，不随插件修改 header 名称而伪造
 
-middleware v5 的 request 阶段 `request.head.settings` 是本次调用的有效设置对象，包含 `runtime`、`fast_mode`、`client_limits` 和 `timeout_ms`。
+request 阶段 `request.head.settings` 是本次调用的有效设置对象，包含 `runtime`、`fast_mode`、`client_limits` 和 `timeout_ms`。
 `fast_mode` 使用 `default`、`enabled`、`disabled` 三态，具体档位语义见[账号分组](../../../../../docs/api.md#6-账号分组)。
 `runtime` 使用宿主快照的设置字段，画像已合并 Client Key 设置；可以修改映射、画像、调度、位置及计价等执行参数。
 SDK 仅在对象改变时提交完整替换，`false`、`0`、空映射和合同允许的 `null` 不表示跳过；不做隐式深合并。
+线协议省略 `next.settings` 才表示保留；显式 `null` 仍按完整替换校验，因不符合设置对象合同而拒绝。
 多个插件按入站顺序读取前层改写后的值，终端在执行前从同一配置代次重算，改写不发布全局配置。
 `timeout_ms` 默认为 `null`，表示不限制模型请求总时长；数值从本次模型请求开始计时，`0` 表示立即到期，
 改写不会清零已用时间。HTTP 处理期限与 RPC 操作期限仍各自生效
@@ -455,6 +501,7 @@ restore_and_validate_response(response).await
 | --- | --- |
 | 请求头／正文改写、提前拒绝、响应头处理 | `middleware` 包裹一次 `next.run(request)` |
 | 响应逐帧转换、观察 | 返回惰性 `map_frames` / `inspect_frames`，不能在 `next` 返回时就把流视为结束 |
+| Provider 已生成请求的最终 URL、头部或字节改写 | `outbound` 返回最终请求，Provider 随后发送 |
 | 新上游路径、协议编码、错误及用量解析 | `upstream_adapter` 终端，复用已选账号和原生结算 |
 | 账号代理、默认凭据注入、网络发送状态 | 宿主网络外层，插件可覆盖默认请求头，普通 HTTP 与账号 HTTP 共用发送和正文资源实现 |
 | 路由、调度、重试决策 | 各自的决策端口，Core 保持最终裁决和预算 |

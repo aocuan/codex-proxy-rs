@@ -22,8 +22,12 @@ const props = withDefaults(defineProps<{
 const { t } = useI18n({ useScope: 'global' })
 
 const detailHeading = computed(() => props.label)
-const detailTitle = computed(() => detailHeading.value ?? (props.windows[0] ? quotaWindowLabel(props.windows[0]) : t('accounts.quota.quotaDetails')))
-const summaryLabel = computed(() => props.label ?? (props.windows[0] ? quotaWindowLabel(props.windows[0]) : t('usage.quota')))
+const detailTitle = computed(() => detailHeading.value ?? (props.windows[0]
+  ? quotaWindowLabel(props.windows[0])
+  : t('accounts.quota.quotaDetails')))
+const summaryLabel = computed(() => props.label ?? (props.windows[0]
+  ? quotaWindowLabel(props.windows[0])
+  : t('usage.quota')))
 const hasQuotaWindow = computed(() => props.windows.some(window => typeof window.usedPercent === 'number'))
 const detailItems = computed(() =>
   props.windows.map((window) => {
@@ -116,7 +120,7 @@ function quotaWindowCode(windowSeconds: number | null, role: AccountQuotaWindow[
         <article v-for="item in detailItems" :key="item.key">
           <div class="grid grid-cols-[32px_minmax(0,1fr)_auto] items-center gap-2.5">
             <span
-              class="grid h-5 w-8 place-items-center rounded-sm bg-cp-blue-container-strong font-mono text-[9px] leading-none font-heavy tracking-[0.04em] text-cp-blue-on-container"
+              class="grid h-5 w-8 place-items-center rounded-sm bg-cp-blue-container-strong font-mono text-[9px] leading-none font-heavy tracking-[0.04em] whitespace-nowrap text-cp-blue-on-container"
             >
               {{ item.code }}
             </span>

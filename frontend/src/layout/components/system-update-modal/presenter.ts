@@ -27,8 +27,12 @@ export function resolveSystemUpdatePresentation(input: SystemUpdatePresentationI
     releaseVersion: versionLabel(input.updateInfo?.latestVersion),
     streamStatusLabel: input.updateStreaming
       ? t('systemUpdate.logs.live')
-      : input.updateStreamError ? t('systemUpdate.logs.disconnectedState') : t('systemUpdate.logs.waiting'),
-    restartButtonLabel: input.restarting ? t('systemUpdate.status.restarting') : t('systemUpdate.actions.restart'),
+      : input.updateStreamError
+        ? t('systemUpdate.logs.disconnectedState')
+        : t('systemUpdate.logs.waiting'),
+    restartButtonLabel: input.restarting
+      ? t('systemUpdate.status.restarting')
+      : t('systemUpdate.actions.restart'),
   }
 }
 
@@ -48,7 +52,11 @@ export function resolveSystemUpdateLogClasses(level: string) {
 function resolveStatus(input: SystemUpdatePresentationInput) {
   if (input.restarting || input.updating || input.checking || input.loading) {
     return {
-      label: input.restarting ? t('systemUpdate.status.restarting') : input.updating ? t('systemUpdate.status.updating') : t('systemUpdate.status.checking'),
+      label: input.restarting
+        ? t('systemUpdate.status.restarting')
+        : input.updating
+          ? t('systemUpdate.status.updating')
+          : t('systemUpdate.status.checking'),
       icon: RefreshCw,
       badge: 'bg-cp-info-container text-cp-info-on-container',
       iconClass: 'text-cp-info',
@@ -64,7 +72,11 @@ function resolveStatus(input: SystemUpdatePresentationInput) {
   }
   if (input.needRestart || input.hasUpdate || input.updateInfo) {
     return {
-      label: input.needRestart ? t('systemUpdate.status.restartRequired') : input.hasUpdate ? t('systemUpdate.status.available') : t('systemUpdate.status.upToDate'),
+      label: input.needRestart
+        ? t('systemUpdate.status.restartRequired')
+        : input.hasUpdate
+          ? t('systemUpdate.status.available')
+          : t('systemUpdate.status.upToDate'),
       icon: input.hasUpdate ? ArrowUpCircle : CheckCircle2,
       badge: 'bg-cp-success-container text-cp-success-on-container',
       iconClass: 'text-cp-success',
@@ -83,7 +95,9 @@ function resolveSummaryItems(input: SystemUpdatePresentationInput) {
     {
       key: 'current',
       label: t('systemUpdate.currentVersion'),
-      value: input.loading ? '...' : versionLabel(input.updateInfo?.currentVersion ?? input.version?.version),
+      value: input.loading
+        ? '...'
+        : versionLabel(input.updateInfo?.currentVersion ?? input.version?.version),
       title: input.updateInfo?.currentVersion ?? input.version?.version,
     },
     {
@@ -140,5 +154,7 @@ function versionLabel(value?: string | null) {
 }
 
 function displayValue(value: unknown) {
-  return value ? String(value) : '-'
+  return value
+    ? String(value)
+    : '-'
 }
