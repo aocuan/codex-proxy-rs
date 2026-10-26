@@ -461,6 +461,7 @@ async fn initialize_inner(
         store.evaluations(),
         gateway_version.clone(),
         timezone,
+        published_snapshot.clone(),
     ));
     let evaluation_task = evaluation::EvaluationTask::new(
         store.evaluations(),

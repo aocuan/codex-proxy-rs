@@ -296,7 +296,8 @@ impl From<crate::model::observability::UsageRecord> for EvaluationObservation {
             provider: record.provider_kind,
             account_id: record.provider_account_ref,
             upstream_model: record.upstream_model_id,
-            response_model: record.upstream_response_model,
+            // 网关不再采集响应自报模型，保留字段用于历史记录与独立判题结果
+            response_model: None,
             reasoning_effort: record.reasoning_effort,
             reasoning_preset: record.reasoning_preset,
             service_tier: record.service_tier,

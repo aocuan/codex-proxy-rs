@@ -69,5 +69,14 @@ export function useAccountEvaluations(accounts: Ref<Account[]>) {
     if (!request.loading.value)
       void refresh()
   }, 15000)
-  return { history, loading: request.loading, error: request.error, refresh, inspect, open, item, run }
+  return {
+    history,
+    loading: request.loading,
+    error: request.error,
+    refresh,
+    inspect,
+    open,
+    item,
+    run,
+  }
 }

@@ -76,16 +76,56 @@ const pluginMenuId = useId()
 const pluginGroupExpanded = shallowRef(route.path.startsWith('/plugins'))
 
 const navItems = computed(() => ([
-  { label: t('navigation.overview'), icon: LayoutDashboard, path: '/' },
-  { label: t('navigation.accounts'), icon: Users, path: '/accounts' },
-  { label: t('navigation.proxies'), icon: Network, path: '/proxies' },
-  { label: t('navigation.groups'), icon: FolderTree, path: '/groups' },
-  { label: t('navigation.apiKeys'), icon: KeyRound, path: '/keys' },
-  { label: t('navigation.usage'), icon: ChartNoAxesColumn, path: '/usage' },
-  { label: t('navigation.evaluations'), icon: TestTubeDiagonal, path: '/evaluations' },
-  { label: t('navigation.plugins'), icon: Puzzle, path: '/plugins' },
-  { label: t('navigation.appearance'), icon: Palette, path: '/theme' },
-  { label: t('navigation.settings'), icon: Settings, path: '/settings' },
+  {
+    label: t('navigation.overview'),
+    icon: LayoutDashboard,
+    path: '/',
+  },
+  {
+    label: t('navigation.accounts'),
+    icon: Users,
+    path: '/accounts',
+  },
+  {
+    label: t('navigation.proxies'),
+    icon: Network,
+    path: '/proxies',
+  },
+  {
+    label: t('navigation.groups'),
+    icon: FolderTree,
+    path: '/groups',
+  },
+  {
+    label: t('navigation.apiKeys'),
+    icon: KeyRound,
+    path: '/keys',
+  },
+  {
+    label: t('navigation.usage'),
+    icon: ChartNoAxesColumn,
+    path: '/usage',
+  },
+  {
+    label: t('navigation.evaluations'),
+    icon: TestTubeDiagonal,
+    path: '/evaluations',
+  },
+  {
+    label: t('navigation.plugins'),
+    icon: Puzzle,
+    path: '/plugins',
+  },
+  {
+    label: t('navigation.appearance'),
+    icon: Palette,
+    path: '/theme',
+  },
+  {
+    label: t('navigation.settings'),
+    icon: Settings,
+    path: '/settings',
+  },
 ]))
 const pluginNavIndex = navItems.value.findIndex(item => item.path === '/plugins')
 const pluginMenuVisible = computed(() => pluginGroupExpanded.value && !isCollapsed.value)
@@ -197,10 +237,13 @@ const collapsedSidebarWidth = 88
 const expandedSidebarWidth = 251
 const sidebarWidth = computed(() => (isCollapsed.value ? collapsedSidebarWidth : expandedSidebarWidth))
 const brandLabelVisible = shallowRef(!isCollapsed.value)
-const themeToggleLabel = computed(() => (effectiveTheme.value === 'dark' ? t('appearance.switchToLight') : t('appearance.switchToDark')))
-const hasVersionLabel = computed(() => Boolean(version.value?.version.trim()))
+const themeToggleLabel = computed(() => (effectiveTheme.value === 'dark'
+  ? t('appearance.switchToLight')
+  : t('appearance.switchToDark')))
 const versionLabel = computed(() => formatVersionLabel(version.value?.version))
-const updateButtonLabel = computed(() => (hasUpdate.value ? t('navigation.update.available') : t('navigation.update.open')))
+const updateButtonLabel = computed(() => (hasUpdate.value
+  ? t('navigation.update.available')
+  : t('navigation.update.open')))
 
 function prefersReducedMotion() {
   return preferredMotion.value === 'reduce'

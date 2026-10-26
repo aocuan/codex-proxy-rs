@@ -3,7 +3,9 @@ import { locale } from '@/i18n'
 // 仅用于界面展示，更新比较与安装继续使用完整版本号
 export function formatVersionLabel(value?: string | null) {
   const version = value?.trim().replace(/^v/i, '').split('+', 1)[0]
-  return version ? `v${version}` : ''
+  return version
+    ? `v${version}`
+    : ''
 }
 
 export function numberLocale() {

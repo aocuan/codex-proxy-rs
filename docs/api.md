@@ -2651,6 +2651,7 @@ GET/HEAD 不接受正文。响应状态码为 200–599，内容类型元数据�
 | --- | --- | --- |
 | `GET /api/admin/evaluations/config` | 无 | 题目模板及其 definition、版本、部署时区与限制 |
 | `GET /api/admin/evaluations/settings` | 无 | `{revision, defaults, typesafeConfigured}` |
+| `POST /api/admin/evaluations/accounts/access` | `clientKeyId`、`accountIds`（1–120 个） | `{accountId, allowed, reason}[]`，当前 Key 的账号授权预检，不调用模型 |
 | `POST /api/admin/evaluations/settings/update` | `{revision, defaults, typesafeApiKey?}` | 更新后的公开设置，不返回密钥 |
 | `GET /api/admin/evaluations/accounts/history` | 逗号分隔的 `accountIds`（1–100 个）；每账号 `limit` 默认 28、范围 1–28 | 各账号最近一组同条件可判分记录 |
 | `GET /api/admin/evaluations/runs` | `limit` 默认 20、范围 1–100，`offset` 默认 0 | 按创建时间倒序的批次数组 |
@@ -2665,6 +2666,10 @@ GET/HEAD 不接受正文。响应状态码为 200–599，内容类型元数据�
 | `POST /api/admin/evaluations/plans/delete` | `{id, revision}` | `null`，历史批次仍保留 |
 
 查询和 JSON 均拒绝未知字段，成功和错误沿用[公共约定](#管理接口)。
+创建测评、保存启用计划及默认网关判题连接时检查账号授权，不通过返回 400；暂停计划仍可保存。
+授权预检只检查当前账号范围，不保证凭据、额度或上游模型可用，实际执行仍重新鉴权。
+`policy_denied` 且尚无请求 ID 表示在上游调用前被拦截，需检查所选 Key 与账号的分组及启用状态
+
 `parameters` 格式如下，保存的是引用 ID，不接收密钥明文或凭据：
 
 ```json

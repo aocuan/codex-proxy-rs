@@ -5,6 +5,21 @@ export type EvaluationKind = 'candy' | 'pelican'
 export type EvaluationStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'skipped'
 export type EvaluationVerdict = 'correct' | 'wrong' | 'ungraded' | 'not_applicable'
 
+export interface EvaluationAccountAccess {
+  accountId: string
+  allowed: boolean
+  reason: string | null
+}
+
+export function checkEvaluationAccountAccess(clientKeyId: string, accountIds: string[], options: RequestOptions = {}) {
+  return request<EvaluationAccountAccess[]>({
+    url: '/api/admin/evaluations/accounts/access',
+    method: 'POST',
+    data: { clientKeyId, accountIds },
+    ...options,
+  })
+}
+
 export interface EvaluationJudgeConfig {
   clientKeyId: string
   accountId: string
@@ -226,26 +241,46 @@ export function getEvaluationRuns(params: { limit: number, offset: number }, opt
 export function getAccountEvaluationHistory(accountIds: string[], options: RequestOptions = {}) {
   return request<EvaluationHistoryItem[]>({
     url: `${root}/accounts/history`,
-    params: { accountIds: accountIds.join(','), limit: 28 },
+    params: {
+      accountIds: accountIds.join(','),
+      limit: 28,
+    },
     ...options,
   })
 }
 
 export function submitEvaluation(data: { submissionId: string, parameters: EvaluationParameters }) {
   // 同一草稿重试使用同一提交标识，网络丢失响应不应再消耗一次额度
-  return request<EvaluationRun>({ url: `${root}/runs/create`, method: 'POST', data, retry: true })
+  return request<EvaluationRun>({
+    url: `${root}/runs/create`,
+    method: 'POST',
+    data,
+    retry: true,
+  })
 }
 
 export function getEvaluationDetail(id: string, options: RequestOptions = {}) {
-  return request<EvaluationDetail>({ url: `${root}/runs/detail`, params: { id }, ...options })
+  return request<EvaluationDetail>({
+    url: `${root}/runs/detail`,
+    params: { id },
+    ...options,
+  })
 }
 
 export function stopEvaluation(id: string) {
-  return request<EvaluationDetail>({ url: `${root}/runs/stop`, method: 'POST', data: { id } })
+  return request<EvaluationDetail>({
+    url: `${root}/runs/stop`,
+    method: 'POST',
+    data: { id },
+  })
 }
 
 export function getEvaluationOutput(id: string, options: RequestOptions = {}) {
-  return request<EvaluationOutput>({ url: `${root}/items/output`, params: { id }, ...options })
+  return request<EvaluationOutput>({
+    url: `${root}/items/output`,
+    params: { id },
+    ...options,
+  })
 }
 
 export function getEvaluationPlans(options: RequestOptions = {}) {
@@ -265,11 +300,19 @@ export function updateEvaluationPlan(id: string, revision: number, settings: Eva
 }
 
 export function deleteEvaluationPlan(id: string, revision: number) {
-  return request<null>({ url: `${root}/plans/delete`, method: 'POST', data: { id, revision } })
+  return request<null>({
+    url: `${root}/plans/delete`,
+    method: 'POST',
+    data: { id, revision },
+  })
 }
 
 export function retryEvaluationJudgment(id: string) {
-  return request<null>({ url: `${root}/items/retry-judgment`, method: 'POST', data: { id } })
+  return request<null>({
+    url: `${root}/items/retry-judgment`,
+    method: 'POST',
+    data: { id },
+  })
 }
 
 export function getEvaluationSettings(options: RequestOptions = {}) {

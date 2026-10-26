@@ -20,21 +20,35 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
   function show(planMode: boolean, plan: EvaluationPlan | null = null, accountIds: string[] = []) {
     isPlan.value = planMode
     editing.value = plan
-    parameters.value = plan ? structuredClone(plan.settings.parameters) : emptyParameters()
+    parameters.value = plan
+      ? structuredClone(plan.settings.parameters)
+      : emptyParameters()
     if (!plan && settings.value) {
       const { judge: _judge, ...defaults } = settings.value.defaults
-      parameters.value = { ...parameters.value, ...defaults, clientKeyId: defaults.clientKeyId ?? '', model: defaults.model ?? '', accountIds }
+      parameters.value = {
+        ...parameters.value,
+        ...defaults,
+        clientKeyId: defaults.clientKeyId ?? '',
+        model: defaults.model ?? '',
+        accountIds,
+      }
     }
     parameters.value.definition ??= structuredClone(config.value?.tests.find(test => test.kind === parameters.value.kind)?.definition)
     name.value = plan?.settings.name ?? ''
-    intervalMinutes.value = plan ? String(plan.settings.intervalMinutes ?? '') : '60'
+    intervalMinutes.value = plan
+      ? String(plan.settings.intervalMinutes ?? '')
+      : '60'
     enabled.value = plan?.settings.enabled ?? true
     submission = undefined
     open.value = true
   }
 
   async function save() {
-    const params = { ...parameters.value, accountIds: [...parameters.value.accountIds], model: parameters.value.model.trim() }
+    const params = {
+      ...parameters.value,
+      accountIds: [...parameters.value.accountIds],
+      model: parameters.value.model.trim(),
+    }
     if (!params.definition?.name.trim() || !params.definition.prompt.trim()) {
       ZNotification.warning({ message: '请填写测评名称和提示词' })
       return
@@ -78,19 +92,44 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
       }
       else {
         const fingerprint = JSON.stringify(params)
-        if (submission?.fingerprint !== fingerprint)
-          submission = { fingerprint, id: generateRequestId() }
+        if (submission?.fingerprint !== fingerprint) {
+          submission = {
+            fingerprint,
+            id: generateRequestId(),
+          }
+        }
         run = await submitEvaluation({ submissionId: submission.id, parameters: params })
       }
       open.value = false
-      ZNotification.success({ message: isPlan.value ? '计划已保存' : '测评已加入队列' })
+      ZNotification.success({
+        message: isPlan.value ? '计划已保存' : '测评已加入队列',
+      })
       await onSaved(run)
     })
   }
 
-  return { open, isPlan, editing, parameters, name, intervalMinutes, enabled, saving: action.loading, show, save }
+  return {
+    open,
+    isPlan,
+    editing,
+    parameters,
+    name,
+    intervalMinutes,
+    enabled,
+    saving: action.loading,
+    show,
+    save,
+  }
 }
 
 function emptyParameters(): EvaluationParameters {
-  return { kind: 'candy', clientKeyId: '', accountIds: [], model: '', reasoningEffort: 'high', repetitions: 1, timeoutSeconds: 600 }
+  return {
+    kind: 'candy',
+    clientKeyId: '',
+    accountIds: [],
+    model: '',
+    reasoningEffort: 'high',
+    repetitions: 1,
+    timeoutSeconds: 600,
+  }
 }

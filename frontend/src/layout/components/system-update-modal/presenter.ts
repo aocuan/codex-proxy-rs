@@ -124,9 +124,24 @@ function resolveSummaryItems(input: SystemUpdatePresentationInput) {
 
 function resolveConfirmRows(input: SystemUpdatePresentationInput) {
   return [
-    { key: 'current', label: t('systemUpdate.currentVersion'), value: versionLabel(input.version?.version), title: input.version?.version },
-    { key: 'previous', label: t('systemUpdate.displayedTarget'), value: versionLabel(input.previousTargetVersion), title: input.previousTargetVersion },
-    { key: 'target', label: t('systemUpdate.remoteTarget'), value: versionLabel(input.confirmedTargetVersion), title: input.confirmedTargetVersion },
+    {
+      key: 'current',
+      label: t('systemUpdate.currentVersion'),
+      value: versionLabel(input.version?.version),
+      title: input.version?.version,
+    },
+    {
+      key: 'previous',
+      label: t('systemUpdate.displayedTarget'),
+      value: versionLabel(input.previousTargetVersion),
+      title: input.previousTargetVersion,
+    },
+    {
+      key: 'target',
+      label: t('systemUpdate.remoteTarget'),
+      value: versionLabel(input.confirmedTargetVersion),
+      title: input.confirmedTargetVersion,
+    },
   ]
 }
 

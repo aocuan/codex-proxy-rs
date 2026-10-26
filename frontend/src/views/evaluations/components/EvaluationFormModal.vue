@@ -7,6 +7,7 @@ import { isEqual } from 'es-toolkit'
 import { computed, ref, shallowRef, toRaw, watch } from 'vue'
 import { effortOptions, graderLabel, judgeGrader } from '@/components/evaluation/defaults'
 import EvaluationDefinitionFields from '@/components/evaluation/EvaluationDefinitionFields.vue'
+import { useEvaluationAccess } from '../composables/useEvaluationAccess'
 
 const props = defineProps<{
   editor: ReturnType<typeof useEvaluationEditor>
@@ -20,26 +21,41 @@ const { open, isPlan, editing, parameters, name, intervalMinutes, enabled, savin
 const { loadingAccounts, loadingKeys } = props.catalog
 const panel = shallowRef<'main' | 'definition' | 'execution'>('main')
 const definitionDraft = ref<EvaluationDefinition | null>(null)
-const accountOptions = computed(() => props.catalog.accountOptions(parameters.value.accountIds))
+const access = useEvaluationAccess(() => open.value, () => parameters.value.clientKeyId, () => props.catalog.accountOptions(parameters.value.accountIds), () => parameters.value.accountIds)
+const { accountOptions, message: accessMessage, valid: accessValid, loading: checkingAccess, error: accessError } = access
 const keyOptions = computed(() => props.catalog.keyOptions(parameters.value.clientKeyId))
-const mainTitle = computed(() => isPlan.value ? editing.value ? '编辑测评计划' : '新建测评计划' : '新建测评')
-const title = computed(() => panel.value === 'definition' ? '编辑题目' : panel.value === 'execution' ? '运行设置' : mainTitle.value)
+const mainTitle = computed(() => isPlan.value
+  ? editing.value ? '编辑测评计划' : '新建测评计划'
+  : '新建测评')
+const title = computed(() => panel.value === 'definition'
+  ? '编辑题目'
+  : panel.value === 'execution'
+    ? '运行设置'
+    : mainTitle.value)
 const grader = computed(() => parameters.value.definition?.grader)
 const effort = computed({
   get: () => parameters.value.reasoningEffort ?? 'default',
-  set: (value: string | undefined) => { parameters.value.reasoningEffort = value && value !== 'default' ? value : null },
+  set: (value: string | undefined) => {
+    parameters.value.reasoningEffort = value && value !== 'default'
+      ? value
+      : null
+  },
 })
 const preset = computed({
   get: () => {
     const match = props.config?.tests.findIndex(item => isEqual(item.definition, parameters.value.definition)) ?? -1
-    return match >= 0 ? String(match) : 'custom'
+    return match >= 0
+      ? String(match)
+      : 'custom'
   },
   set: (value: string | undefined) => {
     if (value === 'custom') {
       editDefinition(true)
       return
     }
-    const selected = value === undefined ? undefined : props.config?.tests[Number(value)]
+    const selected = value === undefined
+      ? undefined
+      : props.config?.tests[Number(value)]
     if (selected) {
       parameters.value.kind = selected.kind
       parameters.value.definition = structuredClone(toRaw(selected.definition))
@@ -47,8 +63,16 @@ const preset = computed({
   },
 })
 const presetOptions = computed(() => [
-  ...(props.config?.tests ?? []).map((item, index) => ({ label: item.label, value: String(index) })),
-  { label: preset.value === 'custom' && parameters.value.definition?.name ? `自定义 · ${parameters.value.definition.name}` : '自定义题目', value: 'custom' },
+  ...(props.config?.tests ?? []).map((item, index) => ({
+    label: item.label,
+    value: String(index),
+  })),
+  {
+    label: preset.value === 'custom' && parameters.value.definition?.name
+      ? `自定义 · ${parameters.value.definition.name}`
+      : '自定义题目',
+    value: 'custom',
+  },
 ])
 let applyDefaultsOnSave = false
 function configure() {
@@ -57,7 +81,12 @@ function configure() {
 }
 function editDefinition(blank = false) {
   definitionDraft.value = blank
-    ? { name: '', prompt: '', outputFormat: 'text', grader: { type: 'none' } }
+    ? {
+        name: '',
+        prompt: '',
+        outputFormat: 'text',
+        grader: { type: 'none' },
+      }
     : structuredClone(toRaw(parameters.value.definition!))
   panel.value = 'definition'
 }
@@ -96,7 +125,18 @@ watch(open, (value) => {
   <ZDialog v-model="open" :title="title" :width="panel === 'definition' ? '48rem' : '38rem'" :show-close="!saving" :close-on-click-modal="!saving" :close-on-press-escape="!saving">
     <ZForm v-if="panel === 'main'" class="grid gap-5">
       <ZFormItem label="被测账号" required>
-        <ZSelect v-model="parameters.accountIds" :options="accountOptions" :disabled="saving" multiple remote filterable :loading="loadingAccounts" collapse-tags :max-collapse-tags="3" placeholder="选择要检测的账号" @query-change="catalog.searchAccounts" />
+        <ZSelect v-model="parameters.accountIds" :options="accountOptions" :disabled="saving" multiple remote filterable :loading="loadingAccounts || checkingAccess" collapse-tags :max-collapse-tags="3" placeholder="选择要检测的账号" @query-change="catalog.searchAccounts">
+          <template #option="{ option }">
+            <span class="min-w-0 flex-1 truncate" :title="option.label">{{ option.label }}</span>
+            <span class="max-w-1/2 shrink-0 truncate text-cp-xs font-normal" :class="option.disabled ? 'text-cp-text-disabled' : 'text-cp-text-secondary'" :title="option.description">{{ option.description }}</span>
+          </template>
+        </ZSelect>
+        <p v-if="accessMessage" class="mt-2 mb-0 text-cp-sm text-cp-warning-text wrap-anywhere" role="status">
+          {{ accessMessage }}
+        </p>
+        <ZButton v-if="accessError" size="small" variant="text" @click="access.refresh">
+          重试授权检查
+        </ZButton>
       </ZFormItem>
       <ZFormItem label="测评内容" required>
         <div class="flex items-center gap-2">
@@ -173,7 +213,7 @@ watch(open, (value) => {
         <ZButton :disabled="saving" @click="open = false">
           取消
         </ZButton>
-        <ZButton type="primary" :loading="saving" :disabled="!config || !parameters.clientKeyId" @click="editor.save">
+        <ZButton type="primary" :loading="saving" :disabled="!config || !parameters.clientKeyId || ((!isPlan || enabled) && (!accessValid || checkingAccess))" @click="editor.save">
           {{ isPlan ? '保存计划' : '开始测评' }}
         </ZButton>
       </template>

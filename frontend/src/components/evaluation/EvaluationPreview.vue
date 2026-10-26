@@ -1,46 +1,32 @@
 <script setup lang="ts">
-import { ZButton, ZEmpty } from '@codex-proxy/ui'
-import { computed, shallowRef, watch } from 'vue'
-import { createEvaluationPreview } from './preview'
+import { ZButton } from '@codex-proxy/ui'
+import { useFullscreen } from '@vueuse/core'
+import { shallowRef, useTemplateRef, watch } from 'vue'
 
 const props = defineProps<{ html: string }>()
-const active = shallowRef(false)
+const active = shallowRef(true)
+const container = useTemplateRef<HTMLElement>('container')
+const { isFullscreen, isSupported, toggle } = useFullscreen(container)
 watch(() => props.html, () => {
-  active.value = false
-})
-const preview = computed(() => {
-  if (!active.value)
-    return null
-  try {
-    return { document: createEvaluationPreview(props.html), error: '' }
-  }
-  catch (error) {
-    return { document: null, error: error instanceof Error ? error.message : '作品无法预览' }
-  }
+  active.value = true
 })
 </script>
 
 <template>
-  <div class="min-w-0">
-    <ZEmpty v-if="!active" title="作品尚未加载" description="仅预览内联 SVG 与 CSS 动画">
-      <template #action>
-        <ZButton @click="active = true">
-          加载安全预览
-        </ZButton>
-      </template>
-    </ZEmpty>
-    <ZEmpty v-else-if="preview?.error" title="无法预览" :description="preview.error" />
-    <template v-else-if="preview?.document">
-      <iframe
-        :srcdoc="preview.document.srcdoc" sandbox="" referrerpolicy="no-referrer" title="鹈鹕作品安全预览"
-        class="h-96 w-full rounded-cp border-0 bg-cp-bg-container"
-      />
-      <div class="mt-2 flex items-center justify-between gap-3">
-        <span class="text-cp-xs text-cp-text-tertiary">已禁用脚本、外部资源和跳转，原始回答保持不变</span>
-        <ZButton size="small" @click="active = false">
-          卸载预览
-        </ZButton>
-      </div>
-    </template>
+  <div ref="container" class="flex min-w-0 flex-col gap-2 bg-cp-bg-container" :class="isFullscreen ? 'h-screen p-3' : ''">
+    <div class="flex shrink-0 items-center justify-end gap-2">
+      <ZButton v-if="isSupported && (active || isFullscreen)" size="small" @click="toggle()">
+        {{ isFullscreen ? '退出全屏' : '全屏预览' }}
+      </ZButton>
+      <ZButton size="small" @click="active = !active">
+        {{ active ? '卸载预览' : '加载预览' }}
+      </ZButton>
+    </div>
+    <iframe
+      v-if="active"
+      :srcdoc="props.html" title="HTML 作品预览"
+      class="w-full rounded-cp border-0 bg-white"
+      :class="isFullscreen ? 'min-h-0 flex-1' : 'h-[70vh] min-h-96 resize-y'"
+    />
   </div>
 </template>

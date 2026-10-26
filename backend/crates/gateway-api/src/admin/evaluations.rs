@@ -23,6 +23,10 @@ where
 {
     Router::new()
         .route("/api/admin/evaluations/config", get(config::<S>))
+        .route(
+            "/api/admin/evaluations/accounts/access",
+            post(account_access::<S>),
+        )
         .route("/api/admin/evaluations/settings", get(settings::<S>))
         .route(
             "/api/admin/evaluations/settings/update",
@@ -54,6 +58,29 @@ where
             "/api/admin/evaluations/plans/delete",
             post(delete_plan::<S>),
         )
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AccountAccessRequest {
+    client_key_id: String,
+    account_ids: Vec<String>,
+}
+
+async fn account_access<S: SessionState + Send + Sync>(
+    _auth: AdminAuth,
+    State(state): State<S>,
+    AdminJson(request): AdminJson<AccountAccessRequest>,
+) -> Result<impl IntoResponse, AdminError> {
+    let access = state
+        .admin_services()
+        .evaluations()
+        .account_access(&request.client_key_id, &request.account_ids)
+        .map_err(map_admin_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(access),
+    ))
 }
 
 async fn settings<S: SessionState + Send + Sync>(

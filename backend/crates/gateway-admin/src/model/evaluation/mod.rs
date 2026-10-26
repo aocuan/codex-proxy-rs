@@ -23,6 +23,15 @@ pub const MAX_QUEUED_ITEMS: i64 = 100;
 pub const MAX_PARALLEL_REQUESTS: i64 = 2;
 pub const MAX_PLAN_INTERVAL_MINUTES: u32 = 525_600;
 
+/// 只投影账号授权，不将额度、凭据健康或上游模型支持视为预检成功
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvaluationAccountAccess {
+    pub account_id: String,
+    pub allowed: bool,
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvaluationKind {

@@ -19,15 +19,29 @@ export const verdictLabels: Record<EvaluationVerdict, string> = {
 }
 
 export function durationText(ms: number | null) {
-  return ms === null ? '未观测' : formatDuration(ms)
+  return ms === null
+    ? '未观测'
+    : formatDuration(ms)
 }
 
 export function historyResult(item: Pick<EvaluationHistoryItem, 'status' | 'verdict' | 'judgmentStatus'>) {
-  const status = item.status === 'succeeded' ? item.judgmentStatus ?? item.status : item.status
-  if (status === 'queued' || status === 'running')
-    return { label: item.judgmentStatus ? '等待评审' : statusLabels[status], color: 'bg-cp-primary', text: 'text-cp-primary-text' }
-  if (status === 'failed' || status === 'interrupted')
-    return { label: item.judgmentStatus ? '判题异常' : statusLabels[status], color: 'bg-cp-warning', text: 'text-cp-warning-text' }
+  const status = item.status === 'succeeded'
+    ? item.judgmentStatus ?? item.status
+    : item.status
+  if (status === 'queued' || status === 'running') {
+    return {
+      label: item.judgmentStatus ? '等待评审' : statusLabels[status],
+      color: 'bg-cp-primary',
+      text: 'text-cp-primary-text',
+    }
+  }
+  if (status === 'failed' || status === 'interrupted') {
+    return {
+      label: item.judgmentStatus ? '判题异常' : statusLabels[status],
+      color: 'bg-cp-warning',
+      text: 'text-cp-warning-text',
+    }
+  }
   if (status !== 'succeeded')
     return { label: statusLabels[status], color: 'bg-cp-fill-secondary', text: 'text-cp-text-tertiary' }
   if (item.verdict === 'correct')

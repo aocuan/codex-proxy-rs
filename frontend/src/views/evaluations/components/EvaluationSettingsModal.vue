@@ -5,6 +5,7 @@ import { ZButton, ZCheckbox, ZDialog, ZForm, ZFormItem, ZInput, ZInputNumber, ZS
 import { computed, watch } from 'vue'
 import { effortOptions } from '@/components/evaluation/defaults'
 import EvaluationJudgeConnectionFields from '@/components/evaluation/EvaluationJudgeConnectionFields.vue'
+import { useEvaluationAccess } from '../composables/useEvaluationAccess'
 
 const props = defineProps<{ settings: ReturnType<typeof useEvaluationSettings>, catalog: ReturnType<typeof useEvaluationCatalog> }>()
 const { open, draft, current, apiKey, clearKey, saving } = props.settings
@@ -12,12 +13,25 @@ const { loadingAccounts, loadingKeys } = props.catalog
 const effort = computed({
   get: () => draft.value?.reasoningEffort ?? 'default',
   set: (value: string | undefined) => {
-    if (draft.value)
-      draft.value.reasoningEffort = value && value !== 'default' ? value : null
+    if (draft.value) {
+      draft.value.reasoningEffort = value && value !== 'default'
+        ? value
+        : null
+    }
   },
 })
-const judgeAccountOptions = computed(() => props.catalog.accountOptions(draft.value?.judge?.type === 'model' ? [draft.value.judge.accountId] : []))
-const judgeKeyOptions = computed(() => props.catalog.keyOptions(draft.value?.judge?.type === 'model' ? draft.value.judge.clientKeyId : ''))
+function judgeIds() {
+  return draft.value?.judge?.type === 'model' && draft.value.judge.accountId
+    ? [draft.value.judge.accountId]
+    : []
+}
+const judgeAccess = useEvaluationAccess(() => open.value && draft.value?.judge?.type === 'model', () => draft.value?.judge?.type === 'model'
+  ? draft.value.judge.clientKeyId
+  : '', () => props.catalog.accountOptions(judgeIds()), judgeIds)
+const { accountOptions: judgeAccountOptions, message: judgeAccessMessage, valid: judgeAccessValid, error: judgeAccessError } = judgeAccess
+const judgeKeyOptions = computed(() => props.catalog.keyOptions(draft.value?.judge?.type === 'model'
+  ? draft.value.judge.clientKeyId
+  : ''))
 watch(() => draft.value?.judge?.type, (type) => {
   if (type === 'typesafe')
     clearKey.value = false
@@ -54,6 +68,12 @@ watch(open, (value) => {
         <ZInputNumber v-model="draft.timeoutSeconds" :disabled="saving" :min="1" :max="600" :precision="0" unit="秒" aria-label="默认单次超时" />
       </ZFormItem>
       <EvaluationJudgeConnectionFields v-model="draft.judge" :disabled="saving" :account-options="judgeAccountOptions" :key-options="judgeKeyOptions" :loading-accounts="loadingAccounts" :loading-keys="loadingKeys" @search-accounts="catalog.searchAccounts" @search-keys="catalog.searchKeys" />
+      <p v-if="draft.judge?.type === 'model' && judgeAccessMessage" class="m-0 text-cp-sm text-cp-warning-text wrap-anywhere sm:col-span-2" role="status">
+        {{ judgeAccessMessage }}
+      </p>
+      <ZButton v-if="draft.judge?.type === 'model' && judgeAccessError" size="small" variant="text" @click="judgeAccess.refresh">
+        重试授权检查
+      </ZButton>
       <template v-if="draft.judge?.type === 'typesafe'">
         <ZFormItem class="sm:col-span-2" label="TypeSafe API Key" :required="!current?.typesafeConfigured" :description="current?.typesafeConfigured ? '已配置，留空保留原密钥' : '仅保存在服务端，费用由 TypeSafe 计收'">
           <ZInput v-model="apiKey" type="password" :disabled="saving" autocomplete="new-password" placeholder="填写 TypeSafe API Key" aria-label="TypeSafe API Key" />
@@ -68,7 +88,7 @@ watch(open, (value) => {
       <ZButton :disabled="saving" @click="open = false">
         取消
       </ZButton>
-      <ZButton type="primary" :loading="saving" @click="settings.save">
+      <ZButton type="primary" :loading="saving" :disabled="draft?.judge?.type === 'model' && !judgeAccessValid" @click="settings.save">
         保存设置
       </ZButton>
     </template>

@@ -108,7 +108,13 @@ export function useEvaluations() {
         }
         else {
           const { name, parameters, intervalMinutes, cronExpression } = plan.settings
-          await updateEvaluationPlan(plan.id, plan.revision, { name, parameters, intervalMinutes, cronExpression, enabled: !plan.settings.enabled })
+          await updateEvaluationPlan(plan.id, plan.revision, {
+            name,
+            parameters,
+            intervalMinutes,
+            cronExpression,
+            enabled: !plan.settings.enabled,
+          })
         }
         await loadPlans(true)
       }
@@ -134,7 +140,13 @@ export function useEvaluations() {
   }
 
   async function refresh() {
-    await Promise.allSettled([loadRuns(), loadPlans(), config.value ? Promise.resolve() : loadConfig()])
+    await Promise.allSettled([
+      loadRuns(),
+      loadPlans(),
+      config.value
+        ? Promise.resolve()
+        : loadConfig(),
+    ])
   }
 
   onMounted(() => void refresh())
@@ -148,9 +160,15 @@ export function useEvaluations() {
     polling = true
     try {
       await Promise.allSettled([
-        tab.value === 'history' && !runRequest.loading.value ? loadRuns(true) : Promise.resolve(),
-        tab.value === 'plans' && !planRequest.loading.value ? loadPlans(true) : Promise.resolve(),
-        showDetail.value && detail.value?.run.activeItems && !detailRequest.loading.value ? loadDetail(true) : Promise.resolve(),
+        tab.value === 'history' && !runRequest.loading.value
+          ? loadRuns(true)
+          : Promise.resolve(),
+        tab.value === 'plans' && !planRequest.loading.value
+          ? loadPlans(true)
+          : Promise.resolve(),
+        showDetail.value && detail.value?.run.activeItems && !detailRequest.loading.value
+          ? loadDetail(true)
+          : Promise.resolve(),
       ])
     }
     finally {

@@ -20,11 +20,15 @@ const { loading, error } = request
 const copyText = useCopyText()
 const message = computed(() => detail.value?.message || props.message || '请求失败')
 const metadata = computed(() => [
-  detail.value?.upstreamStatusCode ? `上游 HTTP ${detail.value.upstreamStatusCode}` : null,
+  detail.value?.upstreamStatusCode
+    ? `上游 HTTP ${detail.value.upstreamStatusCode}`
+    : null,
   detail.value?.providerErrorCode || props.errorCode,
 ].filter(Boolean).join(' · '))
 const errorText = computed(() => [
-  props.requestId ? `请求 ID：${props.requestId}` : null,
+  props.requestId
+    ? `请求 ID：${props.requestId}`
+    : null,
   metadata.value,
   message.value,
   detail.value?.errorDetails,
@@ -37,11 +41,15 @@ async function load() {
   detail.value = null
   try {
     // 以测评完成时间查询，避免旧测评落在默认的最近七天之外
-    const completedAt = props.completedAt ? Date.parse(props.completedAt) : Number.NaN
+    const completedAt = props.completedAt
+      ? Date.parse(props.completedAt)
+      : Number.NaN
     const result = await getOperationsErrors({
       requestId: props.requestId,
       period: '7d',
-      asOf: Number.isFinite(completedAt) ? completedAt + 1 : Date.now(),
+      asOf: Number.isFinite(completedAt)
+        ? completedAt + 1
+        : Date.now(),
       currentPage: 1,
       pageSize: 100,
     }, { signal: request.signal, silent: true })
@@ -57,7 +65,11 @@ async function load() {
   }
 }
 
-watch([() => props.active, () => props.requestId, () => props.completedAt], () => {
+watch([
+  () => props.active,
+  () => props.requestId,
+  () => props.completedAt,
+], () => {
   request.invalidate()
   error.value = ''
   detail.value = null
@@ -78,6 +90,9 @@ watch([() => props.active, () => props.requestId, () => props.completedAt], () =
     </div>
     <p class="mt-2 mb-0 text-cp-sm text-cp-error-text whitespace-pre-wrap wrap-anywhere">
       {{ message }}
+    </p>
+    <p v-if="!requestId && errorCode === 'policy_denied'" class="mt-2 mb-0 text-cp-sm text-cp-text-secondary">
+      请求在调用上游前被网关策略拦截，请检查测评或判题所用 Key 的账号分组与启用状态
     </p>
     <p v-if="loading" class="mt-3 mb-0 text-cp-sm text-cp-text-secondary" role="status">
       正在读取原始报错

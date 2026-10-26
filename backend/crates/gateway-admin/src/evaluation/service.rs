@@ -3,7 +3,10 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use chrono::Utc;
-use gateway_core::{account::ProviderAccountId, time::DeploymentTimeZone};
+use gateway_core::{
+    account::ProviderAccountId, policy::ClientApiKeyId, runtime::RuntimeSnapshotHandle,
+    time::DeploymentTimeZone,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -16,9 +19,85 @@ pub struct EvaluationService {
     repository: Arc<dyn EvaluationRepository>,
     version: String,
     timezone: DeploymentTimeZone,
+    snapshot: RuntimeSnapshotHandle,
 }
 
 impl EvaluationService {
+    /// 仅预检当前 Key 的账号授权，执行时仍由 Core 重新鉴权和准入
+    pub fn account_access(
+        &self,
+        client_key_id: &str,
+        account_ids: &[String],
+    ) -> Result<Vec<EvaluationAccountAccess>, AdminError> {
+        let key_id =
+            ClientApiKeyId::new(client_key_id).map_err(|_| AdminError::invalid("Key ID 无效"))?;
+        if account_ids.is_empty() || account_ids.len() > 120 {
+            return Err(AdminError::invalid("每次检查 1 到 120 个账号"));
+        }
+        let accounts = account_ids
+            .iter()
+            .map(|id| {
+                ProviderAccountId::new(id.clone()).map_err(|_| AdminError::invalid("账号 ID 无效"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let snapshot = self
+            .snapshot
+            .acquire()
+            .map_err(|_| AdminError::internal("当前账号授权配置不可用，请稍后重试"))?;
+        let policy = snapshot.client_policy(&key_id);
+        Ok(accounts
+            .into_iter()
+            .map(|account| {
+                let reason = match policy {
+                    None => Some("所选 Key 已不存在，请重新选择".to_owned()),
+                    Some(policy) if policy.authorize().is_err() => {
+                        Some("所选 Key 已停用，请更换 Key".to_owned())
+                    }
+                    Some(policy) if !policy.account_scope().allows(&account) => Some(format!(
+                        "Key「{}」未授权此账号，请更换 Key 或检查账号分组",
+                        policy.name_snapshot().unwrap_or(client_key_id),
+                    )),
+                    Some(_) => None,
+                };
+                EvaluationAccountAccess {
+                    account_id: account.to_string(),
+                    allowed: reason.is_none(),
+                    reason,
+                }
+            })
+            .collect())
+    }
+
+    fn validate_access(&self, key: &str, accounts: &[String]) -> Result<(), AdminError> {
+        for access in self.account_access(key, accounts)? {
+            if let Some(reason) = access.reason {
+                return Err(AdminError::invalid(format!(
+                    "{reason}（{}）",
+                    access.account_id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_parameter_access(
+        &self,
+        parameters: &EvaluationParameters,
+    ) -> Result<(), AdminError> {
+        self.validate_access(&parameters.client_key_id, &parameters.account_ids)?;
+        if let Some(EvaluationDefinition {
+            grader: EvaluationGrader::Model { config },
+            ..
+        }) = &parameters.definition
+        {
+            self.validate_access(
+                &config.client_key_id,
+                std::slice::from_ref(&config.account_id),
+            )?;
+        }
+        Ok(())
+    }
+
     pub async fn settings(&self) -> Result<EvaluationSettings, AdminError> {
         self.repository
             .settings()
@@ -32,6 +111,14 @@ impl EvaluationService {
         context: &MutationContext,
     ) -> Result<EvaluationSettings, AdminError> {
         command.validate()?;
+        if let Some(EvaluationJudgeDefaults::Model {
+            client_key_id,
+            account_id,
+            ..
+        }) = &command.defaults.judge
+        {
+            self.validate_access(client_key_id, std::slice::from_ref(account_id))?;
+        }
         self.repository
             .update_settings(command, context)
             .await
@@ -65,11 +152,13 @@ impl EvaluationService {
         repository: Arc<dyn EvaluationRepository>,
         version: String,
         timezone: DeploymentTimeZone,
+        snapshot: RuntimeSnapshotHandle,
     ) -> Self {
         Self {
             repository,
             version,
             timezone,
+            snapshot,
         }
     }
 
@@ -80,6 +169,7 @@ impl EvaluationService {
         context: &MutationContext,
     ) -> Result<EvaluationRun, AdminError> {
         parameters.validate()?;
+        self.validate_parameter_access(&parameters)?;
         self.validate_judge_connection(&parameters).await?;
         self.repository
             .enqueue_manual(
@@ -180,6 +270,7 @@ impl EvaluationService {
         settings.timezone = self.timezone;
         let next_run_at = settings.next_run_after(Utc::now())?;
         if settings.enabled {
+            self.validate_parameter_access(&settings.parameters)?;
             self.validate_judge_connection(&settings.parameters).await?;
         }
         self.repository

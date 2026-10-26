@@ -50,14 +50,25 @@ function openConcurrency(account: Account) {
 const router = useRouter()
 const selectedIds = ref<Set<string>>(new Set())
 const refreshOptions = computed(() => [
-  { label: t('accounts.evaluationActions.refreshEvery', { seconds: 30 }), value: '30' },
-  { label: t('accounts.evaluationActions.refreshEvery', { seconds: 60 }), value: '60' },
-  { label: t('accounts.evaluationActions.refreshPaused'), value: '0' },
+  {
+    label: t('accounts.evaluationActions.refreshEvery', { seconds: 30 }),
+    value: '30',
+  },
+  {
+    label: t('accounts.evaluationActions.refreshEvery', { seconds: 60 }),
+    value: '60',
+  },
+  {
+    label: t('accounts.evaluationActions.refreshPaused'),
+    value: '0',
+  },
 ])
 const { visibleColumns, columnOptions, setColumnVisible, setColumnOrder, resetColumns } = useTableColumns(accountColumns, 'accounts')
 const wideTable = useMediaQuery('(min-width: 1280px)')
 const inlineEvaluation = computed(() => !wideTable.value && visibleColumns.value.some(column => column.key === 'evaluation'))
-const tableColumns = computed(() => wideTable.value ? visibleColumns.value : visibleColumns.value.filter(column => column.key !== 'evaluation'))
+const tableColumns = computed(() => wideTable.value
+  ? visibleColumns.value
+  : visibleColumns.value.filter(column => column.key !== 'evaluation'))
 const {
   loading,
   refreshing,

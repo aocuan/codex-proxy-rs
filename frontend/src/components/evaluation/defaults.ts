@@ -11,10 +11,16 @@ export const effortOptions = [
 export function judgeGrader(judge: EvaluationJudgeDefaults, rubric = '', referenceAnswer: string | null = null): EvaluationGrader {
   if (judge.type === 'typesafe') {
     const { type, ...connection } = judge
-    return { type, config: { ...connection, rubric, referenceAnswer } }
+    return {
+      type,
+      config: { ...connection, rubric, referenceAnswer },
+    }
   }
   const { type, ...connection } = judge
-  return { type, config: { ...connection, rubric, referenceAnswer } }
+  return {
+    type,
+    config: { ...connection, rubric, referenceAnswer },
+  }
 }
 
 export function graderLabel(grader: EvaluationGrader) {

@@ -49,7 +49,10 @@ onMounted(() => {
 const comparison = useEvaluationComparison()
 const { entries, open: showComparison, loading: loadingComparison } = comparison
 const editor = useEvaluationEditor(async (run) => {
-  await Promise.allSettled([evaluation.loadRuns(false, 1), evaluation.loadPlans()])
+  await Promise.allSettled([
+    evaluation.loadRuns(false, 1),
+    evaluation.loadPlans(),
+  ])
   if (run) {
     tab.value = 'history'
     evaluation.inspect(run)
@@ -60,10 +63,16 @@ const editor = useEvaluationEditor(async (run) => {
 }, config, settingsCurrent)
 const route = useRoute()
 const router = useRouter()
-watch([() => route.query.accounts, config, settingsCurrent], ([accounts, available, defaults]) => {
+watch([
+  () => route.query.accounts,
+  config,
+  settingsCurrent,
+], ([accounts, available, defaults]) => {
   if (typeof accounts !== 'string' || !available || !defaults)
     return
-  const ids = [...new Set(accounts.split(',').filter(Boolean))].slice(0, 20)
+  const ids = [
+    ...new Set(accounts.split(',').filter(Boolean)),
+  ].slice(0, 20)
   if (ids.length)
     editor.show(false, null, ids)
   const { accounts: _accounts, ...query } = route.query

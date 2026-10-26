@@ -35,7 +35,10 @@ export function useEvaluationComparison() {
           return
         if (!output.artifactHtml)
           throw new Error('此回答没有可对比的作品')
-        entries.value = [...entries.value, { item, run, html: output.artifactHtml }]
+        entries.value = [
+          ...entries.value,
+          { item, run, html: output.artifactHtml },
+        ]
         ZNotification.success({ message: `已加入作品对比（${entries.value.length}/2）` })
       }
       finally {
@@ -46,5 +49,11 @@ export function useEvaluationComparison() {
   function remove(id: string) {
     entries.value = entries.value.filter(entry => entry.item.id !== id)
   }
-  return { entries, open, loading: action.loading, add, remove }
+  return {
+    entries,
+    open,
+    loading: action.loading,
+    add,
+    remove,
+  }
 }

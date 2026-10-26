@@ -8,25 +8,43 @@ const props = defineProps<{ defaultJudge: EvaluationJudgeDefaults | null, disabl
 const emit = defineEmits<{ configureJudge: [] }>()
 const definition = defineModel<EvaluationDefinition>({ required: true })
 const graderType = computed({
-  get: () => definition.value.grader.type === 'typesafe' ? 'model' : definition.value.grader.type,
+  get: () => definition.value.grader.type === 'typesafe'
+    ? 'model'
+    : definition.value.grader.type,
   set: (value: string | undefined) => {
     let grader: EvaluationGrader = { type: 'none' }
-    if (value === 'exact')
+    if (value === 'exact') {
       grader = { type: 'exact', source: 'full_text', expected: '' }
-    else if (value === 'regex')
+    }
+    else if (value === 'regex') {
       grader = { type: 'regex', pattern: '' }
-    else if (value === 'model')
-      grader = judgeGrader(props.defaultJudge ?? { type: 'model', clientKeyId: '', accountId: '', model: '', reasoningEffort: null, timeoutSeconds: 180 })
+    }
+    else if (value === 'model') {
+      grader = judgeGrader(props.defaultJudge ?? {
+        type: 'model',
+        clientKeyId: '',
+        accountId: '',
+        model: '',
+        reasoningEffort: null,
+        timeoutSeconds: 180,
+      })
+    }
     definition.value = { ...definition.value, grader }
   },
 })
 const aiConfig = computed(() => {
   const grader = definition.value.grader
-  return grader.type === 'model' || grader.type === 'typesafe' ? grader.config : null
+  return grader.type === 'model' || grader.type === 'typesafe'
+    ? grader.config
+    : null
 })
 function applyDefaultJudge() {
-  if (props.defaultJudge)
-    definition.value = { ...definition.value, grader: judgeGrader(props.defaultJudge, aiConfig.value?.rubric, aiConfig.value?.referenceAnswer) }
+  if (props.defaultJudge) {
+    definition.value = {
+      ...definition.value,
+      grader: judgeGrader(props.defaultJudge, aiConfig.value?.rubric, aiConfig.value?.referenceAnswer),
+    }
+  }
 }
 </script>
 

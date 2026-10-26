@@ -52,8 +52,17 @@ export function useEvaluationSettings() {
     await action.run(async () => {
       current.value = await updateEvaluationSettings({
         revision: editingRevision,
-        defaults: { ...structuredClone(toRaw(draft.value!)), model: draft.value!.model?.trim() || null },
-        ...(apiKey.value ? { typesafeApiKey: apiKey.value.trim() } : clearKey.value ? { typesafeApiKey: '' } : {}),
+        defaults: {
+          ...structuredClone(toRaw(draft.value!)),
+          model: draft.value!.model?.trim() || null,
+        },
+        ...(apiKey.value
+          ? {
+              typesafeApiKey: apiKey.value.trim(),
+            }
+          : clearKey.value
+            ? { typesafeApiKey: '' }
+            : {}),
       })
       lastSavedRevision.value = current.value.revision
       apiKey.value = ''
@@ -62,5 +71,17 @@ export function useEvaluationSettings() {
     })
   }
 
-  return { current, lastSavedRevision, open, draft, apiKey, clearKey, loading: request.loading, saving: action.loading, load, show, save }
+  return {
+    current,
+    lastSavedRevision,
+    open,
+    draft,
+    apiKey,
+    clearKey,
+    loading: request.loading,
+    saving: action.loading,
+    load,
+    show,
+    save,
+  }
 }

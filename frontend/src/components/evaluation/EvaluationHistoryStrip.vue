@@ -14,14 +14,19 @@ const summary = computed(() => {
   const recent = props.items[0]
   if (!recent)
     return ''
-  if (isGraded(recent, 'wrong'))
-    return isGraded(props.items[1], 'wrong') ? '最近连续未通过' : '最近未通过'
+  if (isGraded(recent, 'wrong')) {
+    return isGraded(props.items[1], 'wrong')
+      ? '最近连续未通过'
+      : '最近未通过'
+  }
   if (!isGraded(recent, 'correct'))
     return historyResult(recent).label
   const firstNonPassing = props.items.find(item => !isGraded(item, 'correct'))
   if (isGraded(firstNonPassing, 'wrong'))
     return '异常后恢复'
-  return !firstNonPassing && props.items.length > 1 ? '持续通过' : '最近通过'
+  return !firstNonPassing && props.items.length > 1
+    ? '持续通过'
+    : '最近通过'
 })
 function isGraded(item: EvaluationHistoryItem | undefined, verdict: 'correct' | 'wrong') {
   return item?.status === 'succeeded' && (!item.judgmentStatus || item.judgmentStatus === 'succeeded') && item.verdict === verdict

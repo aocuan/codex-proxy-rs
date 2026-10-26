@@ -34,7 +34,12 @@ export const accountColumns = computed(() => (defineTableColumns<Account>([
     size: '3xl',
     sortable: 'email',
   },
-  { key: 'evaluation', label: t('accounts.evaluationActions.qualityEvaluation'), kind: 'custom', size: '2xl' },
+  {
+    key: 'evaluation',
+    label: t('accounts.evaluationActions.qualityEvaluation'),
+    kind: 'custom',
+    size: '2xl',
+  },
   {
     key: 'provider',
     label: t('accounts.fields.platformType'),

@@ -25,11 +25,17 @@ const { loading, error } = request
 const observation = computed(() => item.value?.observation)
 const judgeConfig = computed(() => {
   const grader = props.run?.profile.definition?.grader
-  return grader?.type === 'model' || grader?.type === 'typesafe' ? grader.config : null
+  return grader?.type === 'model' || grader?.type === 'typesafe'
+    ? grader.config
+    : null
 })
 const tabs = computed(() => [
   { label: '原始回答', value: 'text' },
-  ...(output.value?.artifactHtml ? [{ label: '作品预览', value: 'preview' }] : []),
+  ...(output.value?.artifactHtml
+    ? [
+        { label: '作品预览', value: 'preview' },
+      ]
+    : []),
 ])
 async function load() {
   if (!item.value || !open.value)
@@ -68,11 +74,18 @@ async function refreshStatus() {
     statusRequest.finish(id)
   }
 }
-watch([open, () => props.item], () => {
+watch([
+  open,
+  () => props.item,
+], () => {
   statusRequest.invalidate()
   item.value = props.item
 })
-watch([open, () => item.value?.id, () => item.value?.hasOutput], () => {
+watch([
+  open,
+  () => item.value?.id,
+  () => item.value?.hasOutput,
+], () => {
   tab.value = 'text'
   if (open.value) {
     void load()

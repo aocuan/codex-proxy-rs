@@ -285,7 +285,53 @@ fn setup(
         "test".to_owned(),
         Default::default(),
     );
-    let service = EvaluationService::new(repository.clone(), "test".to_owned(), Default::default());
+    let provider = gateway_core::identity::ProviderKind::new("openai").unwrap();
+    let directory = Arc::new(gateway_core::account::scope::RuntimeAccountDirectory::new(
+        [
+            "acct_right",
+            "acct_wrong",
+            "acct_pending",
+            "acct_judge",
+            "acct_target",
+        ]
+        .into_iter()
+        .map(|id| {
+            (
+                gateway_core::account::ProviderAccountId::new(id).unwrap(),
+                gateway_core::account::scope::RuntimeAccount::new(
+                    provider.clone(),
+                    Default::default(),
+                ),
+            )
+        })
+        .collect(),
+    ));
+    let policy = gateway_core::policy::ClientPolicy::new(
+        gateway_core::policy::ClientApiKeyId::new("key_evaluation").unwrap(),
+        gateway_core::policy::PlaintextClientApiKey::new("test-only").unwrap(),
+        Arc::new(gateway_core::account::scope::FrozenAccountScope::new(
+            directory,
+            gateway_core::account::scope::ClientRoutingScope::all_accounts(),
+        )),
+        true,
+        Default::default(),
+    );
+    let snapshot = gateway_core::runtime::RuntimeSnapshotHandle::new(
+        gateway_core::routing::RuntimeSnapshot::new(
+            gateway_core::routing::ConfigRevision::new(1).unwrap(),
+            gateway_core::settings::SettingsValues::new(1, "smart", Default::default(), None, None),
+            vec![provider],
+            vec![],
+            vec![policy],
+        )
+        .unwrap(),
+    );
+    let service = EvaluationService::new(
+        repository.clone(),
+        "test".to_owned(),
+        Default::default(),
+        snapshot,
+    );
     (repository, execution, task, service)
 }
 fn start(

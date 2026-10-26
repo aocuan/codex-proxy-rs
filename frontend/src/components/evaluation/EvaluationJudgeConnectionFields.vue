@@ -18,17 +18,34 @@ const kind = computed({
   get: () => judge.value?.type ?? 'none',
   set: (type: string | undefined) => {
     judge.value = type === 'typesafe'
-      ? { type: 'typesafe', model: 'jev-1.13.0', decisionThreshold: 80, timeoutSeconds: 60 }
+      ? {
+          type: 'typesafe',
+          model: 'jev-1.13.0',
+          decisionThreshold: 80,
+          timeoutSeconds: 60,
+        }
       : type === 'model'
-        ? { type: 'model', model: '', accountId: '', clientKeyId: '', reasoningEffort: null, timeoutSeconds: 180 }
+        ? {
+            type: 'model',
+            model: '',
+            accountId: '',
+            clientKeyId: '',
+            reasoningEffort: null,
+            timeoutSeconds: 180,
+          }
         : null
   },
 })
 const effort = computed({
-  get: () => judge.value?.type === 'model' ? judge.value.reasoningEffort ?? 'default' : 'default',
+  get: () => judge.value?.type === 'model'
+    ? judge.value.reasoningEffort ?? 'default'
+    : 'default',
   set: (value: string | undefined) => {
-    if (judge.value?.type === 'model')
-      judge.value.reasoningEffort = value && value !== 'default' ? value : null
+    if (judge.value?.type === 'model') {
+      judge.value.reasoningEffort = value && value !== 'default'
+        ? value
+        : null
+    }
   },
 })
 </script>
@@ -49,7 +66,12 @@ const effort = computed({
         <ZSelect :model-value="judge.clientKeyId || undefined" :disabled="disabled" :options="keyOptions" remote filterable :loading="loadingKeys" placeholder="搜索 Key 名称" @update:model-value="judge.clientKeyId = $event ?? ''" @query-change="emit('searchKeys', $event)" />
       </ZFormItem>
       <ZFormItem label="判题账号" required description="使用独立账号，不能与被测账号相同">
-        <ZSelect :model-value="judge.accountId || undefined" :disabled="disabled" :options="accountOptions" remote filterable :loading="loadingAccounts" placeholder="搜索判题账号" @update:model-value="judge.accountId = $event ?? ''" @query-change="emit('searchAccounts', $event)" />
+        <ZSelect :model-value="judge.accountId || undefined" :disabled="disabled" :options="accountOptions" remote filterable :loading="loadingAccounts" placeholder="搜索判题账号" @update:model-value="judge.accountId = $event ?? ''" @query-change="emit('searchAccounts', $event)">
+          <template #option="{ option }">
+            <span class="min-w-0 flex-1 truncate" :title="option.label">{{ option.label }}</span>
+            <span class="max-w-1/2 shrink-0 truncate text-cp-xs font-normal" :class="option.disabled ? 'text-cp-text-disabled' : 'text-cp-text-secondary'" :title="option.description">{{ option.description }}</span>
+          </template>
+        </ZSelect>
       </ZFormItem>
       <ZFormItem label="判题推理强度">
         <ZSelect v-model="effort" :disabled="disabled" :options="effortOptions" />
