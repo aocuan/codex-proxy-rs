@@ -116,7 +116,14 @@ pub(super) async fn enqueue_scheduled(
     pool: &PgPool,
     command: EnqueueScheduledEvaluation,
 ) -> AdminStoreResult<bool> {
-    validate_seed(&command.seed)?;
+    command
+        .seed
+        .parameters
+        .validate_template()
+        .map_err(|e| invalid("测评参数无效").with_source(e))?;
+    if !command.seed.parameters.account_ids.is_empty() {
+        validate_seed(&command.seed)?;
+    }
     if command.next_run_at <= command.scheduled_at {
         return Err(invalid("计划游标必须向前推进"));
     }
@@ -137,8 +144,24 @@ pub(super) async fn enqueue_scheduled(
         transaction.commit().await.map_err(db_error)?;
         return Ok(false);
     };
-    if settings.parameters != command.seed.parameters {
+    let mut template = command.seed.parameters.clone();
+    template
+        .account_ids
+        .clone_from(&settings.parameters.account_ids);
+    if settings.parameters != template
+        || settings.account_selection != command.seed.profile.account_selection
+    {
         return Err(conflict("测评计划参数已变化"));
+    }
+    if command.seed.parameters.account_ids.is_empty() {
+        sqlx::query("update evaluation_plans set next_run_at=$2 where id=$1")
+            .bind(&command.plan_id)
+            .bind(command.next_run_at)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db_error)?;
+        transaction.commit().await.map_err(db_error)?;
+        return Ok(true);
     }
     let active: bool = sqlx::query_scalar(
         "select exists (

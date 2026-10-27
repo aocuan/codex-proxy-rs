@@ -28,8 +28,7 @@ pub(super) async fn save(
 ) -> AdminStoreResult<EvaluationPlan> {
     command
         .settings
-        .parameters
-        .validate()
+        .validate_parameters()
         .map_err(|source| invalid("测评计划参数无效").with_source(source))?;
     if command.settings.enabled != command.next_run_at.is_some() {
         return Err(invalid(

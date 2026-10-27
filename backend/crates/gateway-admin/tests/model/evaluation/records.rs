@@ -43,6 +43,7 @@ fn plans_validate_five_fields_and_schedule_only_future_slots_in_the_saved_timezo
     use gateway_admin::model::evaluation::EvaluationPlanSettings;
     let now = chrono::Utc.with_ymd_and_hms(2026, 10, 20, 2, 0, 0).unwrap();
     let mut settings = EvaluationPlanSettings {
+        account_selection: Default::default(),
         name: "每日检查".to_owned(),
         parameters: parameters(),
         enabled: false,
@@ -70,6 +71,7 @@ fn minute_intervals_keep_their_phase_across_hours_delays_and_timezone_changes() 
         .with_ymd_and_hms(2026, 10, 20, 2, 40, 17)
         .unwrap();
     let mut settings = EvaluationPlanSettings {
+        account_selection: Default::default(),
         name: "间隔检查".to_owned(),
         parameters: parameters(),
         enabled: true,
@@ -103,4 +105,32 @@ fn minute_intervals_keep_their_phase_across_hours_delays_and_timezone_changes() 
     settings.interval_minutes = Some(45);
     settings.cron_expression = "* * * * *".to_owned();
     assert!(settings.next_run_after(now).is_err());
+}
+
+#[test]
+fn automatic_plans_accept_an_empty_pool_while_manual_runs_still_require_accounts() {
+    use gateway_admin::model::evaluation::{EvaluationAccountSelection, EvaluationPlanSettings};
+    let mut plan = EvaluationPlanSettings {
+        account_selection: EvaluationAccountSelection::All,
+        name: "自动跟随".to_owned(),
+        parameters: parameters(),
+        enabled: true,
+        interval_minutes: Some(60),
+        cron_expression: String::new(),
+        timezone: Default::default(),
+    };
+    assert!(plan.validate_parameters().is_err());
+    plan.parameters.account_ids.clear();
+    assert!(plan.next_run_after(chrono::Utc::now()).unwrap().is_some());
+    assert!(plan.parameters.validate().is_err());
+    plan.account_selection = EvaluationAccountSelection::Groups { group_ids: vec![] };
+    assert!(plan.validate_parameters().is_err());
+    plan.account_selection = EvaluationAccountSelection::Fixed;
+    assert!(plan.validate_parameters().is_err());
+    plan.enabled = false;
+    assert!(plan.validate_parameters().is_ok());
+    let mut old = serde_json::to_value(&plan).unwrap();
+    old.as_object_mut().unwrap().remove("accountSelection");
+    let decoded: EvaluationPlanSettings = serde_json::from_value(old).unwrap();
+    assert_eq!(decoded.account_selection, EvaluationAccountSelection::Fixed);
 }

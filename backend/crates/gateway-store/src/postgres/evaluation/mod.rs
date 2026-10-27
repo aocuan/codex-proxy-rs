@@ -1,5 +1,6 @@
 //! 测评记录的 PostgreSQL 事务适配；权限与实验策略由 Admin/Core 解释
 
+mod accounts;
 mod items;
 mod judgments;
 mod plans;
@@ -33,6 +34,19 @@ impl PgEvaluationRepository {
 
 #[async_trait]
 impl EvaluationRepository for PgEvaluationRepository {
+    async fn account_states(&self) -> AdminStoreResult<Vec<EvaluationAccountState>> {
+        accounts::list(&self.pool).await
+    }
+    async fn reconcile_accounts(&self) -> AdminStoreResult<()> {
+        accounts::reconcile(&self.pool).await
+    }
+    async fn is_work_stop_requested(
+        &self,
+        item_id: &str,
+        judgment_id: Option<&str>,
+    ) -> AdminStoreResult<bool> {
+        accounts::stopped(&self.pool, item_id, judgment_id).await
+    }
     async fn settings(&self) -> AdminStoreResult<EvaluationSettings> {
         settings::load(&self.pool).await
     }

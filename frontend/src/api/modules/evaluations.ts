@@ -192,7 +192,10 @@ export interface EvaluationOutput {
   artifactHtml: string | null
 }
 
+export type EvaluationAccountSelection = { mode: 'fixed' } | { mode: 'all' } | { mode: 'groups', groupIds: string[] }
+
 export interface EvaluationPlanSettings {
+  accountSelection?: EvaluationAccountSelection
   name: string
   parameters: EvaluationParameters
   enabled: boolean
@@ -201,6 +204,7 @@ export interface EvaluationPlanSettings {
 }
 
 export interface EvaluationPlan {
+  availableAccounts: number | null
   id: string
   revision: number
   settings: EvaluationPlanSettings & { timezone: string }

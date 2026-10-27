@@ -13,6 +13,15 @@ pub struct UnusedEvaluationRepository;
 
 #[async_trait]
 impl EvaluationRepository for UnusedEvaluationRepository {
+    async fn account_states(&self) -> AdminStoreResult<Vec<EvaluationAccountState>> {
+        unreachable!()
+    }
+    async fn reconcile_accounts(&self) -> AdminStoreResult<()> {
+        unreachable!()
+    }
+    async fn is_work_stop_requested(&self, _: &str, _: Option<&str>) -> AdminStoreResult<bool> {
+        unreachable!()
+    }
     async fn settings(&self) -> AdminStoreResult<EvaluationSettings> {
         unreachable!("this fixture does not exercise evaluations")
     }

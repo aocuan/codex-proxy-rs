@@ -469,6 +469,7 @@ async fn initialize_inner(
         store.observability(),
         gateway_version,
         timezone,
+        published_snapshot.clone(),
     )
     .with_typesafe(typesafe);
     let system_preflight = Arc::new(use_case::plugin_update::PluginSystemUpdatePreflight::new(

@@ -180,6 +180,7 @@ impl From<PlanRow> for EvaluationPlan {
             id: row.id,
             revision: row.revision,
             settings: row.settings_json.0,
+            available_accounts: None,
             next_run_at: row.next_run_at,
             created_at: row.created_at,
             updated_at: row.updated_at,

@@ -156,7 +156,7 @@ pub(super) async fn finish(
         && completion.status == EvaluationItemStatus::Succeeded
         && let Some(target) = completion.judge_target
     {
-        let stopped: bool = sqlx::query_scalar("select r.stop_requested from evaluation_runs r join evaluation_items i on i.run_id = r.id where i.id = $1")
+        let stopped: bool = sqlx::query_scalar("select r.stop_requested or i.stop_requested from evaluation_runs r join evaluation_items i on i.run_id = r.id where i.id = $1")
                 .bind(item_id).fetch_one(&mut *transaction).await.map_err(db_error)?;
         if !stopped {
             let account = match &target {

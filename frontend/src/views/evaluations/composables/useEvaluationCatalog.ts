@@ -1,13 +1,15 @@
 import type { SelectOption } from '@codex-proxy/ui'
 import { useDebounceFn } from '@vueuse/core'
 import { computed, shallowRef } from 'vue'
-import { getAccounts, getApiKeys } from '@/api'
+import { getAccountGroupOptions, getAccounts, getApiKeys } from '@/api'
 import { useRequestState } from '@/composables/useRequestState'
 import { formatProviderLabel } from '@/utils/providers'
 import { accountIdentityLabel } from '@/views/accounts/utils/accountIdentity'
 
 export function useEvaluationCatalog() {
   const accounts = shallowRef<SelectOption[]>([])
+  const groups = shallowRef<SelectOption[]>([])
+  const groupRequest = useRequestState()
   const keys = shallowRef<SelectOption[]>([])
   const knownAccounts = shallowRef(new Map<string, SelectOption>())
   const knownKeys = shallowRef(new Map<string, SelectOption>())
@@ -72,6 +74,17 @@ export function useEvaluationCatalog() {
     }
   }
 
+  async function loadGroups() {
+    const id = groupRequest.start()
+    try {
+      const result = await getAccountGroupOptions({ page: 1, pageSize: 100 }, { signal: groupRequest.signal })
+      if (groupRequest.isCurrent(id))
+        groups.value = result.items.map(item => ({ value: item.id, label: item.name }))
+    }
+    catch (error) { groupRequest.fail(id, error) }
+    finally { groupRequest.finish(id) }
+  }
+
   function accountOptions(selected: string[]) {
     return mergeSelected(accounts.value, selected, knownAccounts.value)
   }
@@ -83,6 +96,8 @@ export function useEvaluationCatalog() {
   return {
     accountOptions,
     keyOptions,
+    groups,
+    loadingGroups: groupRequest.loading,
     accountName: (id: string) => knownAccounts.value.get(id)?.label ?? id,
     loadingAccounts: accountRequest.loading,
     loadingKeys: keyRequest.loading,
@@ -90,6 +105,7 @@ export function useEvaluationCatalog() {
     load: () => Promise.allSettled([
       loadAccounts(),
       loadKeys(),
+      loadGroups(),
     ]),
     searchAccounts: useDebounceFn(loadAccounts, 250),
     searchKeys: useDebounceFn(loadKeys, 250),

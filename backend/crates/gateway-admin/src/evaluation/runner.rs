@@ -48,7 +48,7 @@ impl EvaluationRunner {
         let cancellation = parent.child_token();
         let execution = self.execute(&claim, cancellation.clone());
         tokio::pin!(execution);
-        let stop = self.watch_stop(&claim.item.run_id, &parent);
+        let stop = self.watch_stop(&claim.item.id, None, &parent);
         tokio::pin!(stop);
         let mut result = tokio::select! {
             result = &mut execution => result?,
@@ -70,11 +70,17 @@ impl EvaluationRunner {
 
     pub(super) async fn watch_stop(
         &self,
-        run_id: &str,
+        item_id: &str,
+        judgment_id: Option<&str>,
         parent: &CancellationToken,
     ) -> Result<(), AdminStoreError> {
         loop {
-            if parent.is_cancelled() || self.repository.is_stop_requested(run_id).await? {
+            if parent.is_cancelled()
+                || self
+                    .repository
+                    .is_work_stop_requested(item_id, judgment_id)
+                    .await?
+            {
                 return Ok(());
             }
             tokio::select! {
@@ -93,12 +99,12 @@ impl EvaluationRunner {
         let mut completion = empty_completion();
         if self
             .repository
-            .is_stop_requested(&claim.item.run_id)
+            .is_work_stop_requested(&claim.item.id, None)
             .await
             .map_err(store_error)?
         {
             completion.status = EvaluationItemStatus::Cancelled;
-            completion.message = Some("管理员已停止本轮测评".to_owned());
+            completion.message = Some("测评已停止或账号不再可用".to_owned());
             return Ok(completion);
         }
         if let Err(error) = claim.parameters.validate() {

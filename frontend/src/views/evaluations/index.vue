@@ -206,7 +206,7 @@ async function confirmDelete() {
           <ZTable :columns="planColumns" :data="plans" :loading="loadingPlans" row-key="id" empty-text="还没有定时计划">
             <template #name="{ row }">
               {{ row.settings.name }}
-              <span class="mt-1 block text-cp-xs text-cp-text-tertiary">{{ row.settings.parameters.accountIds.length }} 个账号 · 每账号 {{ row.settings.parameters.repetitions }} 次</span>
+              <span class="mt-1 block text-cp-xs text-cp-text-tertiary">{{ row.settings.accountSelection?.mode === 'all' ? '自动跟随全部账号' : row.settings.accountSelection?.mode === 'groups' ? '自动跟随指定分组' : `${row.settings.parameters.accountIds.length} 个固定账号` }} · 每账号 {{ row.settings.parameters.repetitions }} 次</span>
             </template>
             <template #test="{ row }">
               {{ row.settings.parameters.definition?.name ?? kindLabels[row.settings.parameters.kind] }}
@@ -217,7 +217,7 @@ async function confirmDelete() {
             </template>
             <template #status="{ row }">
               <ZTag :type="row.settings.enabled ? 'success' : 'default'">
-                {{ row.settings.enabled ? '已启用' : '已暂停' }}
+                {{ !row.settings.enabled ? '已暂停' : row.availableAccounts === 0 ? '等待可用账号' : (row.availableAccounts ?? 0) > 20 ? '账号数超过 20，等待缩小范围' : '已启用' }}
               </ZTag>
             </template>
             <template #actions="{ row }">

@@ -248,10 +248,21 @@ impl EvaluationService {
     }
 
     pub async fn list_plans(&self) -> Result<Vec<EvaluationPlan>, AdminError> {
-        self.repository
+        let mut plans = self
+            .repository
             .list_plans()
             .await
-            .map_err(|error| map_store_error(error, "evaluation.list_plans"))
+            .map_err(|error| map_store_error(error, "evaluation.list_plans"))?;
+        let accounts = self
+            .repository
+            .account_states()
+            .await
+            .map_err(|error| map_store_error(error, "evaluation.accounts"))?;
+        for plan in &mut plans {
+            plan.available_accounts =
+                Some(super::accounts::resolve(&plan.settings, &accounts, &self.snapshot)?.len());
+        }
+        Ok(plans)
     }
 
     pub async fn save_plan(
@@ -270,7 +281,32 @@ impl EvaluationService {
         settings.timezone = self.timezone;
         let next_run_at = settings.next_run_after(Utc::now())?;
         if settings.enabled {
-            self.validate_parameter_access(&settings.parameters)?;
+            if settings.account_selection.is_fixed() {
+                self.validate_parameter_access(&settings.parameters)?;
+            } else {
+                let snapshot = self
+                    .snapshot
+                    .acquire()
+                    .map_err(|_| AdminError::internal("当前账号授权配置不可用"))?;
+                let key = ClientApiKeyId::new(settings.parameters.client_key_id.clone())
+                    .map_err(|_| AdminError::invalid("Client Key ID 无效"))?;
+                if !snapshot
+                    .client_policy(&key)
+                    .is_some_and(|policy| policy.authorize().is_ok())
+                {
+                    return Err(AdminError::invalid("所选 Key 不存在或已停用"));
+                }
+                if let Some(EvaluationDefinition {
+                    grader: EvaluationGrader::Model { config },
+                    ..
+                }) = &settings.parameters.definition
+                {
+                    self.validate_access(
+                        &config.client_key_id,
+                        std::slice::from_ref(&config.account_id),
+                    )?;
+                }
+            }
             self.validate_judge_connection(&settings.parameters).await?;
         }
         self.repository

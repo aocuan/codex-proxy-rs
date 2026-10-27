@@ -1,5 +1,5 @@
 import type { Ref } from 'vue'
-import type { EvaluationConfig, EvaluationParameters, EvaluationPlan, EvaluationPlanSettings, EvaluationRun, EvaluationSettings } from '@/api'
+import type { EvaluationAccountSelection, EvaluationConfig, EvaluationParameters, EvaluationPlan, EvaluationPlanSettings, EvaluationRun, EvaluationSettings } from '@/api'
 import { ZNotification } from '@codex-proxy/ui'
 import { ref, shallowRef } from 'vue'
 import { createEvaluationPlan, submitEvaluation, updateEvaluationPlan } from '@/api'
@@ -14,6 +14,7 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
   const name = shallowRef('')
   const intervalMinutes = shallowRef('60')
   const enabled = shallowRef(true)
+  const accountSelection = ref<EvaluationAccountSelection>({ mode: 'fixed' })
   const action = useAsyncAction()
   let submission: { fingerprint: string, id: string } | undefined
 
@@ -39,6 +40,7 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
       ? String(plan.settings.intervalMinutes ?? '')
       : '60'
     enabled.value = plan?.settings.enabled ?? true
+    accountSelection.value = structuredClone(plan?.settings.accountSelection ?? { mode: 'fixed' })
     submission = undefined
     open.value = true
   }
@@ -46,15 +48,21 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
   async function save() {
     const params = {
       ...parameters.value,
-      accountIds: [...parameters.value.accountIds],
+      accountIds: isPlan.value && accountSelection.value.mode !== 'fixed'
+        ? []
+        : [...parameters.value.accountIds],
       model: parameters.value.model.trim(),
     }
     if (!params.definition?.name.trim() || !params.definition.prompt.trim()) {
       ZNotification.warning({ message: '请填写测评名称和提示词' })
       return
     }
-    if (!params.clientKeyId || !params.model || params.accountIds.length < 1 || params.accountIds.length > 20) {
+    if (!params.clientKeyId || !params.model || ((!isPlan.value || accountSelection.value.mode === 'fixed') && (params.accountIds.length < 1 || params.accountIds.length > 20))) {
       ZNotification.warning({ message: '请选择计费 Key、1 到 20 个账号，并填写模型 ID' })
+      return
+    }
+    if (isPlan.value && accountSelection.value.mode === 'groups' && !accountSelection.value.groupIds.length) {
+      ZNotification.warning({ message: '请选择自动跟随的账号分组' })
       return
     }
     const grader = params.definition.grader
@@ -82,6 +90,7 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
           name: name.value.trim() || `${params.definition!.name.slice(0, 24)} · ${minutes} 分钟`,
           intervalMinutes: minutes,
           enabled: enabled.value,
+          accountSelection: accountSelection.value,
           parameters: params,
         }
         const plan = editing.value
@@ -116,6 +125,7 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
     name,
     intervalMinutes,
     enabled,
+    accountSelection,
     saving: action.loading,
     show,
     save,

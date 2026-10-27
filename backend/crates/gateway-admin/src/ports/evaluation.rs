@@ -8,6 +8,13 @@ use crate::ports::store::AdminStoreResult;
 
 #[async_trait]
 pub trait EvaluationRepository: Send + Sync {
+    async fn account_states(&self) -> AdminStoreResult<Vec<EvaluationAccountState>>;
+    async fn reconcile_accounts(&self) -> AdminStoreResult<()>;
+    async fn is_work_stop_requested(
+        &self,
+        item_id: &str,
+        judgment_id: Option<&str>,
+    ) -> AdminStoreResult<bool>;
     async fn settings(&self) -> AdminStoreResult<EvaluationSettings>;
     async fn update_settings(
         &self,

@@ -56,6 +56,7 @@ async fn plan(repository: &PgEvaluationRepository) -> EvaluationPlan {
                 id: format!("eval_plan_{}", uuid::Uuid::now_v7().simple()),
                 expected_revision: None,
                 settings: EvaluationPlanSettings {
+                    account_selection: Default::default(),
                     name: "每小时测评".to_owned(),
                     parameters: parameters(&["acct_a"], 1),
                     enabled: true,

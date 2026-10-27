@@ -205,6 +205,8 @@ async fn account_history<S: SessionState + Send + Sync>(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PlanRequest {
+    #[serde(default)]
+    account_selection: EvaluationAccountSelection,
     name: String,
     parameters: EvaluationParameters,
     enabled: bool,
@@ -220,6 +222,7 @@ impl PlanRequest {
         timezone: gateway_core::time::DeploymentTimeZone,
     ) -> EvaluationPlanSettings {
         EvaluationPlanSettings {
+            account_selection: self.account_selection,
             name: self.name,
             parameters: self.parameters,
             enabled: self.enabled,

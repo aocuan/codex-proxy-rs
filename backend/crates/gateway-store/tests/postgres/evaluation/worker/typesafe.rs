@@ -96,7 +96,7 @@ async fn external_judge_projects_verdicts_without_rebilling_generation_or_retryi
         let Some(db) = TestDatabase::create("eval_typesafe_result").await else {
             return;
         };
-        let (repository, execution, task, service) = setup(&db, Reply::Answer);
+        let (repository, execution, task, service) = setup(&db, Reply::Answer).await;
         configure(&repository).await;
         let judge = Arc::new(Judge {
             reply: Some(reply),
@@ -149,7 +149,7 @@ async fn stop_drops_external_judge_future_without_losing_the_generated_answer() 
     let Some(db) = TestDatabase::create("eval_typesafe_cancel").await else {
         return;
     };
-    let (repository, _, task, service) = setup(&db, Reply::Answer);
+    let (repository, _, task, service) = setup(&db, Reply::Answer).await;
     configure(&repository).await;
     let judge = Arc::new(Judge {
         reply: None,

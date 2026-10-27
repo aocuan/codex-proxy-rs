@@ -24,6 +24,7 @@ pub struct EvaluationTask {
     runner: EvaluationRunner,
     version: String,
     timezone: DeploymentTimeZone,
+    snapshot: gateway_core::runtime::RuntimeSnapshotHandle,
 }
 
 impl EvaluationTask {
@@ -34,6 +35,7 @@ impl EvaluationTask {
         observability: Arc<dyn ObservabilityStore>,
         version: String,
         timezone: DeploymentTimeZone,
+        snapshot: gateway_core::runtime::RuntimeSnapshotHandle,
     ) -> Self {
         Self {
             runner: EvaluationRunner {
@@ -44,6 +46,7 @@ impl EvaluationTask {
             },
             version,
             timezone,
+            snapshot,
         }
     }
 
@@ -58,6 +61,12 @@ impl EvaluationTask {
 
     /// 供 Worker 与集成验证共同使用，不改变已创建批次的参数
     pub async fn advance_schedules(&self, now: DateTime<Utc>) -> Result<(), WorkerTaskError> {
+        let accounts = self
+            .runner
+            .repository
+            .account_states()
+            .await
+            .map_err(store_error)?;
         for mut plan in self
             .runner
             .repository
@@ -65,6 +74,42 @@ impl EvaluationTask {
             .await
             .map_err(store_error)?
         {
+            if plan.settings.account_selection.is_fixed() {
+                let previous = plan.settings.parameters.account_ids.len();
+                plan.settings
+                    .parameters
+                    .account_ids
+                    .retain(|id| accounts.iter().any(|a| &a.id == id));
+                if previous != plan.settings.parameters.account_ids.len() {
+                    if plan.settings.parameters.account_ids.is_empty() {
+                        plan.settings.enabled = false;
+                        plan.next_run_at = None;
+                    }
+                    match self
+                        .runner
+                        .repository
+                        .save_plan(
+                            SaveEvaluationPlan {
+                                id: plan.id.clone(),
+                                expected_revision: Some(plan.revision),
+                                settings: plan.settings.clone(),
+                                next_run_at: plan.next_run_at,
+                            },
+                            &MutationContext {
+                                actor: MutationActor::System,
+                                request_id: "evaluation_account_reconcile".to_owned(),
+                            },
+                        )
+                        .await
+                    {
+                        Ok(saved) => plan = saved,
+                        Err(error) if error.kind() == AdminStoreErrorKind::StaleRevision => {
+                            continue;
+                        }
+                        Err(error) => return Err(store_error(error)),
+                    }
+                }
+            }
             if !plan.settings.enabled {
                 continue;
             }
@@ -112,6 +157,18 @@ impl EvaluationTask {
             } else {
                 None
             };
+            let account_ids = super::accounts::resolve(&plan.settings, &accounts, &self.snapshot)
+                .map_err(|error| {
+                WorkerTaskError::safe("无法解析计划账号范围").with_source(error)
+            })?;
+            let mut parameters = plan.settings.parameters.clone();
+            parameters.account_ids = account_ids;
+            // 超出当前单轮上限时保持计划，不截取名单造成部分账号长期漏测
+            if parameters.account_ids.len() > MAX_ACCOUNTS_PER_RUN {
+                parameters.account_ids.clear();
+            }
+            let mut seed = EvaluationRunSeed::new(parameters, &self.version, now);
+            seed.profile.account_selection = plan.settings.account_selection.clone();
             self.runner
                 .repository
                 .enqueue_scheduled(EnqueueScheduledEvaluation {
@@ -119,7 +176,7 @@ impl EvaluationTask {
                     expected_revision: plan.revision,
                     scheduled_at: at,
                     next_run_at: next,
-                    seed: EvaluationRunSeed::new(plan.settings.parameters, &self.version, now),
+                    seed,
                     skip_reason,
                 })
                 .await
@@ -161,6 +218,7 @@ impl EvaluationTask {
                     let now = Utc::now();
                     let maintenance_due = last_maintenance.is_none_or(|last| now.signed_duration_since(last) >= chrono::Duration::seconds(30));
                     let maintenance = async {
+                        self.runner.repository.reconcile_accounts().await.map_err(store_error)?;
                         if maintenance_due {
                             self.advance_schedules(now).await?;
                             self.runner.repository.prune_history(EvaluationRetention::standard(now)).await.map_err(store_error)?;

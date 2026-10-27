@@ -29,11 +29,54 @@ pub struct EvaluationParameters {
     pub timeout_seconds: u16,
 }
 
+/// 计划选择范围独立于每轮冻结的账号名单
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EvaluationAccountSelection {
+    #[default]
+    Fixed,
+    All,
+    Groups {
+        #[serde(rename = "groupIds")]
+        group_ids: Vec<String>,
+    },
+}
+
+impl EvaluationAccountSelection {
+    #[must_use]
+    pub fn is_fixed(&self) -> bool {
+        matches!(self, Self::Fixed)
+    }
+
+    pub fn validate(&self) -> Result<(), AdminError> {
+        if let Self::Groups { group_ids } = self {
+            if group_ids.is_empty() || group_ids.len() > 100 {
+                return Err(AdminError::invalid("请选择 1 到 100 个分组"));
+            }
+            let mut unique = BTreeSet::new();
+            for id in group_ids {
+                gateway_core::account::scope::AccountGroupId::new(id.clone())
+                    .map_err(|_| AdminError::invalid("账号分组 ID 无效"))?;
+                if !unique.insert(id) {
+                    return Err(AdminError::invalid("账号分组不能重复"));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 仓储仅提供账号存在性和启用事实，授权继续复用 Core 快照
+#[derive(Debug, Clone)]
+pub struct EvaluationAccountState {
+    pub id: String,
+    pub enabled: bool,
+    pub group_ids: Vec<String>,
+}
+
 impl EvaluationParameters {
     /// 提交与执行前都校验范围；权限、预算及账号可用性仍以 Core 当次准入为准
     pub fn validate(&self) -> Result<(), AdminError> {
-        ClientApiKeyId::new(self.client_key_id.clone())
-            .map_err(|_| AdminError::invalid("Client Key ID 无效"))?;
         if self.account_ids.is_empty() || self.account_ids.len() > MAX_ACCOUNTS_PER_RUN {
             return Err(AdminError::invalid("每次选择 1 到 20 个账号"));
         }
@@ -45,6 +88,12 @@ impl EvaluationParameters {
                 return Err(AdminError::invalid("账号不能重复"));
             }
         }
+        self.validate_template()
+    }
+
+    pub fn validate_template(&self) -> Result<(), AdminError> {
+        ClientApiKeyId::new(self.client_key_id.clone())
+            .map_err(|_| AdminError::invalid("Client Key ID 无效"))?;
         if !(1..=MAX_REPETITIONS).contains(&self.repetitions)
             || (self.definition.is_none()
                 && self.kind == EvaluationKind::Pelican
@@ -74,6 +123,8 @@ impl EvaluationParameters {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvaluationProfile {
+    #[serde(default, skip_serializing_if = "EvaluationAccountSelection::is_fixed")]
+    pub account_selection: EvaluationAccountSelection,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub definition: Option<EvaluationDefinition>,
     pub prompt: String,
@@ -87,6 +138,7 @@ impl EvaluationProfile {
     #[must_use]
     pub fn current(kind: EvaluationKind, gateway_version: &str) -> Self {
         Self {
+            account_selection: Default::default(),
             definition: None,
             prompt: kind.prompt().to_owned(),
             prompt_version: kind.prompt_version().to_owned(),
@@ -102,6 +154,7 @@ impl EvaluationProfile {
             return Self::current(parameters.kind, gateway_version);
         };
         Self {
+            account_selection: Default::default(),
             definition: Some(definition.clone()),
             prompt: definition.prompt.clone(),
             prompt_version: definition.version(),
@@ -315,6 +368,8 @@ impl From<crate::model::observability::UsageRecord> for EvaluationObservation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvaluationPlanSettings {
+    #[serde(default)]
+    pub account_selection: EvaluationAccountSelection,
     pub name: String,
     pub parameters: EvaluationParameters,
     pub enabled: bool,
@@ -326,9 +381,26 @@ pub struct EvaluationPlanSettings {
 }
 
 impl EvaluationPlanSettings {
+    pub fn validate_parameters(&self) -> Result<(), AdminError> {
+        self.account_selection.validate()?;
+        if self.account_selection.is_fixed() {
+            if self.enabled || !self.parameters.account_ids.is_empty() {
+                self.parameters.validate()?;
+            } else {
+                self.parameters.validate_template()?;
+            }
+        } else {
+            if !self.parameters.account_ids.is_empty() {
+                return Err(AdminError::invalid("自动跟随计划不保存固定账号名单"));
+            }
+            self.parameters.validate_template()?;
+        }
+        Ok(())
+    }
+
     /// 每次保存重新计算未来游标，修改或恢复计划不补跑停用期间的请求
     pub fn next_run_after(&self, now: DateTime<Utc>) -> Result<Option<DateTime<Utc>>, AdminError> {
-        self.parameters.validate()?;
+        self.validate_parameters()?;
         if self.name.trim().is_empty()
             || self.name.len() > 128
             || self.name.chars().any(char::is_control)
@@ -387,6 +459,7 @@ pub struct EvaluationPlan {
     pub next_run_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub available_accounts: Option<usize>,
 }
 
 #[derive(Debug, Clone)]

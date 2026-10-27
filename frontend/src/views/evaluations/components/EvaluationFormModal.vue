@@ -17,8 +17,17 @@ const props = defineProps<{
   settingsSavedRevision: number | null
 }>()
 const emit = defineEmits<{ configure: [] }>()
-const { open, isPlan, editing, parameters, name, intervalMinutes, enabled, saving } = props.editor
-const { loadingAccounts, loadingKeys } = props.catalog
+const { open, isPlan, editing, parameters, name, intervalMinutes, enabled, accountSelection, saving } = props.editor
+const { loadingAccounts, loadingKeys, groups, loadingGroups } = props.catalog
+const selectionMode = computed({
+  get: () => accountSelection.value.mode,
+  set: (mode: 'fixed' | 'all' | 'groups') => {
+    accountSelection.value = mode === 'groups'
+      ? { mode, groupIds: [] }
+      : { mode }
+  },
+})
+const automatic = computed(() => isPlan.value && selectionMode.value !== 'fixed')
 const panel = shallowRef<'main' | 'definition' | 'execution'>('main')
 const definitionDraft = ref<EvaluationDefinition | null>(null)
 const access = useEvaluationAccess(() => open.value, () => parameters.value.clientKeyId, () => props.catalog.accountOptions(parameters.value.accountIds), () => parameters.value.accountIds)
@@ -124,7 +133,16 @@ watch(open, (value) => {
 <template>
   <ZDialog v-model="open" :title="title" :width="panel === 'definition' ? '48rem' : '38rem'" :show-close="!saving" :close-on-click-modal="!saving" :close-on-press-escape="!saving">
     <ZForm v-if="panel === 'main'" class="grid gap-5">
-      <ZFormItem label="被测账号" required>
+      <ZFormItem v-if="isPlan" label="账号范围" required>
+        <ZSelect v-model="selectionMode" :disabled="saving" :options="[{ label: '固定账号', value: 'fixed' }, { label: '自动跟随全部账号', value: 'all' }, { label: '自动跟随指定分组', value: 'groups' }]" aria-label="账号范围" />
+        <p v-if="automatic" class="mt-2 mb-0 text-cp-sm text-cp-text-secondary">
+          每轮自动选择已启用且获 Key 授权的账号，新增账号下轮加入，独立判题账号不参与答题
+        </p>
+      </ZFormItem>
+      <ZFormItem v-if="isPlan && accountSelection.mode === 'groups'" label="跟随分组" required>
+        <ZSelect v-model="accountSelection.groupIds" :options="groups" multiple filterable :loading="loadingGroups" :disabled="saving" placeholder="选择账号分组" />
+      </ZFormItem>
+      <ZFormItem v-if="!automatic" label="被测账号" required>
         <ZSelect v-model="parameters.accountIds" :options="accountOptions" :disabled="saving" multiple remote filterable :loading="loadingAccounts || checkingAccess" collapse-tags :max-collapse-tags="3" placeholder="选择要检测的账号" @query-change="catalog.searchAccounts">
           <template #option="{ option }">
             <span class="min-w-0 flex-1 truncate" :title="option.label">{{ option.label }}</span>
@@ -173,7 +191,7 @@ watch(open, (value) => {
         </div>
       </div>
       <p class="m-0 text-cp-sm text-cp-text-secondary">
-        {{ isPlan ? '每轮' : '本次' }}调用 {{ parameters.accountIds.length * parameters.repetitions }} 次被测模型{{ grader?.type === 'model' ? '，并增加独立模型判题调用' : grader?.type === 'typesafe' ? '，另由 TypeSafe 判题并计费' : '' }}{{ isPlan && !enabled ? ' · 计划保持暂停' : '' }}
+        {{ automatic ? `按每轮可用账号数调用，每账号 ${parameters.repetitions} 次，无可用账号时等待` : `${isPlan ? '每轮' : '本次'}调用 ${parameters.accountIds.length * parameters.repetitions} 次被测模型` }}{{ grader?.type === 'model' ? '，并增加独立模型判题调用' : grader?.type === 'typesafe' ? '，另由 TypeSafe 判题并计费' : '' }}{{ isPlan && !enabled ? ' · 计划保持暂停' : '' }}
       </p>
     </ZForm>
     <EvaluationDefinitionFields v-else-if="panel === 'definition' && definitionDraft" v-model="definitionDraft" :disabled="saving" :default-judge="settings?.defaults.judge ?? null" @configure-judge="configure" />
@@ -213,7 +231,7 @@ watch(open, (value) => {
         <ZButton :disabled="saving" @click="open = false">
           取消
         </ZButton>
-        <ZButton type="primary" :loading="saving" :disabled="!config || !parameters.clientKeyId || ((!isPlan || enabled) && (!accessValid || checkingAccess))" @click="editor.save">
+        <ZButton type="primary" :loading="saving" :disabled="!config || !parameters.clientKeyId || (!automatic && (!isPlan || enabled) && (!accessValid || checkingAccess))" @click="editor.save">
           {{ isPlan ? '保存计划' : '开始测评' }}
         </ZButton>
       </template>

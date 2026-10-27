@@ -24,7 +24,7 @@ impl EvaluationRunner {
         let cancellation = parent.child_token();
         let execute = self.execute_judgment(&claim, cancellation.clone());
         tokio::pin!(execute);
-        let stop = self.watch_stop(&claim.run_id, &parent);
+        let stop = self.watch_stop(&claim.judgment.item_id, Some(&claim.judgment.id), &parent);
         tokio::pin!(stop);
         let mut completion = tokio::select! {
             result = &mut execute => result?,
@@ -58,7 +58,7 @@ impl EvaluationRunner {
         if cancellation.is_cancelled()
             || self
                 .repository
-                .is_stop_requested(&claim.run_id)
+                .is_work_stop_requested(&claim.judgment.item_id, Some(&claim.judgment.id))
                 .await
                 .map_err(store_error)?
         {

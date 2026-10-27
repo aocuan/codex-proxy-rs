@@ -30,6 +30,7 @@ use gateway_store::postgres::PgEvaluationRepository;
 
 use super::super::{TestDatabase, admin_observability_store};
 
+mod accounts;
 mod typesafe;
 
 #[derive(Clone, Copy)]
@@ -260,7 +261,7 @@ fn context() -> MutationContext {
         request_id: "eval-worker-test".to_owned(),
     }
 }
-fn setup(
+async fn setup(
     db: &TestDatabase,
     reply: Reply,
 ) -> (
@@ -269,6 +270,10 @@ fn setup(
     EvaluationTask,
     EvaluationService,
 ) {
+    sqlx::query("insert into provider_accounts (id,provider_kind,name,authentication_kind,provider_credentials_json,has_refresh_token,credential_observed_at,created_at,updated_at)
+        select id,'openai',id,'api_key','{}'::jsonb,false,now(),now(),now() from unnest($1::text[]) id")
+        .bind(vec!["acct_right", "acct_wrong", "acct_pending", "acct_judge", "acct_target"])
+        .execute(&db.pool).await.unwrap();
     let repository = Arc::new(PgEvaluationRepository::new(db.pool.clone()));
     let execution = Arc::new(Execution {
         pool: db.pool.clone(),
@@ -278,13 +283,6 @@ fn setup(
         commits: Arc::default(),
         cleanups: Arc::default(),
     });
-    let task = EvaluationTask::new(
-        repository.clone(),
-        execution.clone(),
-        Arc::new(admin_observability_store(&db.pool)),
-        "test".to_owned(),
-        Default::default(),
-    );
     let provider = gateway_core::identity::ProviderKind::new("openai").unwrap();
     let directory = Arc::new(gateway_core::account::scope::RuntimeAccountDirectory::new(
         [
@@ -325,6 +323,14 @@ fn setup(
             vec![policy],
         )
         .unwrap(),
+    );
+    let task = EvaluationTask::new(
+        repository.clone(),
+        execution.clone(),
+        Arc::new(admin_observability_store(&db.pool)),
+        "test".to_owned(),
+        Default::default(),
+        snapshot.clone(),
     );
     let service = EvaluationService::new(
         repository.clone(),
@@ -376,7 +382,7 @@ async fn idle_worker_reports_health_after_successful_store_maintenance() {
     let Some(db) = TestDatabase::create("eval_worker_health").await else {
         return;
     };
-    let (_, execution, task, _) = setup(&db, Reply::Answer);
+    let (_, execution, task, _) = setup(&db, Reply::Answer).await;
     let daemon = WorkerDaemonContext::new(CancellationToken::new());
     let worker_context = daemon.clone();
     let handle = tokio::spawn(async move { task.run(worker_context).await });
@@ -394,7 +400,7 @@ async fn worker_does_not_report_health_when_store_recovery_fails() {
     let Some(db) = TestDatabase::create("eval_worker_health_failure").await else {
         return;
     };
-    let (_, _, task, _) = setup(&db, Reply::Answer);
+    let (_, _, task, _) = setup(&db, Reply::Answer).await;
     let daemon = WorkerDaemonContext::new(CancellationToken::new());
     db.pool.close().await;
     assert!(task.run(daemon.clone()).await.is_err());
@@ -407,7 +413,7 @@ async fn worker_persists_answers_before_commit_and_keeps_wrong_answers_as_succes
     let Some(db) = TestDatabase::create("eval_worker_answer").await else {
         return;
     };
-    let (repository, execution, task, service) = setup(&db, Reply::Answer);
+    let (repository, execution, task, service) = setup(&db, Reply::Answer).await;
     let run = service
         .submit(
             uuid::Uuid::new_v4(),
@@ -452,7 +458,7 @@ async fn stop_cancels_active_request_preserves_partial_text_and_skips_pending_it
     let Some(db) = TestDatabase::create("eval_worker_stop").await else {
         return;
     };
-    let (repository, execution, task, service) = setup(&db, Reply::Pending);
+    let (repository, execution, task, service) = setup(&db, Reply::Pending).await;
     let run = service
         .submit(
             uuid::Uuid::new_v4(),
@@ -501,7 +507,7 @@ async fn shutdown_drains_active_request_and_restart_does_not_replay_claimed_work
     let Some(db) = TestDatabase::create("eval_worker_restart").await else {
         return;
     };
-    let (repository, execution, task, service) = setup(&db, Reply::Pending);
+    let (repository, execution, task, service) = setup(&db, Reply::Pending).await;
     let run = service
         .submit(
             uuid::Uuid::new_v4(),
@@ -552,7 +558,7 @@ async fn output_and_finalization_failures_never_report_a_successful_grade() {
         let Some(db) = TestDatabase::create("eval_worker_failure").await else {
             return;
         };
-        let (repository, execution, task, service) = setup(&db, reply);
+        let (repository, execution, task, service) = setup(&db, reply).await;
         let run = service
             .submit(
                 uuid::Uuid::new_v4(),
@@ -578,7 +584,7 @@ async fn output_storage_failure_finalizes_core_before_worker_returns_error() {
     let Some(db) = TestDatabase::create("eval_worker_store_failure").await else {
         return;
     };
-    let (repository, execution, task, service) = setup(&db, Reply::Answer);
+    let (repository, execution, task, service) = setup(&db, Reply::Answer).await;
     sqlx::query("alter table evaluation_artifacts add constraint test_reject_output check (false)")
         .execute(&db.pool)
         .await
@@ -612,7 +618,7 @@ async fn scheduled_work_skips_missed_slots_and_uses_the_saved_experiment() {
     let Some(db) = TestDatabase::create("eval_worker_schedule").await else {
         return;
     };
-    let (repository, _execution, task, service) = setup(&db, Reply::Answer);
+    let (repository, _execution, task, service) = setup(&db, Reply::Answer).await;
     let now = Utc::now();
     let plan = repository
         .save_plan(
@@ -620,6 +626,7 @@ async fn scheduled_work_skips_missed_slots_and_uses_the_saved_experiment() {
                 id: "eval_plan_due".to_owned(),
                 expected_revision: None,
                 settings: EvaluationPlanSettings {
+                    account_selection: Default::default(),
                     name: "定时检查".to_owned(),
                     parameters: parameters(&["acct_right"], 1),
                     enabled: true,
@@ -659,7 +666,7 @@ async fn deployment_timezone_change_rebases_the_next_slot_without_replaying_the_
     let Some(db) = TestDatabase::create("eval_worker_timezone").await else {
         return;
     };
-    let (repository, _execution, task, service) = setup(&db, Reply::Answer);
+    let (repository, _execution, task, service) = setup(&db, Reply::Answer).await;
     let now = Utc::now();
     let plan = repository
         .save_plan(
@@ -667,6 +674,7 @@ async fn deployment_timezone_change_rebases_the_next_slot_without_replaying_the_
                 id: "eval_plan_timezone".to_owned(),
                 expected_revision: None,
                 settings: EvaluationPlanSettings {
+                    account_selection: Default::default(),
                     name: "每天检查".to_owned(),
                     parameters: parameters(&["acct_right"], 1),
                     enabled: true,
@@ -698,13 +706,14 @@ async fn minute_plan_advances_atomically_without_drift_or_timezone_rebase() {
     let Some(db) = TestDatabase::create("eval_worker_interval").await else {
         return;
     };
-    let (repository, _execution, task, service) = setup(&db, Reply::Answer);
+    let (repository, _execution, task, service) = setup(&db, Reply::Answer).await;
     let now = Utc::now();
     let plan = service
         .save_plan(
             None,
             None,
             EvaluationPlanSettings {
+                account_selection: Default::default(),
                 name: "45 分钟检查".to_owned(),
                 parameters: parameters(&["acct_right"], 1),
                 enabled: true,
@@ -816,7 +825,7 @@ async fn judge_commits_saved_output_and_invalid_json_never_becomes_a_wrong_answe
         let Some(db) = TestDatabase::create("eval_worker_judge").await else {
             return;
         };
-        let (repository, execution, task, service) = setup(&db, reply);
+        let (repository, execution, task, service) = setup(&db, reply).await;
         let run = service
             .submit(uuid::Uuid::new_v4(), model_parameters(), &context())
             .await
@@ -843,7 +852,7 @@ async fn stopping_a_judge_preserves_the_answer_and_finalizes_the_judge_session()
     let Some(db) = TestDatabase::create("eval_worker_stop_judge").await else {
         return;
     };
-    let (repository, execution, task, service) = setup(&db, Reply::JudgePending);
+    let (repository, execution, task, service) = setup(&db, Reply::JudgePending).await;
     let run = service
         .submit(uuid::Uuid::new_v4(), model_parameters(), &context())
         .await

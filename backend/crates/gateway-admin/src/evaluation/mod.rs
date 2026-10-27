@@ -1,5 +1,6 @@
 //! 原生测评的管理服务与持久任务执行；请求仍交给正常 Core 执行链
 
+mod accounts;
 mod collector;
 mod judge;
 mod runner;
