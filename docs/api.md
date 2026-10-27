@@ -510,6 +510,9 @@ OpenAI HTTP 明确未发送的瞬时建连失败（含 TLS 握手 EOF）在单�
 `turn_rate_limit_exceeded` 保留原始错误和 `Retry-After`，由客户端按自身重试预算等待。
 代理不因此写入账号冷却、换号或透明重试，其他会话仍可使用该账号
 
+上游 WS `error` 转为 SSE `response.failed` 时，事件级的有效 `Retry-After` 同时放入
+`response.error.headers`，供客户端读取；错误对象已有有效重试头时优先保留
+
 Responses 的 HTTP/SSE 与 WebSocket 按顺序即时交付正常事件，不暂存前导等待后续输出。
 未启用中间件链时，无输出的 `response.created`、`response.in_progress`
 及 `codex.response.metadata`、`codex.rate_limits` 元数据交付后仍可按已有安全条件重试，
@@ -2580,7 +2583,28 @@ CLI 插件也须在具体调用中选择当前 Key。管理员身份本身不提
 | --- | --- |
 | `enabled` | 期望启用状态 |
 | `publishedRevision` | 当前已发布的全局配置版本 |
-| `running` | 实例已启用且发布版本与持久化配置一致；不代表进程存活或外部服务健康 |
+| `running` | `runtime.status == "running"` 的派生值；不代表插件业务或外部服务健康 |
+| `runtime.status` | 当前进程观察到的运行状态，独立于期望启用和发布版本 |
+| `runtime.actualRevision` / `actualArtifactSha256` | 当前发布集合持有的实例版本与制品摘要，无对应会话时为 `null` |
+| `runtime.failure` | 脱敏后的 `{ code, message }`；没有已知失败时为 `null` |
+| `runtime.drainingRevisions` | 仍被在途工作持有的旧实例版本 |
+| `runtime.load` | 当前发布会话的资源采样；无对应会话或诊断不可用时为 `null` |
+
+`runtime.status` 包括 `disabled`、`awaiting_publication`、`preparing`、`running`、`blocked`、
+`preparation_failed`、`faulted`、`draining` 和 `unknown`。`running` 要求配置匹配、当前会话就绪且发布集合可服务。
+已启用实例缺少运行诊断时返回 `unknown`，不根据发布版本推断运行正常，也不制造失败原因；已停用配置仍可确定为 `disabled`
+
+`runtime.load` 与 `actualRevision`、`actualArtifactSha256` 指向同一会话，不汇总其他排空版本。
+以下计数来自现有调用表和容量资源，采样不是原子快照，各项可能重叠，不能相加作为调用总数：
+
+| 字段 | 含义 |
+| --- | --- |
+| `activeCalls` | 总在途名额，包含排队、等待取消确认及仍由响应流持有的调用 |
+| `executingCalls` | 首结果前占用的执行名额 |
+| `queuedCalls` | 等待首次执行的名额 |
+| `resumingCalls` | 已挂起、正在等待恢复授权的调用 |
+| `pendingCallbacks` | 驻留回调，包含已返回但插件尚未消费的结果 |
+| `activeStreams` | 已交付首结果、尚未收到 End 的流；End 后仍待消费的缓冲继续计入 `activeCalls` |
 
 ### 12.2 管理扩展页面与原始 API
 
