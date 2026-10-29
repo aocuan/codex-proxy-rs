@@ -1,7 +1,8 @@
 import type { EvaluationHistoryItem, EvaluationKind, EvaluationStatus, EvaluationVerdict } from '@/api'
 import { formatDuration } from '@/utils/format'
 
-export const kindLabels: Record<EvaluationKind, string> = { candy: '糖果题', pelican: '画鹈鹕' }
+export const kindLabels: Record<EvaluationKind, string> = { candy: '糖果题', pelican: '画鹈鹕', turnstate: '快速测票' }
+export const turnStateLabels = { accepted: '票据稳定', refreshed: '票据变化', unknown: '未判定' }
 export const statusLabels: Record<EvaluationStatus, string> = {
   queued: '等待中',
   running: '执行中',

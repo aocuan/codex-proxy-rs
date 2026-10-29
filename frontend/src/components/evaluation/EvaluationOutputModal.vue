@@ -8,7 +8,7 @@ import { useRequestState } from '@/composables/useRequestState'
 import EvaluationErrorDetails from './EvaluationErrorDetails.vue'
 import EvaluationJudgmentSummary from './EvaluationJudgmentSummary.vue'
 import EvaluationPreview from './EvaluationPreview.vue'
-import { durationText, verdictLabels } from './presenter'
+import { durationText, turnStateLabels, verdictLabels } from './presenter'
 
 const props = defineProps<{ item: EvaluationItem | null, run: EvaluationRun | null, accountName: (id: string) => string }>()
 const open = defineModel<boolean>({ required: true })
@@ -102,7 +102,7 @@ useIntervalFn(() => {
 </script>
 
 <template>
-  <ZDialog v-model="open" :title="item?.status === 'failed' ? '测评错误' : '测评回答'" width="64rem">
+  <ZDialog v-model="open" :title="item?.status === 'failed' ? '测评错误' : run?.parameters.kind === 'turnstate' ? '测票详情' : '测评回答'" width="64rem">
     <template v-if="item">
       <dl class="mb-5 grid grid-cols-2 gap-x-5 gap-y-3 text-cp-sm sm:grid-cols-3">
         <div>
@@ -114,9 +114,9 @@ useIntervalFn(() => {
         </div>
         <div>
           <dt class="text-cp-text-tertiary">
-            题目结果
+            {{ observation?.turnState ? '测票结果' : '题目结果' }}
           </dt><dd class="m-0">
-            {{ verdictLabels[item.verdict] }}{{ item.finalAnswer === null ? '' : ` · ${item.finalAnswer}` }}
+            {{ observation?.turnState ? turnStateLabels[observation.turnState.outcome] : verdictLabels[item.verdict] }}{{ item.finalAnswer === null ? '' : ` · ${item.finalAnswer}` }}
           </dd>
         </div>
         <div>
@@ -165,7 +165,7 @@ useIntervalFn(() => {
           <dt class="text-cp-text-tertiary">
             请求 ID
           </dt><dd class="m-0 break-all font-mono text-cp-xs">
-            {{ item.requestId ?? '未开始' }}
+            {{ item.requestId ?? (observation?.turnState ? '账号诊断，不进入模型账本' : '未开始') }}
           </dd>
         </div>
       </dl>
@@ -187,6 +187,16 @@ useIntervalFn(() => {
         状态刷新失败，重试
       </ZButton>
     </template>
+    <div v-if="observation?.turnState" class="mb-4 grid gap-2 text-cp-sm" aria-label="测票请求记录">
+      <p class="m-0 text-cp-text-secondary">
+        两次短请求只检测路由票据是否稳定，票据变化需要能力题复核
+      </p>
+      <div v-for="(step, index) in observation.turnState.steps" :key="index" class="rounded-cp bg-cp-fill-quaternary p-3">
+        第 {{ index + 1 }} 次 · HTTP {{ step.status }} · {{ durationText(step.durationMs) }} · 票据 {{ step.ticketLength }} 字符
+        <span v-if="step.ticketFingerprint" class="ml-2 font-mono text-cp-xs">{{ step.ticketFingerprint.slice(0, 8) }}</span>
+        <span v-if="step.routeChanged" class="ml-2 text-cp-warning-text">路由已变化</span>
+      </div>
+    </div>
     <div v-if="loading" class="py-10 text-center text-cp-text-secondary" role="status">
       正在读取回答
     </div>

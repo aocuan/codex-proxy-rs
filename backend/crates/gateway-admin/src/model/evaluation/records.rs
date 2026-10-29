@@ -10,7 +10,7 @@ use gateway_core::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-    EvaluationDefinition, EvaluationKind, EvaluationVerdict, GRADER_VERSION, MAX_ACCOUNTS_PER_RUN,
+    EvaluationDefinition, EvaluationKind, EvaluationVerdict, MAX_ACCOUNTS_PER_RUN,
     MAX_PLAN_INTERVAL_MINUTES, MAX_REPETITIONS, REQUEST_PROFILE_VERSION,
 };
 use crate::model::AdminError;
@@ -92,6 +92,15 @@ impl EvaluationParameters {
     }
 
     pub fn validate_template(&self) -> Result<(), AdminError> {
+        if self.kind == EvaluationKind::Turnstate
+            && (self.definition.is_some()
+                || self.repetitions != 1
+                || self.reasoning_effort.as_deref() != Some("low"))
+        {
+            return Err(AdminError::invalid(
+                "快速测票固定两次 hi 请求、low 推理强度和每账号一组，不接受自定义题目或判题",
+            ));
+        }
         ClientApiKeyId::new(self.client_key_id.clone())
             .map_err(|_| AdminError::invalid("Client Key ID 无效"))?;
         if !(1..=MAX_REPETITIONS).contains(&self.repetitions)
@@ -142,8 +151,8 @@ impl EvaluationProfile {
             definition: None,
             prompt: kind.prompt().to_owned(),
             prompt_version: kind.prompt_version().to_owned(),
-            request_profile_version: REQUEST_PROFILE_VERSION.to_owned(),
-            grader_version: GRADER_VERSION.to_owned(),
+            request_profile_version: kind.request_profile_version().to_owned(),
+            grader_version: kind.grader_version().to_owned(),
             gateway_version: gateway_version.to_owned(),
         }
     }
@@ -325,6 +334,8 @@ pub struct EvaluationCompletion {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct EvaluationObservation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_state: Option<super::TurnStateProbeResult>,
     pub request_history_available: bool,
     pub provider: Option<String>,
     pub account_id: Option<String>,
@@ -346,6 +357,7 @@ impl From<crate::model::observability::UsageRecord> for EvaluationObservation {
     fn from(record: crate::model::observability::UsageRecord) -> Self {
         Self {
             request_history_available: true,
+            turn_state: None,
             provider: record.provider_kind,
             account_id: record.provider_account_ref,
             upstream_model: record.upstream_model_id,

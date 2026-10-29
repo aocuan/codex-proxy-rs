@@ -134,3 +134,25 @@ fn automatic_plans_accept_an_empty_pool_while_manual_runs_still_require_accounts
     let decoded: EvaluationPlanSettings = serde_json::from_value(old).unwrap();
     assert_eq!(decoded.account_selection, EvaluationAccountSelection::Fixed);
 }
+
+#[test]
+fn ticket_probe_freezes_two_short_requests_and_cannot_enable_a_judge() {
+    let mut probe = parameters();
+    probe.kind = EvaluationKind::Turnstate;
+    probe.repetitions = 1;
+    probe.reasoning_effort = Some("low".into());
+    assert!(probe.validate().is_ok());
+    let profile =
+        gateway_admin::model::evaluation::EvaluationProfile::for_parameters(&probe, "test");
+    assert_eq!(profile.prompt, "hi");
+    assert_eq!(
+        profile.request_profile_version,
+        "turnstate-http-two-shots-v1"
+    );
+    probe.definition =
+        Some(gateway_admin::model::evaluation::EvaluationDefinition::preset(EvaluationKind::Candy));
+    assert!(probe.validate().is_err());
+    probe.definition = None;
+    probe.reasoning_effort = Some("high".into());
+    assert!(probe.validate().is_err());
+}

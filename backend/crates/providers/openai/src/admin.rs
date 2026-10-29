@@ -166,6 +166,30 @@ impl OpenAiAdminProvider {
 
 #[async_trait]
 impl ProviderAdmin for OpenAiAdminProvider {
+    async fn probe_turn_state(
+        &self,
+        account: &ProviderAccountId,
+        model: &UpstreamModelId,
+        configuration: Option<&OpaqueProviderData>,
+        cancellation: gateway_core::lifecycle::CancellationToken,
+    ) -> Result<gateway_admin::model::evaluation::TurnStateProbeResult, ProviderAdminError> {
+        let profile = match configuration {
+            Some(configuration) => {
+                crate::transport::profile::identity::RequestProfileSelection::parse(configuration)
+                    .and_then(|selection| selection.resolve(&self.profile))
+                    .map_err(|_| ProviderAdminError::new(ProviderAdminErrorKind::Invalid))?
+            }
+            None => self.profile.snapshot(),
+        };
+        crate::transport::turnstate::probe(
+            self.accounts.as_ref(),
+            &profile,
+            account,
+            model,
+            cancellation,
+        )
+        .await
+    }
     fn compile_privacy_policy(
         &self,
         policy: &gateway_core::settings::privacy::CodexPrivacyPolicy,

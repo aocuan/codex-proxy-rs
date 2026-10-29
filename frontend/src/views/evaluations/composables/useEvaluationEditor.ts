@@ -34,7 +34,8 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
         accountIds,
       }
     }
-    parameters.value.definition ??= structuredClone(config.value?.tests.find(test => test.kind === parameters.value.kind)?.definition)
+    if (parameters.value.kind !== 'turnstate')
+      parameters.value.definition ??= structuredClone(config.value?.tests.find(test => test.kind === parameters.value.kind)?.definition)
     name.value = plan?.settings.name ?? ''
     intervalMinutes.value = plan
       ? String(plan.settings.intervalMinutes ?? '')
@@ -53,28 +54,35 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
         : [...parameters.value.accountIds],
       model: parameters.value.model.trim(),
     }
-    if (!params.definition?.name.trim() || !params.definition.prompt.trim()) {
+    if (params.kind === 'turnstate') {
+      params.definition = undefined
+      params.reasoningEffort = 'low'
+      params.repetitions = 1
+    }
+    if (params.kind !== 'turnstate' && (!params.definition?.name.trim() || !params.definition.prompt.trim())) {
       ZNotification.warning({ message: '请填写测评名称和提示词' })
       return
     }
     if (!params.clientKeyId || !params.model || ((!isPlan.value || accountSelection.value.mode === 'fixed') && (params.accountIds.length < 1 || params.accountIds.length > 20))) {
-      ZNotification.warning({ message: '请选择计费 Key、1 到 20 个账号，并填写模型 ID' })
+      ZNotification.warning({ message: `请选择${params.kind === 'turnstate'
+        ? '授权'
+        : '计费'} Key、1 到 20 个账号，并填写模型 ID` })
       return
     }
     if (isPlan.value && accountSelection.value.mode === 'groups' && !accountSelection.value.groupIds.length) {
       ZNotification.warning({ message: '请选择自动跟随的账号分组' })
       return
     }
-    const grader = params.definition.grader
-    if ((grader.type === 'exact' && !grader.expected.trim()) || (grader.type === 'regex' && !grader.pattern.trim())) {
+    const grader = params.definition?.grader
+    if ((grader?.type === 'exact' && !grader.expected.trim()) || (grader?.type === 'regex' && !grader.pattern.trim())) {
       ZNotification.warning({ message: '请填写判分规则' })
       return
     }
-    if (grader.type === 'model' && (!grader.config.clientKeyId || !grader.config.accountId || !grader.config.model.trim() || !grader.config.rubric.trim() || params.accountIds.includes(grader.config.accountId))) {
+    if (grader?.type === 'model' && (!grader.config.clientKeyId || !grader.config.accountId || !grader.config.model.trim() || !grader.config.rubric.trim() || params.accountIds.includes(grader.config.accountId))) {
       ZNotification.warning({ message: '请完整填写 AI 判题配置，并选择独立的判题账号' })
       return
     }
-    if (grader.type === 'typesafe' && ((!settings.value?.typesafeConfigured && (!isPlan.value || enabled.value)) || !grader.config.rubric.trim())) {
+    if (grader?.type === 'typesafe' && ((!settings.value?.typesafeConfigured && (!isPlan.value || enabled.value)) || !grader.config.rubric.trim())) {
       ZNotification.warning({ message: '请配置 TypeSafe API Key 并填写评分标准' })
       return
     }
@@ -87,7 +95,9 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
       let run: EvaluationRun | undefined
       if (isPlan.value) {
         const settings: EvaluationPlanSettings = {
-          name: name.value.trim() || `${params.definition!.name.slice(0, 24)} · ${minutes} 分钟`,
+          name: name.value.trim() || `${params.kind === 'turnstate'
+            ? '快速测票'
+            : params.definition!.name.slice(0, 24)} · ${minutes} 分钟`,
           intervalMinutes: minutes,
           enabled: enabled.value,
           accountSelection: accountSelection.value,

@@ -139,6 +139,16 @@ struct ProviderAdminDiagnostic {
 /// 运行时资源通知只在事务成功后发生
 #[async_trait]
 pub trait ProviderAdmin: Send + Sync {
+    /// 原生会话票据探测，不刷新凭据、不改变账号状态，不进入模型计费账本
+    async fn probe_turn_state(
+        &self,
+        _account: &ProviderAccountId,
+        _model: &UpstreamModelId,
+        _configuration: Option<&gateway_core::account::OpaqueProviderData>,
+        _cancellation: gateway_core::lifecycle::CancellationToken,
+    ) -> Result<crate::model::evaluation::TurnStateProbeResult, ProviderAdminError> {
+        Err(ProviderAdminError::new(ProviderAdminErrorKind::Unsupported))
+    }
     fn compile_privacy_policy(
         &self,
         _policy: &gateway_core::settings::privacy::CodexPrivacyPolicy,

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { EvaluationDetail, EvaluationItem, EvaluationRun } from '@/api'
 import { ZButton, ZDialog, ZEmpty, ZTable, ZTag } from '@codex-proxy/ui'
+import { turnStateLabels } from '@/components/evaluation/presenter'
 import { durationText, itemColumns, kindLabels, runStatus, statusLabels, verdictLabels } from '../presenter'
 
 defineProps<{ detail: EvaluationDetail | null, loading: boolean, error: string, stopping: boolean, retryingItemId: string | null, accountName: (id: string) => string }>()
@@ -60,7 +61,7 @@ const open = defineModel<boolean>({ required: true })
         </template>
         <template #verdict="{ row }">
           <ZTag :type="row.verdict === 'correct' ? 'success' : row.verdict === 'wrong' ? 'danger' : 'default'">
-            {{ row.judgment?.status === 'queued' ? '等待判题' : row.judgment?.status === 'running' ? '正在判题' : verdictLabels[row.verdict] }}
+            {{ row.observation.turnState ? turnStateLabels[row.observation.turnState.outcome] : row.judgment?.status === 'queued' ? '等待判题' : row.judgment?.status === 'running' ? '正在判题' : verdictLabels[row.verdict] }}
           </ZTag>
           <span v-if="row.judgment" class="mt-1 block text-cp-xs text-cp-text-tertiary">AI 评审</span>
         </template>
@@ -71,7 +72,7 @@ const open = defineModel<boolean>({ required: true })
         <template #actions="{ row }">
           <div class="flex gap-2">
             <ZButton size="small" :disabled="!row.hasOutput && row.status !== 'failed'" @click="emit('output', row, detail.run)">
-              {{ row.status === 'failed' ? '查看错误' : '查看回答' }}
+              {{ row.status === 'failed' ? '查看错误' : detail.run.parameters.kind === 'turnstate' ? '测票详情' : '查看回答' }}
             </ZButton>
             <ZButton
               v-if="row.judgment && ['failed', 'interrupted', 'cancelled'].includes(row.judgment.status) && row.judgment.attempt < 5 && !detail.run.stopRequested"

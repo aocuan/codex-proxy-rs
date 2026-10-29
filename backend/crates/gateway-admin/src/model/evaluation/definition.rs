@@ -98,7 +98,7 @@ impl EvaluationDefinition {
             name: kind.label().to_owned(),
             prompt: kind.prompt().to_owned(),
             output_format: match kind {
-                EvaluationKind::Candy => EvaluationOutputFormat::Text,
+                EvaluationKind::Candy | EvaluationKind::Turnstate => EvaluationOutputFormat::Text,
                 EvaluationKind::Pelican => EvaluationOutputFormat::Html,
             },
             grader: match kind {
@@ -106,7 +106,7 @@ impl EvaluationDefinition {
                     source: EvaluationAnswerSource::FinalInteger,
                     expected: "21".to_owned(),
                 },
-                EvaluationKind::Pelican => EvaluationGrader::None,
+                EvaluationKind::Pelican | EvaluationKind::Turnstate => EvaluationGrader::None,
             },
         }
     }

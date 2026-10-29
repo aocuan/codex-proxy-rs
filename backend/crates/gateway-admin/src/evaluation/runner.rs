@@ -33,6 +33,8 @@ use crate::{
 };
 
 pub(super) struct EvaluationRunner {
+    pub providers: Option<crate::ports::provider::ProviderAdminRegistry>,
+    pub snapshot: gateway_core::runtime::RuntimeSnapshotHandle,
     pub typesafe: Option<std::sync::Arc<dyn crate::ports::evaluation::TypeSafeJudgeClient>>,
     pub repository: Arc<dyn EvaluationRepository>,
     pub execution: Arc<dyn ExecutionService>,
@@ -117,14 +119,19 @@ impl EvaluationRunner {
                 && claim.profile.prompt_version == definition.version()
                 && claim.profile.prompt == definition.prompt
         } else {
-            claim.profile.grader_version == GRADER_VERSION
+            claim.profile.grader_version == claim.parameters.kind.grader_version()
                 && claim.profile.prompt_version == claim.parameters.kind.prompt_version()
         };
-        if claim.profile.request_profile_version != REQUEST_PROFILE_VERSION || !supported_grader {
+        if claim.profile.request_profile_version != claim.parameters.kind.request_profile_version()
+            || !supported_grader
+        {
             completion.error_code = Some("evaluation.unsupported_profile".to_owned());
             completion.message =
                 Some("本版本不支持这条排队任务的实验版本，请重新创建测评".to_owned());
             return Ok(completion);
+        }
+        if claim.parameters.kind == EvaluationKind::Turnstate {
+            return self.execute_turnstate(claim, cancellation).await;
         }
         let request = build_request(claim, cancellation)?;
         let mut started = match self.execution.start_account_execution(request).await {
@@ -243,6 +250,102 @@ impl EvaluationRunner {
         .await
         .ok()
         .flatten()
+    }
+}
+
+impl EvaluationRunner {
+    async fn execute_turnstate(
+        &self,
+        claim: &ClaimedEvaluation,
+        cancellation: CancellationToken,
+    ) -> Result<EvaluationCompletion, WorkerTaskError> {
+        let started_at = Instant::now();
+        let mut completion = empty_completion();
+        let account = ProviderAccountId::new(&claim.item.account_id)
+            .map_err(|error| WorkerTaskError::safe("测票账号无效").with_source(error))?;
+        let key = ClientApiKeyId::new(&claim.parameters.client_key_id)
+            .map_err(|error| WorkerTaskError::safe("测票 Key 无效").with_source(error))?;
+        let snapshot = self
+            .snapshot
+            .acquire()
+            .map_err(|error| WorkerTaskError::safe("测票授权配置暂不可用").with_source(error))?;
+        if !snapshot.client_policy(&key).is_some_and(|policy| {
+            policy.authorize().is_ok() && policy.account_scope().allows(&account)
+        }) {
+            completion.error_code = Some("policy_denied".into());
+            completion.message = Some("当前 Key 不再授权此账号，未发送测票请求".into());
+            return Ok(completion);
+        }
+        let Some(providers) = &self.providers else {
+            completion.message = Some("测票服务暂不可用".into());
+            return Ok(completion);
+        };
+        let kind = gateway_core::routing::ProviderKind::new("openai")
+            .map_err(|error| WorkerTaskError::safe("测票 Provider 无效").with_source(error))?;
+        let provider = providers
+            .require(&kind)
+            .map_err(|error| WorkerTaskError::safe("测票 Provider 不可用").with_source(error))?;
+        let model = gateway_core::routing::UpstreamModelId::new(claim.parameters.model.as_str())
+            .map_err(|error| WorkerTaskError::safe("测票模型无效").with_source(error))?;
+        let configuration = snapshot
+            .client_policy(&key)
+            .and_then(|policy| policy.account_scope().request_profile(&kind))
+            .or_else(|| snapshot.settings().request_profiles().get(&kind));
+        let child = cancellation.child_token();
+        let result = tokio::time::timeout(
+            Duration::from_secs(u64::from(claim.parameters.timeout_seconds)),
+            provider.probe_turn_state(&account, &model, configuration, child.clone()),
+        )
+        .await;
+        child.cancel();
+        let report = match result {
+            Ok(Ok(report)) => report,
+            Ok(Err(_)) => TurnStateProbeResult::new(
+                Vec::new(),
+                Some("测票账号或凭据暂不可用，未得到有效结果".into()),
+            ),
+            Err(_) => TurnStateProbeResult::new(
+                Vec::new(),
+                Some("测票总耗时超过设置的超时，未继续发送".into()),
+            ),
+        };
+        completion.status = if cancellation.is_cancelled() {
+            EvaluationItemStatus::Cancelled
+        } else if report.error.is_some() {
+            EvaluationItemStatus::Failed
+        } else {
+            EvaluationItemStatus::Succeeded
+        };
+        completion.duration_ms = elapsed_ms(started_at);
+        completion.message = Some(report.summary().to_owned());
+        if report.error.is_some() {
+            completion.error_code = Some("evaluation.turnstate_unavailable".into());
+        }
+        let output = serde_json::to_string_pretty(&report)
+            .map_err(|error| WorkerTaskError::safe("测票结果编码失败").with_source(error))?;
+        if !self
+            .repository
+            .save_output(
+                &claim.item.id,
+                EvaluationOutput {
+                    response_text: output,
+                    artifact_html: None,
+                },
+            )
+            .await
+            .map_err(store_error)?
+        {
+            return Err(WorkerTaskError::safe("测票输出保存时任务已失效"));
+        }
+        completion.observation = EvaluationObservation {
+            turn_state: Some(report),
+            provider: Some("openai".into()),
+            account_id: Some(claim.item.account_id.clone()),
+            upstream_model: Some(claim.parameters.model.as_str().to_owned()),
+            reasoning_effort: Some("low".into()),
+            ..Default::default()
+        };
+        Ok(completion)
     }
 }
 

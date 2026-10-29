@@ -31,6 +31,7 @@ use gateway_store::postgres::PgEvaluationRepository;
 use super::super::{TestDatabase, admin_observability_store};
 
 mod accounts;
+mod turnstate;
 mod typesafe;
 
 #[derive(Clone, Copy)]

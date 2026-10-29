@@ -39,6 +39,8 @@ impl EvaluationTask {
     ) -> Self {
         Self {
             runner: EvaluationRunner {
+                providers: None,
+                snapshot: snapshot.clone(),
                 typesafe: None,
                 repository,
                 execution,
@@ -56,6 +58,15 @@ impl EvaluationTask {
         client: Option<Arc<dyn crate::ports::evaluation::TypeSafeJudgeClient>>,
     ) -> Self {
         self.runner.typesafe = client;
+        self
+    }
+
+    #[must_use]
+    pub fn with_turnstate(
+        mut self,
+        providers: crate::ports::provider::ProviderAdminRegistry,
+    ) -> Self {
+        self.runner.providers = Some(providers);
         self
     }
 

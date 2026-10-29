@@ -5,12 +5,14 @@ mod definition;
 mod judgment;
 mod records;
 mod settings;
+mod turnstate;
 mod typesafe;
 pub use benchmark::{EvaluationAssessment, assess_definition, assess_response};
 pub use definition::*;
 pub use judgment::*;
 pub use records::*;
 pub use settings::*;
+pub use turnstate::*;
 pub use typesafe::*;
 
 pub const REQUEST_PROFILE_VERSION: &str = "responses-no-tools-v1";
@@ -37,14 +39,34 @@ pub struct EvaluationAccountAccess {
 pub enum EvaluationKind {
     Candy,
     Pelican,
+    Turnstate,
 }
 
 impl EvaluationKind {
+    #[must_use]
+    pub const fn request_profile_version(self) -> &'static str {
+        if matches!(self, Self::Turnstate) {
+            "turnstate-http-two-shots-v1"
+        } else {
+            REQUEST_PROFILE_VERSION
+        }
+    }
+
+    #[must_use]
+    pub const fn grader_version(self) -> &'static str {
+        if matches!(self, Self::Turnstate) {
+            "turnstate-route-signal-v1"
+        } else {
+            GRADER_VERSION
+        }
+    }
+
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Candy => "candy",
             Self::Pelican => "pelican",
+            Self::Turnstate => "turnstate",
         }
     }
 
@@ -53,6 +75,7 @@ impl EvaluationKind {
         match self {
             Self::Candy => "糖果题",
             Self::Pelican => "画鹈鹕",
+            Self::Turnstate => "快速测票",
         }
     }
 
@@ -61,12 +84,14 @@ impl EvaluationKind {
         match self {
             Self::Candy => "candy-v1",
             Self::Pelican => "pelican-css-v1",
+            Self::Turnstate => "turnstate-two-shots-v1",
         }
     }
 
     #[must_use]
     pub const fn prompt(self) -> &'static str {
         match self {
+            Self::Turnstate => "hi",
             Self::Candy => {
                 "不使用任何外部工具回答以下问题：\n\n\
 在一个黑色的袋子里放有三种口味的糖果，每种糖果有两种不同的形状：圆形和五角星形。\

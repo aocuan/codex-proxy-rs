@@ -175,7 +175,7 @@ async function confirmDelete() {
             </template>
             <template #result="{ row }">
               <span v-if="row.profile.definition ? row.profile.definition.grader.type !== 'none' : row.parameters.kind === 'candy'">{{ row.correctItems }} 次通过</span>
-              <span v-else>查看作品</span>
+              <span v-else>{{ row.parameters.kind === 'turnstate' ? '查看路由信号' : '查看作品' }}</span>
               <span v-if="row.activeItems" class="mt-1 block text-cp-xs text-cp-text-tertiary">{{ row.activeItems }} 次未结束</span>
             </template>
             <template #actions="{ row }">

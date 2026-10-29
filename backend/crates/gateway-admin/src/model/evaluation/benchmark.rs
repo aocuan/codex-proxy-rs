@@ -23,6 +23,7 @@ pub fn assess_response(
         return ungraded("回答未完整接收或超过大小限制");
     }
     match kind {
+        EvaluationKind::Turnstate => ungraded("测票只报告路由信号，不参与能力题判分"),
         EvaluationKind::Candy => assess_candy(response),
         EvaluationKind::Pelican => assess_pelican(response),
     }

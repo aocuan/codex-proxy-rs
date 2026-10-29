@@ -471,7 +471,8 @@ async fn initialize_inner(
         timezone,
         published_snapshot.clone(),
     )
-    .with_typesafe(typesafe);
+    .with_typesafe(typesafe)
+    .with_turnstate(registry.clone());
     let system_preflight = Arc::new(use_case::plugin_update::PluginSystemUpdatePreflight::new(
         store.plugins(),
         plugin_inspector.clone(),

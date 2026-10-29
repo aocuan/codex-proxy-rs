@@ -324,7 +324,7 @@ async fn config<S: SessionState + Send + Sync>(
     _auth: AdminAuth,
     State(state): State<S>,
 ) -> impl IntoResponse {
-    let tests: Vec<_> = [EvaluationKind::Candy, EvaluationKind::Pelican].into_iter().map(|kind| serde_json::json!({
+    let tests: Vec<_> = [EvaluationKind::Candy, EvaluationKind::Pelican, EvaluationKind::Turnstate].into_iter().map(|kind| serde_json::json!({
         "kind": kind, "label": kind.label(), "prompt": kind.prompt(), "promptVersion": kind.prompt_version(), "definition": EvaluationDefinition::preset(kind),
     })).collect();
     AdminResponse::new(

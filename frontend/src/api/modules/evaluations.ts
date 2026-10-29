@@ -1,7 +1,7 @@
 import type { RequestOptions } from '../request'
 import request from '../request'
 
-export type EvaluationKind = 'candy' | 'pelican'
+export type EvaluationKind = 'candy' | 'pelican' | 'turnstate'
 export type EvaluationStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'skipped'
 export type EvaluationVerdict = 'correct' | 'wrong' | 'ungraded' | 'not_applicable'
 
@@ -108,6 +108,11 @@ export interface EvaluationRun {
 }
 
 export interface EvaluationObservation {
+  turnState?: {
+    outcome: 'accepted' | 'refreshed' | 'unknown'
+    error: string | null
+    steps: { status: number, durationMs: number, ticketLength: number, ticketFingerprint: string, routeChanged: boolean, completed: boolean }[]
+  }
   requestHistoryAvailable: boolean
   provider: string | null
   accountId: string | null

@@ -28,6 +28,7 @@ const selectionMode = computed({
   },
 })
 const automatic = computed(() => isPlan.value && selectionMode.value !== 'fixed')
+const ticketProbe = computed(() => parameters.value.kind === 'turnstate')
 const panel = shallowRef<'main' | 'definition' | 'execution'>('main')
 const definitionDraft = ref<EvaluationDefinition | null>(null)
 const access = useEvaluationAccess(() => open.value, () => parameters.value.clientKeyId, () => props.catalog.accountOptions(parameters.value.accountIds), () => parameters.value.accountIds)
@@ -52,6 +53,8 @@ const effort = computed({
 })
 const preset = computed({
   get: () => {
+    if (ticketProbe.value)
+      return String(props.config?.tests.findIndex(item => item.kind === 'turnstate') ?? -1)
     const match = props.config?.tests.findIndex(item => isEqual(item.definition, parameters.value.definition)) ?? -1
     return match >= 0
       ? String(match)
@@ -67,7 +70,14 @@ const preset = computed({
       : props.config?.tests[Number(value)]
     if (selected) {
       parameters.value.kind = selected.kind
-      parameters.value.definition = structuredClone(toRaw(selected.definition))
+      parameters.value.definition = selected.kind === 'turnstate'
+        ? undefined
+        : structuredClone(toRaw(selected.definition))
+      if (selected.kind === 'turnstate') {
+        parameters.value.reasoningEffort = 'low'
+        parameters.value.repetitions = 1
+        parameters.value.timeoutSeconds = 60
+      }
     }
   },
 })
@@ -119,6 +129,10 @@ watch(() => props.settingsSavedRevision, () => {
   }
   else {
     Object.assign(parameters.value, defaults, { clientKeyId: defaults.clientKeyId ?? '', model: defaults.model ?? parameters.value.model })
+    if (ticketProbe.value) {
+      parameters.value.reasoningEffort = 'low'
+      parameters.value.repetitions = 1
+    }
   }
 })
 watch(open, (value) => {
@@ -159,16 +173,19 @@ watch(open, (value) => {
       <ZFormItem label="测评内容" required>
         <div class="flex items-center gap-2">
           <ZSelect v-model="preset" class="min-w-0 flex-1" :disabled="saving" :options="presetOptions" aria-label="选择测评预设" />
-          <ZButton :disabled="saving || !parameters.definition" @click="editDefinition()">
+          <ZButton v-if="!ticketProbe" :disabled="saving || !parameters.definition" @click="editDefinition()">
             编辑题目
           </ZButton>
         </div>
         <p v-if="grader" class="mt-2 mb-0 text-cp-sm text-cp-text-secondary">
           {{ graderLabel(grader) }}
         </p>
+        <p v-if="ticketProbe" class="mt-2 mb-0 text-cp-sm text-cp-text-secondary">
+          每账号最多两次 hi 请求，固定 low 推理强度，观察票据是否保持稳定，不代表能力题结论
+        </p>
       </ZFormItem>
       <ZFormItem label="被测模型" required>
-        <ZInput v-model="parameters.model" :disabled="saving" placeholder="填写网关模型 ID" />
+        <ZInput v-model="parameters.model" :disabled="saving" :placeholder="ticketProbe ? '填写上游模型 ID' : '填写网关模型 ID'" />
       </ZFormItem>
       <ZFormItem v-if="isPlan" label="执行间隔" required :description="editing?.settings.cronExpression ? '填写分钟数，保存后替换原来的执行时间' : undefined">
         <ZInput v-model="intervalMinutes" type="number" inputmode="numeric" :disabled="saving" :min="1" :max="config?.limits.planIntervalMinutes" :step="1" placeholder="例如 30" aria-label="执行间隔">
@@ -179,7 +196,7 @@ watch(open, (value) => {
       </ZFormItem>
       <div class="flex flex-wrap items-center justify-between gap-2 text-cp-sm">
         <span :class="parameters.clientKeyId ? 'text-cp-text-secondary' : 'text-cp-warning-text'">
-          {{ parameters.clientKeyId ? `计费 Key：${catalog.keyOptions(parameters.clientKeyId).find(item => item.value === parameters.clientKeyId)?.label ?? parameters.clientKeyId}` : '尚未配置计费 Key' }}
+          {{ parameters.clientKeyId ? `${ticketProbe ? '授权' : '计费'} Key：${catalog.keyOptions(parameters.clientKeyId).find(item => item.value === parameters.clientKeyId)?.label ?? parameters.clientKeyId}` : `尚未配置${ticketProbe ? '授权' : '计费'} Key` }}
         </span>
         <div class="flex gap-2">
           <ZButton size="small" :disabled="saving" @click="panel = 'execution'">
@@ -190,23 +207,26 @@ watch(open, (value) => {
           </ZButton>
         </div>
       </div>
-      <p class="m-0 text-cp-sm text-cp-text-secondary">
+      <p v-if="ticketProbe" class="m-0 text-cp-sm text-cp-text-secondary">
+        仅支持 OpenAI OAuth 账号，直接探测所填上游模型并沿用账号代理，Key 用于授权，消耗上游额度但不进入模型计费账本
+      </p>
+      <p v-else class="m-0 text-cp-sm text-cp-text-secondary">
         {{ automatic ? `按每轮可用账号数调用，每账号 ${parameters.repetitions} 次，无可用账号时等待` : `${isPlan ? '每轮' : '本次'}调用 ${parameters.accountIds.length * parameters.repetitions} 次被测模型` }}{{ grader?.type === 'model' ? '，并增加独立模型判题调用' : grader?.type === 'typesafe' ? '，另由 TypeSafe 判题并计费' : '' }}{{ isPlan && !enabled ? ' · 计划保持暂停' : '' }}
       </p>
     </ZForm>
     <EvaluationDefinitionFields v-else-if="panel === 'definition' && definitionDraft" v-model="definitionDraft" :disabled="saving" :default-judge="settings?.defaults.judge ?? null" @configure-judge="configure" />
     <ZForm v-else-if="panel === 'execution'" class="grid gap-5 sm:grid-cols-2">
-      <ZFormItem class="sm:col-span-2" label="计费 Key" required>
+      <ZFormItem class="sm:col-span-2" :label="ticketProbe ? '授权 Key' : '计费 Key'" required>
         <ZSelect :model-value="parameters.clientKeyId || undefined" :options="keyOptions" :disabled="saving" remote filterable :loading="loadingKeys" placeholder="搜索 Key 名称" @update:model-value="parameters.clientKeyId = $event ?? ''" @query-change="catalog.searchKeys" />
       </ZFormItem>
       <ZFormItem label="推理强度">
-        <ZSelect v-model="effort" :disabled="saving" :options="effortOptions" />
+        <ZSelect v-model="effort" :disabled="saving || ticketProbe" :options="effortOptions" />
       </ZFormItem>
       <ZFormItem label="每账号次数">
-        <ZInputNumber v-model="parameters.repetitions" aria-label="每账号次数" :disabled="saving" :min="1" :max="5" :precision="0" />
+        <ZInputNumber v-model="parameters.repetitions" aria-label="每账号次数" :disabled="saving || ticketProbe" :min="1" :max="5" :precision="0" />
       </ZFormItem>
-      <ZFormItem label="单次超时">
-        <ZInputNumber v-model="parameters.timeoutSeconds" aria-label="单次超时" :disabled="saving" :min="1" :max="600" :precision="0" unit="秒" />
+      <ZFormItem :label="ticketProbe ? '每组超时' : '单次超时'">
+        <ZInputNumber v-model="parameters.timeoutSeconds" :aria-label="ticketProbe ? '每组超时' : '单次超时'" :disabled="saving" :min="1" :max="600" :precision="0" unit="秒" />
       </ZFormItem>
       <template v-if="isPlan">
         <ZFormItem label="计划名称" class="sm:col-span-2">
