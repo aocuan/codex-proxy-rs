@@ -25,7 +25,12 @@ export function durationText(ms: number | null) {
     : formatDuration(ms)
 }
 
-export function historyResult(item: Pick<EvaluationHistoryItem, 'status' | 'verdict' | 'judgmentStatus'>) {
+export function historyPending(item: Pick<EvaluationHistoryItem, 'status' | 'judgmentStatus'>) {
+  const status = item.status === 'succeeded' ? item.judgmentStatus ?? item.status : item.status
+  return status === 'queued' || status === 'running'
+}
+
+export function historyResult(item: Pick<EvaluationHistoryItem, 'kind' | 'turnState' | 'status' | 'verdict' | 'judgmentStatus'>) {
   const status = item.status === 'succeeded'
     ? item.judgmentStatus ?? item.status
     : item.status
@@ -38,13 +43,20 @@ export function historyResult(item: Pick<EvaluationHistoryItem, 'status' | 'verd
   }
   if (status === 'failed' || status === 'interrupted') {
     return {
-      label: item.judgmentStatus ? '判题异常' : statusLabels[status],
+      label: item.judgmentStatus ? '判题异常' : item.kind === 'turnstate' && status === 'failed' ? '检测失败' : statusLabels[status],
       color: 'bg-cp-warning',
       text: 'text-cp-warning-text',
     }
   }
   if (status !== 'succeeded')
     return { label: statusLabels[status], color: 'bg-cp-fill-secondary', text: 'text-cp-text-tertiary' }
+  if (item.kind === 'turnstate') {
+    if (item.turnState === 'accepted')
+      return { label: turnStateLabels.accepted, color: 'bg-cp-success', text: 'text-cp-success-text' }
+    if (item.turnState === 'refreshed')
+      return { label: turnStateLabels.refreshed, color: 'bg-cp-warning', text: 'text-cp-warning-text' }
+    return { label: turnStateLabels.unknown, color: 'bg-cp-fill-secondary', text: 'text-cp-text-tertiary' }
+  }
   if (item.verdict === 'correct')
     return { label: '通过', color: 'bg-cp-success', text: 'text-cp-success-text' }
   if (item.verdict === 'wrong')

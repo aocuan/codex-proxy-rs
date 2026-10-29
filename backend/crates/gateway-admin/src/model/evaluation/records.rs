@@ -296,9 +296,25 @@ pub struct EvaluationHistoryItem {
     pub status: EvaluationItemStatus,
     pub verdict: EvaluationVerdict,
     pub final_answer: Option<i64>,
+    pub turn_state: Option<super::TurnStateOutcome>,
+    pub duration_ms: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
+}
+
+/// 同一题目、判分版本与模型条件的状态来源，不携带题目正文或账号范围
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvaluationHistorySource {
+    pub id: String,
+    pub name: String,
+    pub kind: EvaluationKind,
+    pub model: PublicModelId,
+    pub reasoning_effort: Option<String>,
+    pub profile_version: String,
+    pub grader_version: String,
+    pub grader_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

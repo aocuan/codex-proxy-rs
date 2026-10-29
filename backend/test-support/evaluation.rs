@@ -86,10 +86,15 @@ impl EvaluationRepository for UnusedEvaluationRepository {
         unreachable!("this fixture does not exercise evaluations")
     }
 
+    async fn history_sources(&self) -> AdminStoreResult<Vec<EvaluationHistorySource>> {
+        unreachable!("this fixture does not exercise evaluations")
+    }
+
     async fn account_history(
         &self,
         _account_ids: &[String],
         _limit: u32,
+        _source_id: Option<&str>,
     ) -> AdminStoreResult<Vec<EvaluationHistoryItem>> {
         unreachable!("this fixture does not exercise evaluations")
     }

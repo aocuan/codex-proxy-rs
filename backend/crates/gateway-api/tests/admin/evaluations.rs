@@ -46,6 +46,10 @@ async fn evaluation_routes_require_admin_before_accessing_history_or_execution()
         (Method::GET, "/api/admin/evaluations/runs"),
         (
             Method::GET,
+            "/api/admin/evaluations/accounts/history/sources",
+        ),
+        (
+            Method::GET,
             "/api/admin/evaluations/accounts/history?accountIds=acct_one",
         ),
         (Method::POST, "/api/admin/evaluations/items/retry-judgment"),
@@ -105,6 +109,20 @@ async fn evaluation_config_exposes_frozen_tests_and_server_limits() {
 async fn invalid_evaluation_requests_never_reach_the_repository() {
     let fixture = AdminTestFixture::new().await;
     fixture.auth.insert_session("valid-session");
+    for source in ["invalid", "", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"] {
+        let response = app(&fixture)
+            .oneshot(request(
+                Method::GET,
+                &format!(
+                    "/api/admin/evaluations/accounts/history?accountIds=acct_one&sourceId={source}"
+                ),
+                Value::Null,
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
     let valid_submit = json!({
         "submissionId": "73fcf201-5bbb-4d60-906f-3b3b9fa67d01",
         "parameters": parameters(),

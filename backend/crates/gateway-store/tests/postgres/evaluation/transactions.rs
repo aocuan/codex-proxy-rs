@@ -85,65 +85,6 @@ fn schedule(plan: &EvaluationPlan) -> EnqueueScheduledEvaluation {
 }
 
 #[tokio::test]
-async fn account_history_is_per_account_and_never_mixes_definition_versions_or_ungraded_artifacts()
-{
-    let Some(db) = TestDatabase::create("evaluation_history").await else {
-        return;
-    };
-    let repository = PgEvaluationRepository::new(db.pool.clone());
-    repository
-        .enqueue_manual(
-            uuid::Uuid::new_v4(),
-            seed(parameters(&["acct_a", "acct_b"], 2)),
-            &context(),
-        )
-        .await
-        .unwrap();
-    let mut custom = parameters(&["acct_a"], 3);
-    let mut definition = EvaluationDefinition::preset(EvaluationKind::Candy);
-    definition.name = "自定义题目".to_owned();
-    definition.prompt = "计算 6 × 7".to_owned();
-    definition.grader = EvaluationGrader::Exact {
-        source: EvaluationAnswerSource::FullText,
-        expected: "42".to_owned(),
-    };
-    custom.definition = Some(definition);
-    let latest = repository
-        .enqueue_manual(uuid::Uuid::new_v4(), seed(custom), &context())
-        .await
-        .unwrap();
-    let mut artifact = parameters(&["acct_a"], 1);
-    artifact.definition = Some(EvaluationDefinition::preset(EvaluationKind::Pelican));
-    repository
-        .enqueue_manual(uuid::Uuid::new_v4(), seed(artifact), &context())
-        .await
-        .unwrap();
-    let history = repository
-        .account_history(&["acct_a".to_owned(), "acct_b".to_owned()], 2)
-        .await
-        .unwrap();
-    assert_eq!(history.len(), 4);
-    let selected = history
-        .iter()
-        .filter(|item| item.account_id == "acct_a")
-        .collect::<Vec<_>>();
-    assert_eq!(selected.len(), 2);
-    assert!(
-        selected
-            .iter()
-            .all(|item| item.run_id == latest.id && item.name == "自定义题目")
-    );
-    assert_eq!(
-        history
-            .iter()
-            .filter(|item| item.account_id == "acct_b")
-            .count(),
-        2
-    );
-    db.close().await;
-}
-
-#[tokio::test]
 async fn manual_submission_is_scoped_idempotent_and_audited_once() {
     let Some(db) = TestDatabase::create("evaluation_idempotency").await else {
         return;

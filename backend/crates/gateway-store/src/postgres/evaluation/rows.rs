@@ -121,6 +121,34 @@ fn decode_enum<T: serde::de::DeserializeOwned>(value: String) -> AdminStoreResul
 }
 
 #[derive(sqlx::FromRow)]
+pub(super) struct HistorySourceRow {
+    id: String,
+    name: String,
+    kind: String,
+    model: String,
+    reasoning_effort: Option<String>,
+    profile_version: String,
+    grader_version: String,
+    grader_type: String,
+}
+
+impl HistorySourceRow {
+    pub(super) fn decode(self) -> AdminStoreResult<EvaluationHistorySource> {
+        Ok(EvaluationHistorySource {
+            id: self.id,
+            name: self.name,
+            kind: decode_enum(self.kind)?,
+            model: gateway_core::routing::PublicModelId::new(self.model)
+                .map_err(|source| super::invalid("测评模型无效").with_source(source))?,
+            reasoning_effort: self.reasoning_effort,
+            profile_version: self.profile_version,
+            grader_version: self.grader_version,
+            grader_type: self.grader_type,
+        })
+    }
+}
+
+#[derive(sqlx::FromRow)]
 pub(super) struct HistoryRow {
     name: String,
     profile_version: String,
@@ -135,6 +163,8 @@ pub(super) struct HistoryRow {
     status: String,
     verdict: String,
     final_answer: Option<i64>,
+    turn_state: Option<String>,
+    duration_ms: Option<i64>,
     created_at: DateTime<Utc>,
     started_at: Option<DateTime<Utc>>,
     completed_at: Option<DateTime<Utc>>,
@@ -157,6 +187,8 @@ impl HistoryRow {
             status: decode_enum(self.status)?,
             verdict: decode_enum(self.verdict)?,
             final_answer: self.final_answer,
+            turn_state: self.turn_state.map(decode_enum).transpose()?,
+            duration_ms: self.duration_ms,
             created_at: self.created_at,
             started_at: self.started_at,
             completed_at: self.completed_at,

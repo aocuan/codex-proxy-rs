@@ -621,7 +621,7 @@
       "importFilesMustBeJsonObjects": "導入文件必須是 JSON 對象"
     },
     "evaluationActions": {
-      "qualityEvaluation": "質量測評",
+      "qualityEvaluation": "檢測狀態",
       "refreshList": "刷新賬號列表",
       "refreshEvery": "{seconds} 秒刷新",
       "refreshPaused": "暫停刷新",

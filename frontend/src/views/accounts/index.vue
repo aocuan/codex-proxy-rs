@@ -23,6 +23,7 @@ import AccountBatchEditModal from './components/AccountBatchEditModal.vue'
 import AccountConcurrencyModal from './components/AccountConcurrencyModal.vue'
 import AccountConnectionTestModal from './components/AccountConnectionTestModal.vue'
 import AccountEditModal from './components/AccountEditModal.vue'
+import AccountEvaluationSourcePicker from './components/AccountEvaluationSourcePicker.vue'
 import AccountFilters from './components/AccountFilters.vue'
 import AccountIdentityCell from './components/AccountIdentityCell.vue'
 import AccountOverviewCards from './components/AccountOverviewCards.vue'
@@ -90,7 +91,7 @@ const {
   handleSortChange,
 } = useAccountsQuery()
 const accountEvaluations = useAccountEvaluations(accounts)
-const { history: evaluationHistory, loading: loadingEvaluations, error: evaluationsError, open: showEvaluationOutput, item: evaluationItem, run: evaluationRun } = accountEvaluations
+const { history: evaluationHistory, sources: evaluationSources, sourceId: evaluationSourceId, loading: loadingEvaluations, error: evaluationsError, open: showEvaluationOutput, item: evaluationItem, run: evaluationRun } = accountEvaluations
 const evaluationAccountName = (id: string) => accounts.value.find(account => account.id === id)?.name || id
 
 const {
@@ -320,6 +321,13 @@ const {
                 </template>
               </ZPopover>
             </div>
+            <AccountEvaluationSourcePicker
+              v-model="evaluationSourceId"
+              :sources="evaluationSources"
+              :loading="loadingEvaluations"
+              :error="evaluationsError"
+              @retry="accountEvaluations.refresh"
+            />
             <ZTableColumnSettings
               :options="columnOptions"
               @change="setColumnVisible"

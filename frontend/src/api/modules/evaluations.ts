@@ -186,10 +186,23 @@ export interface EvaluationHistoryItem {
   status: EvaluationStatus
   verdict: EvaluationVerdict
   finalAnswer: number | null
+  turnState: 'accepted' | 'refreshed' | 'unknown' | null
+  durationMs: number | null
   createdAt: string
   startedAt: string | null
   completedAt: string | null
   testedAtDisplay: string
+}
+
+export interface EvaluationHistorySource {
+  id: string
+  name: string
+  kind: EvaluationKind
+  model: string
+  reasoningEffort: string | null
+  profileVersion: string
+  graderVersion: string
+  graderType: string
 }
 
 export interface EvaluationOutput {
@@ -247,12 +260,17 @@ export function getEvaluationRuns(params: { limit: number, offset: number }, opt
   return request<EvaluationRun[]>({ url: `${root}/runs`, params, ...options })
 }
 
-export function getAccountEvaluationHistory(accountIds: string[], options: RequestOptions = {}) {
+export function getEvaluationHistorySources(options: RequestOptions = {}) {
+  return request<EvaluationHistorySource[]>({ url: `${root}/accounts/history/sources`, ...options })
+}
+
+export function getAccountEvaluationHistory(accountIds: string[], sourceId: string, options: RequestOptions = {}) {
   return request<EvaluationHistoryItem[]>({
     url: `${root}/accounts/history`,
     params: {
       accountIds: accountIds.join(','),
       limit: 28,
+      sourceId,
     },
     ...options,
   })

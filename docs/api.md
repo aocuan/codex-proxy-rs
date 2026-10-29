@@ -2677,7 +2677,8 @@ GET/HEAD 不接受正文。响应状态码为 200–599，内容类型元数据�
 | `GET /api/admin/evaluations/settings` | 无 | `{revision, defaults, typesafeConfigured}` |
 | `POST /api/admin/evaluations/accounts/access` | `clientKeyId`、`accountIds`（1–120 个） | `{accountId, allowed, reason}[]`，当前 Key 的账号授权预检，不调用模型 |
 | `POST /api/admin/evaluations/settings/update` | `{revision, defaults, typesafeApiKey?}` | 更新后的公开设置，不返回密钥 |
-| `GET /api/admin/evaluations/accounts/history` | 逗号分隔的 `accountIds`（1–100 个）；每账号 `limit` 默认 28、范围 1–28 | 各账号最近一组同条件可判分记录 |
+| `GET /api/admin/evaluations/accounts/history/sources` | 无 | 已有记录的快速测票和带自动判分规则的状态来源 |
+| `GET /api/admin/evaluations/accounts/history` | 逗号分隔的 `accountIds`（1–100 个）；每账号 `limit` 默认 28、范围 1–28；可选 `sourceId` | 各账号所选同条件来源的最近记录 |
 | `GET /api/admin/evaluations/runs` | `limit` 默认 20、范围 1–100，`offset` 默认 0 | 按创建时间倒序的批次数组 |
 | `POST /api/admin/evaluations/runs/create` | `submissionId`、`parameters` | HTTP 202，已持久化批次 |
 | `GET /api/admin/evaluations/runs/detail` | `id` | `{run, items}` |
@@ -2788,10 +2789,16 @@ HTML 评审仅检查源码，未接入渲染截图或视觉模型
 `observation` 与时间字段，其请求和用量与生成请求独立。TypeSafe 的 `accountId` 和 `requestId` 为 null，费用未知，不伪造网关请求记录；顶层 `verdict` 投影最新判题结论。
 失败、中断或取消的判题最多尝试 5 次，已停止的批次不可重试。重试使用冻结规则和保存的回答，不重新生成
 
-账号历史每条包含 `name`、`profileVersion`、`graderType`、`judgmentStatus`、请求与判分状态及 `testedAtDisplay`。
-每个账号选取最新可判分系列，按定义内容版本、评分版本、模型和请求推理强度分组；
-纯作品不参与。界面用色条与近期状态概括记录，绿色表示通过、红色表示未通过；
-执行或判题异常单独提示，未判分不按未通过展示。题目、时间和判题方式在悬浮提示中查看
+状态来源包含稳定的 `id`、`name`、`kind`、`profileVersion`、`graderVersion`、`graderType`、`model` 和
+`reasoningEffort`，仅列出仍有明细记录的快速测票与带自动判分规则的题目，不包含纯作品。
+来源按题目内容版本、评分版本、模型与请求推理强度区分，改名和新增同条件批次不改变来源 ID。
+`sourceId` 为 32 位小写十六进制字符串，缺省选择全局最近一组快速测票条件；
+所有账号匹配同一来源，没有匹配记录或来源已清理时返回空数组，不回退到其他模型或题目
+
+账号历史每条包含 `name`、`profileVersion`、`graderType`、`judgmentStatus`、请求与判分状态、
+`turnState`、`durationMs` 和 `testedAtDisplay`。`turnState` 为 `accepted`、`refreshed`、`unknown` 或 null，
+独立于能力题 `verdict`。执行或判题失败、未判定不能解释为正常或答错；
+检测进行中可继续展示同一来源最近一次已完成结果，必须同时标明进行状态与上次检测时间
 
 停止后等待生成项跳过、等待判题项取消，在途项取消，停止不撤销已经发生的用量。重启后未确认结束的运行项标为中断并保留证据，
 不会自动重放；等待项继续检查当前资格后执行。输出最多 1 MiB，作品最多 256 KiB，作品始终作为 JSON 字符串返回，

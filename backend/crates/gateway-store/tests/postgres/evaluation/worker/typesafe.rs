@@ -134,8 +134,9 @@ async fn external_judge_projects_verdicts_without_rebilling_generation_or_retryi
         );
         assert_eq!(judge.calls.load(Ordering::SeqCst), 1);
         assert_eq!(judge.released.load(Ordering::SeqCst), 1);
+        let source = repository.history_sources().await.unwrap().remove(0);
         let history = repository
-            .account_history(&["acct_target".to_owned()], 28)
+            .account_history(&["acct_target".to_owned()], 28, Some(&source.id))
             .await
             .unwrap();
         assert_eq!(history.len(), 1);

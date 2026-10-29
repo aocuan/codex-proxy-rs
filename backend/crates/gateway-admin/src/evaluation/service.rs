@@ -203,10 +203,18 @@ impl EvaluationService {
             .ok_or_else(|| AdminError::not_found("测评记录不存在或已清理"))
     }
 
+    pub async fn history_sources(&self) -> Result<Vec<EvaluationHistorySource>, AdminError> {
+        self.repository
+            .history_sources()
+            .await
+            .map_err(|error| map_store_error(error, "evaluation.history_sources"))
+    }
+
     pub async fn account_history(
         &self,
         account_ids: &[String],
         limit: u32,
+        source_id: Option<&str>,
     ) -> Result<Vec<EvaluationHistoryItem>, AdminError> {
         if account_ids.is_empty() || account_ids.len() > 100 || !(1..=28).contains(&limit) {
             return Err(AdminError::invalid(
@@ -220,8 +228,16 @@ impl EvaluationService {
                 return Err(AdminError::invalid("账号不能重复"));
             }
         }
+        if source_id.is_some_and(|id| {
+            id.len() != 32
+                || !id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        }) {
+            return Err(AdminError::invalid("检测来源 ID 无效"));
+        }
         self.repository
-            .account_history(account_ids, limit)
+            .account_history(account_ids, limit, source_id)
             .await
             .map_err(|error| map_store_error(error, "evaluation.account_history"))
     }

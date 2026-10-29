@@ -37,6 +37,10 @@ where
             "/api/admin/evaluations/accounts/history",
             get(account_history::<S>),
         )
+        .route(
+            "/api/admin/evaluations/accounts/history/sources",
+            get(history_sources::<S>),
+        )
         .route("/api/admin/evaluations/runs/create", post(submit::<S>))
         .route("/api/admin/evaluations/runs/detail", get(detail::<S>))
         .route("/api/admin/evaluations/runs/stop", post(stop::<S>))
@@ -158,6 +162,7 @@ struct HistoryQuery {
     account_ids: String,
     #[serde(default = "history_limit")]
     limit: u32,
+    source_id: Option<String>,
 }
 fn history_limit() -> u32 {
     28
@@ -169,6 +174,22 @@ struct HistoryItemView {
     #[serde(flatten)]
     item: EvaluationHistoryItem,
     tested_at_display: String,
+}
+
+async fn history_sources<S: SessionState + Send + Sync>(
+    _auth: AdminAuth,
+    State(state): State<S>,
+) -> Result<impl IntoResponse, AdminError> {
+    let sources = state
+        .admin_services()
+        .evaluations()
+        .history_sources()
+        .await
+        .map_err(map_admin_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(sources),
+    ))
 }
 
 async fn account_history<S: SessionState + Send + Sync>(
@@ -184,7 +205,7 @@ async fn account_history<S: SessionState + Send + Sync>(
         .collect::<Vec<_>>();
     let items = services
         .evaluations()
-        .account_history(&ids, query.limit)
+        .account_history(&ids, query.limit, query.source_id.as_deref())
         .await
         .map_err(map_admin_service_error)?;
     let time = TimePresenter::new(services.timezone());

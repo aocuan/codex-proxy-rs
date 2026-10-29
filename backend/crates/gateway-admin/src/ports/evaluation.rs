@@ -53,10 +53,12 @@ pub trait EvaluationRepository: Send + Sync {
     ) -> AdminStoreResult<bool>;
 
     async fn list_runs(&self, limit: u32, offset: u32) -> AdminStoreResult<Vec<EvaluationRun>>;
+    async fn history_sources(&self) -> AdminStoreResult<Vec<EvaluationHistorySource>>;
     async fn account_history(
         &self,
         account_ids: &[String],
         limit: u32,
+        source_id: Option<&str>,
     ) -> AdminStoreResult<Vec<EvaluationHistoryItem>>;
     async fn load_run(&self, id: &str) -> AdminStoreResult<Option<EvaluationRunDetail>>;
     async fn stop_run(&self, id: &str, context: &MutationContext) -> AdminStoreResult<bool>;

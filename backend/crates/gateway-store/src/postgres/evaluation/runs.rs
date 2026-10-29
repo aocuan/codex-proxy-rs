@@ -9,54 +9,6 @@ use sqlx::{PgPool, Postgres, QueryBuilder, Transaction, types::Json};
 
 use super::{append_audit, conflict, db_error, invalid, lock_queue, rows};
 
-pub(super) async fn account_history(
-    pool: &PgPool,
-    account_ids: &[String],
-    limit: u32,
-) -> AdminStoreResult<Vec<EvaluationHistoryItem>> {
-    // 每个账号独立取最近记录，避免全局 LIMIT 让高频账号挤掉其他账号
-    let rows = sqlx::query_as::<_, rows::HistoryRow>(
-        "select h.* from unnest($1::text[]) as accounts(id)
-         cross join lateral (
-             select r.profile_json->>'promptVersion' as version,
-                    r.profile_json->>'graderVersion' as grader_version,
-                    r.parameters_json->>'model' as model,
-                    r.parameters_json->>'reasoningEffort' as effort
-             from evaluation_items i join evaluation_runs r on r.id = i.run_id
-             where i.account_id = accounts.id and
-                 coalesce(r.profile_json #>> '{definition,grader,type}',
-                          case when r.parameters_json->>'kind' = 'candy' then 'exact' else 'none' end) <> 'none'
-             order by r.created_at desc, r.id desc limit 1
-         ) series
-         cross join lateral (
-             select i.id, i.run_id, i.account_id, i.status, coalesce(j.verdict, i.verdict) as verdict,
-                    i.final_answer, i.started_at, i.completed_at, r.created_at,
-                    r.parameters_json->>'kind' as kind,
-                    r.parameters_json->>'model' as model,
-                    r.parameters_json->>'reasoningEffort' as reasoning_effort,
-                    coalesce(r.profile_json #>> '{definition,name}', '糖果题') as name,
-                    r.profile_json->>'promptVersion' as profile_version,
-                    coalesce(r.profile_json #>> '{definition,grader,type}', 'exact') as grader_type,
-                    j.status as judgment_status
-             from evaluation_items i join evaluation_runs r on r.id = i.run_id
-             left join lateral (select verdict, status from evaluation_judgments latest
-                 where latest.item_id = i.id order by latest.attempt desc limit 1) j on true
-             where i.account_id = accounts.id
-               and r.profile_json->>'promptVersion' = series.version
-               and r.profile_json->>'graderVersion' = series.grader_version
-               and r.parameters_json->>'model' = series.model
-               and r.parameters_json->>'reasoningEffort' is not distinct from series.effort
-             order by r.created_at desc, r.id desc, i.repetition desc limit $2
-         ) h order by h.account_id, h.created_at desc, h.run_id desc, h.id desc",
-    )
-    .bind(account_ids)
-    .bind(i64::from(limit))
-    .fetch_all(pool)
-    .await
-    .map_err(db_error)?;
-    rows.into_iter().map(rows::HistoryRow::decode).collect()
-}
-
 pub(super) async fn enqueue_manual(
     pool: &PgPool,
     submission_id: uuid::Uuid,

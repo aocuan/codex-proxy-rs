@@ -1,8 +1,8 @@
 import type { Ref } from 'vue'
-import type { Account, EvaluationHistoryItem, EvaluationItem, EvaluationRun } from '@/api'
-import { useDocumentVisibility, useIntervalFn } from '@vueuse/core'
+import type { Account, EvaluationHistoryItem, EvaluationHistorySource, EvaluationItem, EvaluationRun } from '@/api'
+import { useDocumentVisibility, useIntervalFn, useStorage } from '@vueuse/core'
 import { computed, shallowRef, watch } from 'vue'
-import { getAccountEvaluationHistory, getEvaluationDetail } from '@/api'
+import { getAccountEvaluationHistory, getEvaluationDetail, getEvaluationHistorySources } from '@/api'
 import { useRequestState } from '@/composables/useRequestState'
 
 export function useAccountEvaluations(accounts: Ref<Account[]>) {
@@ -10,6 +10,15 @@ export function useAccountEvaluations(accounts: Ref<Account[]>) {
   const request = useRequestState()
   const resultRequest = useRequestState()
   const history = shallowRef(new Map<string, EvaluationHistoryItem[]>())
+  const sources = shallowRef<EvaluationHistorySource[]>([])
+  const sourceId = useStorage('codex-proxy:accounts:evaluation-source', '', undefined, {
+    writeDefaults: false,
+    listenToStorageChanges: false,
+    serializer: {
+      read: value => /^[a-f0-9]{32}$/.test(value) ? value : '',
+      write: value => value,
+    },
+  })
   const ids = computed(() => accounts.value.map(account => account.id).join(','))
   const open = shallowRef(false)
   const item = shallowRef<EvaluationItem | null>(null)
@@ -20,7 +29,20 @@ export function useAccountEvaluations(accounts: Ref<Account[]>) {
       return
     const id = request.start()
     try {
-      const result = await getAccountEvaluationHistory(ids.value.split(','), { signal: request.signal, silent: true })
+      const available = await getEvaluationHistorySources({ signal: request.signal, silent: true })
+      if (!request.isCurrent(id))
+        return
+      sources.value = available
+      const defaultSource = available.find(source => source.kind === 'turnstate')
+      if (!sourceId.value && defaultSource) {
+        sourceId.value = defaultSource.id
+        return
+      }
+      if (!sourceId.value) {
+        history.value = new Map()
+        return
+      }
+      const result = await getAccountEvaluationHistory(ids.value.split(','), sourceId.value, { signal: request.signal, silent: true })
       if (!request.isCurrent(id))
         return
       const grouped = new Map<string, EvaluationHistoryItem[]>()
@@ -58,11 +80,14 @@ export function useAccountEvaluations(accounts: Ref<Account[]>) {
     }
   }
 
-  watch([ids, visibility], () => {
+  watch([ids, sourceId, visibility], ([accountIds, selected], previous) => {
     request.invalidate()
-    if (!ids.value)
+    if (accountIds !== previous?.[0] || selected !== previous?.[1]) {
       history.value = new Map()
-    else if (visibility.value === 'visible')
+      resultRequest.invalidate()
+      open.value = false
+    }
+    if (accountIds && visibility.value === 'visible')
       void refresh()
   }, { immediate: true })
   useIntervalFn(() => {
@@ -71,6 +96,8 @@ export function useAccountEvaluations(accounts: Ref<Account[]>) {
   }, 15000)
   return {
     history,
+    sources,
+    sourceId,
     loading: request.loading,
     error: request.error,
     refresh,

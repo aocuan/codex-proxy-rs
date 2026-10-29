@@ -1,6 +1,7 @@
 //! 测评记录的 PostgreSQL 事务适配；权限与实验策略由 Admin/Core 解释
 
 mod accounts;
+mod history;
 mod items;
 mod judgments;
 mod plans;
@@ -106,12 +107,17 @@ impl EvaluationRepository for PgEvaluationRepository {
         runs::list(&self.pool, limit, offset).await
     }
 
+    async fn history_sources(&self) -> AdminStoreResult<Vec<EvaluationHistorySource>> {
+        history::sources(&self.pool).await
+    }
+
     async fn account_history(
         &self,
         account_ids: &[String],
         limit: u32,
+        source_id: Option<&str>,
     ) -> AdminStoreResult<Vec<EvaluationHistoryItem>> {
-        runs::account_history(&self.pool, account_ids, limit).await
+        history::account_history(&self.pool, account_ids, limit, source_id).await
     }
 
     async fn load_run(&self, id: &str) -> AdminStoreResult<Option<EvaluationRunDetail>> {
