@@ -40,7 +40,17 @@ async fn version_reset_persists_primary_keys_atomically_and_resumes_after_table_
     assert_eq!(unchanged, (5, 0, true));
     sqlx::raw_sql("drop trigger reject_reset_cursor on request_analytics_build_state; drop function reject_reset_cursor();")
         .execute(&database.pool).await.unwrap();
-    assert!(worker.maintain(2).await.unwrap().reset_progress);
+    // 维护锁暂忙时允许当轮无进度，成功取得锁后再核对这一批的游标
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if worker.maintain(2).await.unwrap().reset_progress {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("reset resumes after the failed transaction");
     let cursor: serde_json::Value =
         sqlx::query_scalar("select reset_cursor from request_analytics_build_state")
             .fetch_one(&database.pool)
