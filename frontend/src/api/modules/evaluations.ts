@@ -194,17 +194,6 @@ export interface EvaluationHistoryItem {
   testedAtDisplay: string
 }
 
-export interface EvaluationHistorySource {
-  id: string
-  name: string
-  kind: EvaluationKind
-  model: string
-  reasoningEffort: string | null
-  profileVersion: string
-  graderVersion: string
-  graderType: string
-}
-
 export interface EvaluationOutput {
   responseText: string
   artifactHtml: string | null
@@ -260,17 +249,12 @@ export function getEvaluationRuns(params: { limit: number, offset: number }, opt
   return request<EvaluationRun[]>({ url: `${root}/runs`, params, ...options })
 }
 
-export function getEvaluationHistorySources(options: RequestOptions = {}) {
-  return request<EvaluationHistorySource[]>({ url: `${root}/accounts/history/sources`, ...options })
-}
-
-export function getAccountEvaluationHistory(accountIds: string[], sourceId: string, options: RequestOptions = {}) {
+export function getAccountEvaluationHistory(accountIds: string[], options: RequestOptions = {}) {
   return request<EvaluationHistoryItem[]>({
     url: `${root}/accounts/history`,
     params: {
       accountIds: accountIds.join(','),
       limit: 28,
-      sourceId,
     },
     ...options,
   })

@@ -36,7 +36,7 @@ export const accountColumns = computed(() => (defineTableColumns<Account>([
   },
   {
     key: 'evaluation',
-    label: t('accounts.evaluationActions.qualityEvaluation'),
+    label: t('accounts.evaluationActions.ticketHistory'),
     kind: 'custom',
     size: '2xl',
   },

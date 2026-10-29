@@ -621,7 +621,7 @@
       "importFilesMustBeJsonObjects": "Import files must be JSON objects"
     },
     "evaluationActions": {
-      "qualityEvaluation": "Detection status",
+      "ticketHistory": "Ticket probe history",
       "refreshList": "Refresh account list",
       "refreshEvery": "Refresh every {seconds}s",
       "refreshPaused": "Pause refresh",

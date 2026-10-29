@@ -621,7 +621,7 @@
       "importFilesMustBeJsonObjects": "导入文件必须是 JSON 对象"
     },
     "evaluationActions": {
-      "qualityEvaluation": "检测状态",
+      "ticketHistory": "测票历史",
       "refreshList": "刷新账号列表",
       "refreshEvery": "{seconds} 秒刷新",
       "refreshPaused": "暂停刷新",

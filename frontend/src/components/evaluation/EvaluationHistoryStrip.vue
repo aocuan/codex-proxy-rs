@@ -7,6 +7,9 @@ import { durationText, historyPending, historyResult } from './presenter'
 const props = defineProps<{ items: EvaluationHistoryItem[], loading: boolean, error: string }>()
 const emit = defineEmits<{ inspect: [item: EvaluationHistoryItem], retry: [] }>()
 const latest = computed(() => props.items[0])
+const condition = computed(() => latest.value
+  ? `${latest.value.model} · ${latest.value.reasoningEffort ?? '跟随账号配置'}`
+  : '')
 const current = computed(() => props.items.find(item => !historyPending(item)) ?? latest.value)
 const pending = computed(() => latest.value && historyPending(latest.value)
   ? latest.value
@@ -30,17 +33,18 @@ function activate(item: EvaluationHistoryItem, event: Event) {
 <template>
   <div v-if="latest || !error" class="min-w-0" :aria-busy="loading">
     <div class="flex min-h-4 items-center justify-end gap-1 text-cp-xs">
+      <span v-if="latest" class="mr-auto min-w-0 truncate text-cp-text-tertiary" :title="condition">{{ condition }}</span>
       <span v-if="current" :class="historyResult(current).text">
         {{ pending && current.id !== pending.id ? '上次 ' : '' }}{{ historyResult(current).label }}
       </span>
-      <span v-else class="text-cp-text-tertiary">{{ loading ? '读取中' : '未检测' }}</span>
+      <span v-else class="text-cp-text-tertiary">{{ loading ? '读取中' : '暂无记录' }}</span>
       <span v-if="pending && current?.id !== pending.id" class="text-cp-primary-text">· {{ historyResult(pending).label }}</span>
     </div>
     <ZPopover class="w-full" trigger="hover" placement="top" role="tooltip" :reference-element="anchor" :disabled="!latest">
       <template #reference>
         <div
           class="flex h-7 w-full items-center gap-0.5" role="group"
-          :aria-label="latest ? latest.kind === 'turnstate' ? '最近 28 次测票，左侧较早，右侧最新；绿色票据稳定，黄色票据变化或请求异常，灰色未判定' : '最近 28 次检测，左侧较早，右侧最新；绿色通过，红色未通过，灰色未判定' : loading ? '读取检测中' : '未检测'"
+          :aria-label="latest ? latest.kind === 'turnstate' ? '最近 28 次测票，左侧较早，右侧最新；绿色票据稳定，黄色票据变化或请求异常，灰色未判定' : '最近 28 次检测，左侧较早，右侧最新；绿色通过，红色未通过，灰色未判定' : loading ? '读取历史记录中' : '当前测评条件暂无记录'"
         >
           <span v-for="index in Math.max(0, 28 - points.length)" :key="`empty-${index}`" class="h-6 min-w-0 flex-1 rounded-xs bg-cp-fill-secondary ring-1 ring-cp-border ring-inset" aria-hidden="true" />
           <ZButton
