@@ -8,7 +8,9 @@ const props = defineProps<{ items: EvaluationHistoryItem[], loading: boolean, er
 const emit = defineEmits<{ inspect: [item: EvaluationHistoryItem], retry: [] }>()
 const latest = computed(() => props.items[0])
 const current = computed(() => props.items.find(item => !historyPending(item)) ?? latest.value)
-const pending = computed(() => latest.value && historyPending(latest.value) ? latest.value : undefined)
+const pending = computed(() => latest.value && historyPending(latest.value)
+  ? latest.value
+  : undefined)
 const points = computed(() => [...props.items].reverse())
 const active = shallowRef<EvaluationHistoryItem>()
 const anchor = shallowRef<HTMLElement>()

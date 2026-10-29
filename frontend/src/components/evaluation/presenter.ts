@@ -26,7 +26,9 @@ export function durationText(ms: number | null) {
 }
 
 export function historyPending(item: Pick<EvaluationHistoryItem, 'status' | 'judgmentStatus'>) {
-  const status = item.status === 'succeeded' ? item.judgmentStatus ?? item.status : item.status
+  const status = item.status === 'succeeded'
+    ? item.judgmentStatus ?? item.status
+    : item.status
   return status === 'queued' || status === 'running'
 }
 
@@ -43,7 +45,11 @@ export function historyResult(item: Pick<EvaluationHistoryItem, 'kind' | 'turnSt
   }
   if (status === 'failed' || status === 'interrupted') {
     return {
-      label: item.judgmentStatus ? '判题异常' : item.kind === 'turnstate' && status === 'failed' ? '检测失败' : statusLabels[status],
+      label: item.judgmentStatus
+        ? '判题异常'
+        : item.kind === 'turnstate' && status === 'failed'
+          ? '检测失败'
+          : statusLabels[status],
       color: 'bg-cp-warning',
       text: 'text-cp-warning-text',
     }

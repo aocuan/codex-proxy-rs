@@ -15,7 +15,9 @@ export function useAccountEvaluations(accounts: Ref<Account[]>) {
     writeDefaults: false,
     listenToStorageChanges: false,
     serializer: {
-      read: value => /^[a-f0-9]{32}$/.test(value) ? value : '',
+      read: value => /^[a-f0-9]{32}$/.test(value)
+        ? value
+        : '',
       write: value => value,
     },
   })
