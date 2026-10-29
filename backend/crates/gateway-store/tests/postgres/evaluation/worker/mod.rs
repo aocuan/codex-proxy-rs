@@ -362,7 +362,8 @@ async fn wait_finished(repository: &PgEvaluationRepository, id: &str) -> Evaluat
             if detail.run.active_items == 0 {
                 return detail;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            // 降低完整详情的读取频率，减少与被测 Worker 的数据库争用
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
