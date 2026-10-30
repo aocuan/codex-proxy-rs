@@ -54,8 +54,11 @@ pub struct ListQuery {
     pub group_id: Option<String>,
     pub search: Option<String>,
     pub status: Option<String>,
+    pub evaluation_status: Option<gateway_admin::model::evaluation::EvaluationAccountStatus>,
     pub sort_by: Option<String>,
     pub sort_direction: Option<String>,
+    #[serde(default)]
+    pub include_evaluation_history: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -206,6 +209,7 @@ impl ListQuery {
             group_filter,
             search,
             status,
+            account_ids: None,
             sort,
         })
     }
@@ -317,6 +321,7 @@ pub struct AccountCapacityView {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountCapabilitiesView {
+    pub turn_state_probe: bool,
     pub quota: bool,
     pub quota_refresh: bool,
     pub profile: bool,
@@ -329,6 +334,7 @@ pub struct AccountCapabilitiesView {
 impl From<gateway_admin::model::accounts::ProviderAccountCapabilities> for AccountCapabilitiesView {
     fn from(value: gateway_admin::model::accounts::ProviderAccountCapabilities) -> Self {
         Self {
+            turn_state_probe: value.turn_state_probe,
             quota: value.quota,
             quota_refresh: value.quota_refresh,
             profile: value.profile,

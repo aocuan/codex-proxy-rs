@@ -177,6 +177,15 @@
       "label": "账号筛选与操作",
       "searchLabel": "搜索账号",
       "statusLabel": "按账号状态筛选",
+      "evaluationStatusLabel": "按测票状态筛选",
+      "evaluationStatusHelp": "按最近测票条件的结果筛选，进行中保留上次结果，票据信号不代表能力评测结论",
+      "allEvaluationStates": "全部测票状态",
+      "evaluationStable": "不降智 · 票据稳定",
+      "evaluationChanged": "降智 · 票据变化",
+      "evaluationUnknown": "未判定",
+      "evaluationFailed": "检测失败",
+      "evaluationPending": "首次检测中",
+      "evaluationNoRecord": "暂无记录",
       "groupLabel": "按账号分组筛选",
       "deleteSelected": "删除 ({count})",
       "exportSelected": "导出 ({count})",
@@ -629,7 +638,10 @@
       "refreshSettingPaused": "自动刷新设置，当前已暂停",
       "seconds": "{seconds} 秒",
       "evaluateSelected": "测评所选",
-      "evaluateMax": "测评所选（最多 20 个）"
+      "evaluateMax": "测评所选（最多 20 个）",
+      "notApplicable": "不适用",
+      "oauthOnly": "快速探票仅支持 OpenAI OAuth 账号，API Key 账号自动排除",
+      "probeExecutionHint": "直接探测所填上游模型并沿用账号代理，授权 Key 用于范围校验，消耗上游额度但不进入模型计费账本"
     }
   }
 }

@@ -86,3 +86,40 @@ pub(super) async fn account_history(
         .map_err(db_error)?;
     records.into_iter().map(rows::HistoryRow::decode).collect()
 }
+
+pub(super) async fn account_result_facts(
+    pool: &PgPool,
+) -> AdminStoreResult<Vec<EvaluationAccountResultFact>> {
+    let mut query = QueryBuilder::<Postgres>::new("with series as (");
+    query.push(SERIES).push(
+        "), selected as (
+            select source_id from series where kind = 'turnstate'
+            order by created_at desc, run_id desc limit 1
+         )
+         select a.id as account_id, a.provider_kind, a.authentication_kind,
+                current.status, current.outcome
+         from provider_accounts a
+         left join lateral (
+            select point.status, point.outcome from (
+                select i.id, i.status, i.observation_json #>> '{turnState,outcome}' as outcome,
+                       s.created_at, s.run_id
+                from evaluation_items i join series s on s.run_id = i.run_id
+                join selected on selected.source_id = s.source_id
+                where i.account_id = a.id
+                order by s.created_at desc, s.run_id desc, i.repetition desc limit 28
+            ) point
+            order by (point.status in ('queued','running')), point.created_at desc,
+                     point.run_id desc, point.id desc limit 1
+         ) current on true
+         order by a.id",
+    );
+    let records = query
+        .build_query_as::<rows::AccountResultRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(db_error)?;
+    records
+        .into_iter()
+        .map(rows::AccountResultRow::decode)
+        .collect()
+}

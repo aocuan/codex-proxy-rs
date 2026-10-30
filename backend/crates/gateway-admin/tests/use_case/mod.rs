@@ -282,7 +282,7 @@ impl AdminHarness {
                 self.observability,
                 self.settings,
                 self.backup,
-                Arc::new(evaluation_fixture::UnusedEvaluationRepository),
+                Arc::new(evaluation_fixture::TestEvaluationRepository::default()),
                 self.plugin_store,
                 Arc::new(plugins::TestPluginPorts),
                 Arc::new(plugins::TestPluginPorts),

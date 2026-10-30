@@ -97,6 +97,15 @@ where
     ))
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountListData {
+    #[serde(flatten)]
+    page: AccountPageData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evaluation_history: Option<Vec<super::super::evaluations::HistoryItemView>>,
+}
+
 async fn list_accounts<S>(
     _auth: AdminAuth,
     State(state): State<S>,
@@ -105,17 +114,54 @@ async fn list_accounts<S>(
 where
     S: SessionState + Send + Sync,
 {
-    let time = crate::time::TimePresenter::new(state.admin_services().timezone());
-    let command = query.validate().map_err(map_wire_error)?;
+    let services = state.admin_services();
+    let time = crate::time::TimePresenter::new(services.timezone());
+    let include_evaluation_history = query.include_evaluation_history;
+    let evaluation_status = query.evaluation_status;
+    let mut command = query.validate().map_err(map_wire_error)?;
+    if let Some(status) = evaluation_status {
+        command.account_ids = Some(
+            services
+                .evaluations()
+                .filter_account_ids(status)
+                .await
+                .map_err(map_service_error)?,
+        );
+    }
     let page = command.page;
     let page_size = command.page_size.get();
-    let result = state
-        .admin_services()
+    let result = services
         .accounts()
         .list(command)
         .await
         .map_err(map_service_error)?;
-    let data = account_page_data(result, page, page_size, Utc::now(), time);
+    let page = account_page_data(result, page, page_size, Utc::now(), time);
+    let evaluation_history = if include_evaluation_history {
+        let ids = page
+            .items
+            .iter()
+            .filter(|item| item.capabilities.turn_state_probe)
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            Some(Vec::new())
+        } else {
+            // 历史预取失败不影响账号目录，页面仍可使用独立历史接口读取与重试
+            services
+                .evaluations()
+                .account_history(&ids, 28, None)
+                .await
+                .inspect_err(|error| tracing::debug!(%error, "账号测票历史预取不可用"))
+                .ok()
+                .map(|items| super::super::evaluations::history_items_view(items, time))
+        }
+    } else {
+        None
+    };
+    let data = AccountListData {
+        page,
+        evaluation_history,
+    };
     Ok(AdminResponse::new(StatusCode::OK, AdminEnvelope::ok(data)))
 }
 

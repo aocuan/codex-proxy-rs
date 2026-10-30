@@ -64,8 +64,9 @@ const refreshOptions = computed(() => [
   },
 ])
 const { visibleColumns, columnOptions, setColumnVisible, setColumnOrder, resetColumns } = useTableColumns(accountColumns, 'accounts')
+const evaluationVisible = computed(() => visibleColumns.value.some(column => column.key === 'evaluation'))
 const wideTable = useMediaQuery('(min-width: 1280px)')
-const inlineEvaluation = computed(() => !wideTable.value && visibleColumns.value.some(column => column.key === 'evaluation'))
+const inlineEvaluation = computed(() => !wideTable.value && evaluationVisible.value)
 const tableColumns = computed(() => wideTable.value
   ? visibleColumns.value
   : visibleColumns.value.filter(column => column.key !== 'evaluation'))
@@ -75,11 +76,13 @@ const {
   refreshInterval,
   refreshAccounts,
   accounts,
+  evaluationSnapshot,
   loadAccounts,
   refreshAccountsSilently,
   searchQuery,
   providerQuery,
   statusQuery,
+  evaluationStatusQuery,
   groupQuery,
   sort,
   accountSummary,
@@ -88,8 +91,9 @@ const {
   handlePageChange,
   handlePageSizeChange,
   handleSortChange,
-} = useAccountsQuery()
-const accountEvaluations = useAccountEvaluations(accounts)
+} = useAccountsQuery({ includeEvaluationHistory: evaluationVisible })
+const probeAccounts = computed(() => accounts.value.filter(account => account.capabilities.turnStateProbe))
+const accountEvaluations = useAccountEvaluations(probeAccounts, { enabled: evaluationVisible, prefetched: evaluationSnapshot })
 const { history: evaluationHistory, loading: loadingEvaluations, error: evaluationsError, open: showEvaluationOutput, item: evaluationItem, run: evaluationRun } = accountEvaluations
 const evaluationAccountName = (id: string) => accounts.value.find(account => account.id === id)?.name || id
 
@@ -256,6 +260,7 @@ const {
         <AccountFilters
           v-model:search="searchQuery"
           v-model:status="statusQuery"
+          v-model:evaluation-status="evaluationStatusQuery"
           v-model:provider="providerQuery"
           v-model:group="groupQuery"
           :groups="groups"
@@ -377,7 +382,7 @@ const {
 
             <template #identity="{ row }">
               <AccountIdentityCell :account="row" show-notes />
-              <EvaluationHistoryStrip v-if="inlineEvaluation" class="mt-2" :items="evaluationHistory.get(row.id) ?? []" :loading="loadingEvaluations" :error="evaluationsError" @inspect="accountEvaluations.inspect" @retry="accountEvaluations.refresh" />
+              <EvaluationHistoryStrip v-if="inlineEvaluation && row.capabilities.turnStateProbe" class="mt-2" :items="evaluationHistory.get(row.id) ?? []" :loading="loadingEvaluations && !evaluationHistory.has(row.id)" :error="evaluationsError" @inspect="accountEvaluations.inspect" @retry="accountEvaluations.refresh" />
             </template>
 
             <template #provider="{ row }">
@@ -401,7 +406,8 @@ const {
             </template>
 
             <template #evaluation="{ row }">
-              <EvaluationHistoryStrip :items="evaluationHistory.get(row.id) ?? []" :loading="loadingEvaluations" :error="evaluationsError" @inspect="accountEvaluations.inspect" @retry="accountEvaluations.refresh" />
+              <EvaluationHistoryStrip v-if="row.capabilities.turnStateProbe" :items="evaluationHistory.get(row.id) ?? []" :loading="loadingEvaluations && !evaluationHistory.has(row.id)" :error="evaluationsError" @inspect="accountEvaluations.inspect" @retry="accountEvaluations.refresh" />
+              <span v-else class="text-cp-text-tertiary" :title="t('accounts.evaluationActions.oauthOnly')">{{ t('accounts.evaluationActions.notApplicable') }}</span>
             </template>
             <template #planType="{ row }">
               <div class="flex min-w-0 justify-center">

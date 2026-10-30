@@ -1,4 +1,5 @@
 import type { SelectOption } from '@codex-proxy/ui'
+import type { EvaluationKind } from '@/api'
 import { useDebounceFn } from '@vueuse/core'
 import { computed, shallowRef } from 'vue'
 import { getAccountGroupOptions, getAccounts, getApiKeys } from '@/api'
@@ -6,12 +7,18 @@ import { useRequestState } from '@/composables/useRequestState'
 import { formatProviderLabel } from '@/utils/providers'
 import { accountIdentityLabel } from '@/views/accounts/utils/accountIdentity'
 
+interface EvaluationAccountOption extends SelectOption {
+  turnStateProbe: boolean
+}
+
 export function useEvaluationCatalog() {
-  const accounts = shallowRef<SelectOption[]>([])
+  const accounts = shallowRef<EvaluationAccountOption[]>([])
   const groups = shallowRef<SelectOption[]>([])
+  const preferenceGroups = shallowRef<SelectOption[]>([])
+  const knownGroups = shallowRef(new Map<string, SelectOption>())
   const groupRequest = useRequestState()
   const keys = shallowRef<SelectOption[]>([])
-  const knownAccounts = shallowRef(new Map<string, SelectOption>())
+  const knownAccounts = shallowRef(new Map<string, EvaluationAccountOption>())
   const knownKeys = shallowRef(new Map<string, SelectOption>())
   const accountRequest = useRequestState()
   const keyRequest = useRequestState()
@@ -33,6 +40,7 @@ export function useEvaluationCatalog() {
           ...item.groups.map(group => group.name),
         ].filter(Boolean).join(' · '),
         disabled: !item.enabled,
+        turnStateProbe: item.capabilities.turnStateProbe,
       }))
       knownAccounts.value = new Map([
         ...knownAccounts.value,
@@ -74,19 +82,34 @@ export function useEvaluationCatalog() {
     }
   }
 
-  async function loadGroups() {
+  async function loadGroups(search = '') {
     const id = groupRequest.start()
     try {
-      const result = await getAccountGroupOptions({ page: 1, pageSize: 100 }, { signal: groupRequest.signal })
-      if (groupRequest.isCurrent(id))
-        groups.value = result.items.map(item => ({ value: item.id, label: item.name }))
+      const result = await getAccountGroupOptions({ page: 1, pageSize: 100, search: search || undefined }, { signal: groupRequest.signal })
+      if (groupRequest.isCurrent(id)) {
+        if (!search)
+          groups.value = result.items.map(item => ({ value: item.id, label: item.name }))
+        preferenceGroups.value = result.items.map(item => ({ value: item.id, label: item.name, disabled: !item.enabled }))
+        knownGroups.value = new Map([
+          ...knownGroups.value,
+          ...preferenceGroups.value.map(item => [item.value, item] as const),
+        ])
+      }
     }
     catch (error) { groupRequest.fail(id, error) }
     finally { groupRequest.finish(id) }
   }
 
-  function accountOptions(selected: string[]) {
-    return mergeSelected(accounts.value, selected, knownAccounts.value)
+  function supportedAccountIds(selected: string[], kind?: EvaluationKind) {
+    return kind === 'turnstate'
+      ? selected.filter(id => knownAccounts.value.get(id)?.turnStateProbe !== false)
+      : selected
+  }
+  function accountOptions(selected: string[], kind?: EvaluationKind) {
+    const options = kind === 'turnstate'
+      ? accounts.value.filter(account => account.turnStateProbe)
+      : accounts.value
+    return mergeSelected(options, supportedAccountIds(selected, kind), knownAccounts.value)
   }
   function keyOptions(selected: string) {
     return mergeSelected(keys.value, selected
@@ -95,8 +118,13 @@ export function useEvaluationCatalog() {
   }
   return {
     accountOptions,
+    supportedAccountIds,
     keyOptions,
     groups,
+    preferenceGroupOptions: (selected: string) => mergeSelected(preferenceGroups.value, selected
+      ? [selected]
+      : [], knownGroups.value),
+    groupName: (id: string) => knownGroups.value.get(id)?.label ?? id,
     loadingGroups: groupRequest.loading,
     accountName: (id: string) => knownAccounts.value.get(id)?.label ?? id,
     loadingAccounts: accountRequest.loading,
@@ -109,10 +137,11 @@ export function useEvaluationCatalog() {
     ]),
     searchAccounts: useDebounceFn(loadAccounts, 250),
     searchKeys: useDebounceFn(loadKeys, 250),
+    searchGroups: useDebounceFn(loadGroups, 250),
   }
 }
 
-function mergeSelected(options: SelectOption[], selected: string[], known: Map<string, SelectOption>) {
+function mergeSelected(options: SelectOption[], selected: string[], known: ReadonlyMap<string, SelectOption>) {
   const existing = new Set(options.map(item => item.value))
   return [
     ...options,

@@ -21,6 +21,7 @@ pub use gateway_core::account::{
 /// 账号可用的管理操作
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderAccountCapabilities {
+    pub turn_state_probe: bool,
     pub quota: bool,
     pub quota_refresh: bool,
     pub profile: bool,
@@ -75,6 +76,8 @@ pub struct AccountListQuery {
     pub group_filter: Option<AccountGroupFilter>,
     pub search: Option<String>,
     pub status: Option<AccountStatus>,
+    /// 管理用例解析出的账号范围，空名单表示没有匹配项
+    pub account_ids: Option<Vec<String>>,
     pub sort: Option<AccountSort>,
 }
 

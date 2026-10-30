@@ -8,6 +8,7 @@ use crate::ports::store::AdminStoreResult;
 
 #[async_trait]
 pub trait EvaluationRepository: Send + Sync {
+    async fn account_result_facts(&self) -> AdminStoreResult<Vec<EvaluationAccountResultFact>>;
     async fn account_states(&self) -> AdminStoreResult<Vec<EvaluationAccountState>>;
     async fn reconcile_accounts(&self) -> AdminStoreResult<()>;
     async fn is_work_stop_requested(
@@ -73,7 +74,7 @@ pub trait EvaluationRepository: Send + Sync {
         &self,
         item_id: &str,
         completion: EvaluationCompletion,
-    ) -> AdminStoreResult<bool>;
+    ) -> AdminStoreResult<EvaluationFinish>;
 
     /// 仅在 Worker 启动时调用；运行中请求一律中断，不能自动重放可能已计费的调用
     async fn recover_running(&self, now: DateTime<Utc>) -> AdminStoreResult<u64>;

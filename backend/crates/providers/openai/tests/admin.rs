@@ -112,7 +112,8 @@ async fn account_capabilities_distinguish_oauth_from_api_key_and_unknown_credent
     let id = ProviderAccountId::new("acct_capabilities").unwrap();
     let oauth = provider.account_capabilities(&id, "oauth");
     assert!(
-        oauth.quota
+        oauth.turn_state_probe
+            && oauth.quota
             && oauth.quota_refresh
             && oauth.profile
             && oauth.subscription

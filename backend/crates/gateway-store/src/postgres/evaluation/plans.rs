@@ -6,7 +6,7 @@ use gateway_admin::{
 };
 use sqlx::{PgPool, types::Json};
 
-use super::{append_audit, db_error, invalid, rows::PlanRow};
+use super::{append_audit, conflict, db_error, invalid, lock_queue, rows::PlanRow};
 
 pub(super) async fn list(pool: &PgPool) -> AdminStoreResult<Vec<EvaluationPlan>> {
     Ok(sqlx::query_as::<_, PlanRow>(
@@ -36,6 +36,33 @@ pub(super) async fn save(
         ));
     }
     let mut transaction = pool.begin().await.map_err(db_error)?;
+    lock_queue(&mut transaction).await?;
+    if command.settings.enabled
+        && let Some(preference) = &command.settings.account_preference
+    {
+        let enabled: Option<bool> =
+            sqlx::query_scalar("select enabled from account_groups where id = $1 for key share")
+                .bind(&preference.group_id)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(db_error)?;
+        if enabled != Some(true) {
+            return Err(invalid("优选分组不存在或已停用"));
+        }
+        let occupied: bool = sqlx::query_scalar(
+            "select exists(select 1 from evaluation_plans where id <> $1
+             and settings_json @> '{\"enabled\":true}'::jsonb
+             and settings_json->'accountPreference'->>'groupId' = $2)",
+        )
+        .bind(&command.id)
+        .bind(&preference.group_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(db_error)?;
+        if occupied {
+            return Err(conflict("优选分组已有启用的测评计划"));
+        }
+    }
     let operation;
     let plan: Option<PlanRow> = if let Some(revision) = command.expected_revision {
         operation = MutationAuditOperation::EvaluationPlanUpdate;

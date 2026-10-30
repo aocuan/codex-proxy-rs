@@ -177,6 +177,15 @@
       "label": "Account filters and actions",
       "searchLabel": "Search accounts",
       "statusLabel": "Filter by account status",
+      "evaluationStatusLabel": "Filter by ticket probe status",
+      "evaluationStatusHelp": "Uses the latest probe conditions and keeps the previous result while a probe is running, ticket signals do not establish model capability",
+      "allEvaluationStates": "All probe statuses",
+      "evaluationStable": "Preferred · Stable ticket",
+      "evaluationChanged": "Not preferred · Ticket changed",
+      "evaluationUnknown": "Undetermined",
+      "evaluationFailed": "Probe failed",
+      "evaluationPending": "First probe in progress",
+      "evaluationNoRecord": "No records",
       "groupLabel": "Filter by account group",
       "deleteSelected": "Delete ({count})",
       "exportSelected": "Export ({count})",
@@ -629,7 +638,10 @@
       "refreshSettingPaused": "Auto-refresh settings, currently paused",
       "seconds": "{seconds}s",
       "evaluateSelected": "Evaluate selected",
-      "evaluateMax": "Evaluate selected (up to 20)"
+      "evaluateMax": "Evaluate selected (up to 20)",
+      "notApplicable": "Not applicable",
+      "oauthOnly": "API key accounts are automatically excluded from quick ticket probes, which require OpenAI OAuth accounts",
+      "probeExecutionHint": "Probes the specified upstream model through the account proxy, checks scope with the Client Key and consumes upstream quota outside the model billing ledger"
     }
   }
 }

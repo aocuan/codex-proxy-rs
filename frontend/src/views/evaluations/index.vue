@@ -207,6 +207,7 @@ async function confirmDelete() {
             <template #name="{ row }">
               {{ row.settings.name }}
               <span class="mt-1 block text-cp-xs text-cp-text-tertiary">{{ row.settings.accountSelection?.mode === 'all' ? '自动跟随全部账号' : row.settings.accountSelection?.mode === 'groups' ? '自动跟随指定分组' : `${row.settings.parameters.accountIds.length} 个固定账号` }} · 每账号 {{ row.settings.parameters.repetitions }} 次</span>
+              <span v-if="row.settings.accountPreference" class="mt-1 block text-cp-xs text-cp-text-secondary">账号优选 · {{ catalog.groupName(row.settings.accountPreference.groupId) }}</span>
             </template>
             <template #test="{ row }">
               {{ row.settings.parameters.definition?.name ?? kindLabels[row.settings.parameters.kind] }}
@@ -242,6 +243,7 @@ async function confirmDelete() {
     <EvaluationDetailModal
       v-model="showDetail" :detail="detail" :loading="loadingDetail" :error="detailError"
       :stopping="stopping" :retrying-item-id="retryingItemId" :account-name="catalog.accountName"
+      :group-name="catalog.groupName"
       @retry-judgment="retryJudgment" @refresh="evaluation.loadDetail()" @stop="evaluation.stop" @output="inspectOutput" @compare="comparison.add"
     />
     <EvaluationOutputModal v-model="showOutput" :item="outputItem" :run="outputRun" :account-name="catalog.accountName" />

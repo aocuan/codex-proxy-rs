@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import type { AccountGroupRef } from '@/api'
+import type { AccountEvaluationStatus, AccountGroupRef } from '@/api'
 import { ZButton, ZInput, ZMenuItem, ZPopover, ZSelect } from '@codex-proxy/ui'
 
 import { ChevronDown, Download, ListTodo, Pencil, Search, Trash2, Upload } from '@lucide/vue'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ProviderFilter from '@/components/ProviderFilter.vue'
-import { accountStatusFilterOptions } from '../constants'
+import { accountEvaluationFilterOptions, accountStatusFilterOptions } from '../constants'
 
 const props = defineProps<{
   hasImportTasks: boolean
@@ -31,6 +31,7 @@ const { t } = useI18n({ useScope: 'global' })
 
 const search = defineModel<string>('search', { required: true })
 const status = defineModel<string>('status', { required: true })
+const evaluationStatus = defineModel<AccountEvaluationStatus | ''>('evaluationStatus', { required: true })
 const provider = defineModel<string>('provider', { required: true })
 const group = defineModel<string>('group', { required: true })
 const groupOptions = computed(() => [
@@ -84,6 +85,14 @@ const groupOptions = computed(() => [
         :disabled="groupsLoading"
         :aria-label="t('accounts.filters.groupLabel')"
         class="w-full min-w-0 xl:w-40 xl:shrink-0"
+      />
+
+      <ZSelect
+        v-model="evaluationStatus"
+        :options="accountEvaluationFilterOptions"
+        :aria-label="t('accounts.filters.evaluationStatusLabel')"
+        :title="t('accounts.filters.evaluationStatusHelp')"
+        class="col-span-2 w-full min-w-0 sm:col-span-1 xl:w-48 xl:shrink-0"
       />
 
       <ProviderFilter

@@ -83,6 +83,7 @@ export interface EvaluationParameters {
 }
 
 export interface EvaluationProfile {
+  accountPreference?: { groupId: string, planRevision: number }
   definition?: EvaluationDefinition
   prompt: string
   promptVersion: string
@@ -108,6 +109,11 @@ export interface EvaluationRun {
 }
 
 export interface EvaluationObservation {
+  accountPreference?: {
+    groupId: string
+    status: 'joined' | 'removed' | 'unchanged' | 'skipped'
+    reason: string | null
+  }
   turnState?: {
     outcome: 'accepted' | 'refreshed' | 'unknown'
     error: string | null
@@ -203,6 +209,7 @@ export type EvaluationAccountSelection = { mode: 'fixed' } | { mode: 'all' } | {
 
 export interface EvaluationPlanSettings {
   accountSelection?: EvaluationAccountSelection
+  accountPreference?: { groupId: string }
   name: string
   parameters: EvaluationParameters
   enabled: boolean

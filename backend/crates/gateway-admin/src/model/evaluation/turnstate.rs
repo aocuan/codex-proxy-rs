@@ -10,6 +10,54 @@ pub enum TurnStateOutcome {
     Unknown,
 }
 
+/// 账号筛选使用的测票结果，独立于健康状态与能力题判分
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluationAccountStatus {
+    Stable,
+    Changed,
+    Unknown,
+    Failed,
+    Pending,
+    NoRecord,
+    NotApplicable,
+}
+
+/// 最近测票条件下供账号范围解析使用的轻量事实
+#[derive(Debug, Clone)]
+pub struct EvaluationAccountResultFact {
+    pub account_id: String,
+    pub provider_kind: String,
+    pub authentication_kind: String,
+    pub status: Option<super::EvaluationItemStatus>,
+    pub outcome: Option<TurnStateOutcome>,
+}
+
+impl EvaluationAccountStatus {
+    #[must_use]
+    pub fn from_result(
+        supported: bool,
+        status: Option<super::EvaluationItemStatus>,
+        outcome: Option<TurnStateOutcome>,
+    ) -> Self {
+        use super::EvaluationItemStatus;
+        if !supported {
+            return Self::NotApplicable;
+        }
+        match status {
+            None => Self::NoRecord,
+            Some(EvaluationItemStatus::Queued | EvaluationItemStatus::Running) => Self::Pending,
+            Some(EvaluationItemStatus::Failed | EvaluationItemStatus::Interrupted) => Self::Failed,
+            Some(EvaluationItemStatus::Succeeded) => match outcome {
+                Some(TurnStateOutcome::Accepted) => Self::Stable,
+                Some(TurnStateOutcome::Refreshed) => Self::Changed,
+                _ => Self::Unknown,
+            },
+            _ => Self::Unknown,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnStateStep {

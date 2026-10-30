@@ -40,6 +40,7 @@ impl EvaluationTask {
         Self {
             runner: EvaluationRunner {
                 providers: None,
+                publisher: None,
                 snapshot: snapshot.clone(),
                 typesafe: None,
                 repository,
@@ -70,6 +71,15 @@ impl EvaluationTask {
         self
     }
 
+    #[must_use]
+    pub fn with_snapshot_control(
+        mut self,
+        publisher: Arc<dyn gateway_core::runtime::SnapshotControl>,
+    ) -> Self {
+        self.runner.publisher = Some(publisher);
+        self
+    }
+
     /// 供 Worker 与集成验证共同使用，不改变已创建批次的参数
     pub async fn advance_schedules(&self, now: DateTime<Utc>) -> Result<(), WorkerTaskError> {
         let accounts = self
@@ -87,10 +97,13 @@ impl EvaluationTask {
         {
             if plan.settings.account_selection.is_fixed() {
                 let previous = plan.settings.parameters.account_ids.len();
-                plan.settings
-                    .parameters
-                    .account_ids
-                    .retain(|id| accounts.iter().any(|a| &a.id == id));
+                let kind = plan.settings.parameters.kind;
+                plan.settings.parameters.account_ids.retain(|id| {
+                    accounts.iter().any(|a| {
+                        &a.id == id
+                            && super::accounts::supports(a, kind, self.runner.providers.as_ref())
+                    })
+                });
                 if previous != plan.settings.parameters.account_ids.len() {
                     if plan.settings.parameters.account_ids.is_empty() {
                         plan.settings.enabled = false;
@@ -168,10 +181,13 @@ impl EvaluationTask {
             } else {
                 None
             };
-            let account_ids = super::accounts::resolve(&plan.settings, &accounts, &self.snapshot)
-                .map_err(|error| {
-                WorkerTaskError::safe("无法解析计划账号范围").with_source(error)
-            })?;
+            let account_ids = super::accounts::resolve(
+                &plan.settings,
+                &accounts,
+                &self.snapshot,
+                self.runner.providers.as_ref(),
+            )
+            .map_err(|error| WorkerTaskError::safe("无法解析计划账号范围").with_source(error))?;
             let mut parameters = plan.settings.parameters.clone();
             parameters.account_ids = account_ids;
             // 超出当前单轮上限时保持计划，不截取名单造成部分账号长期漏测
@@ -180,6 +196,13 @@ impl EvaluationTask {
             }
             let mut seed = EvaluationRunSeed::new(parameters, &self.version, now);
             seed.profile.account_selection = plan.settings.account_selection.clone();
+            seed.profile.account_preference =
+                plan.settings.account_preference.as_ref().map(|rule| {
+                    EvaluationPreferenceSnapshot {
+                        group_id: rule.group_id.clone(),
+                        plan_revision: plan.revision,
+                    }
+                });
             self.runner
                 .repository
                 .enqueue_scheduled(EnqueueScheduledEvaluation {

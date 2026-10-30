@@ -118,6 +118,7 @@ pub(super) struct AdminTestFixture {
     pub provider_quota: Arc<Mutex<Option<ProviderQuota>>>,
     pub account: Arc<Mutex<Option<AccountPageItem>>>,
     pub account_usage: Arc<Mutex<Vec<AccountUsage>>>,
+    pub evaluations: Arc<evaluation_fixture::TestEvaluationRepository>,
 }
 
 impl AdminTestFixture {
@@ -173,6 +174,7 @@ impl AdminTestFixture {
             account_usage: Arc::clone(&account_usage),
         });
         let plugin_ports = Arc::new(plugins::TestPluginPorts::default());
+        let evaluations = Arc::new(evaluation_fixture::TestEvaluationRepository::default());
         let published_snapshot = gateway_core::runtime::RuntimeSnapshotHandle::default();
         let stores = AdminStorePorts::new(
             AdminAccountStorePorts::new(
@@ -186,7 +188,7 @@ impl AdminTestFixture {
             unused,
             settings.clone(),
             gateway_admin::ports::backup::BackupStorePorts::disabled(),
-            Arc::new(evaluation_fixture::UnusedEvaluationRepository),
+            evaluations.clone(),
             plugin_ports.clone(),
             plugin_ports.clone(),
             plugin_ports.clone(),
@@ -256,6 +258,7 @@ impl AdminTestFixture {
             provider_quota,
             account,
             account_usage,
+            evaluations,
         }
     }
 
@@ -1168,15 +1171,23 @@ impl AccountStore for UnusedStore {
 
     async fn list_accounts(
         &self,
-        _: AccountListQuery,
+        query: AccountListQuery,
         _: AccountRuntimeSnapshot,
     ) -> AdminStoreResult<AccountPage> {
         if let Some(account) = self.account.lock().expect("account").as_ref() {
             let status = account.projection.status;
+            let matched = query
+                .account_ids
+                .as_ref()
+                .is_none_or(|ids| ids.contains(&account.account.id));
             return Ok(AccountPage {
                 config_revision: Revision::new(1).unwrap(),
-                items: vec![account.clone()],
-                total: 1,
+                items: if matched {
+                    vec![account.clone()]
+                } else {
+                    Vec::new()
+                },
+                total: u64::from(matched),
                 summary: gateway_admin::model::accounts::AccountSummary {
                     total: 1,
                     normal: u64::from(status == gateway_core::account::AccountStatus::Normal),
@@ -1627,6 +1638,17 @@ impl UnusedProvider {
 
 #[async_trait]
 impl ProviderAdmin for UnusedProvider {
+    fn account_capabilities(
+        &self,
+        _: &ProviderAccountId,
+        authentication_kind: &str,
+    ) -> gateway_admin::model::accounts::ProviderAccountCapabilities {
+        gateway_admin::model::accounts::ProviderAccountCapabilities {
+            turn_state_probe: self.kind.as_str() == "openai" && authentication_kind == "oauth",
+            ..Default::default()
+        }
+    }
+
     fn pricing_catalog(&self) -> gateway_admin::model::pricing::ProviderPricingCatalog {
         serde_json::from_value(serde_json::json!({
             "builtin-model": {

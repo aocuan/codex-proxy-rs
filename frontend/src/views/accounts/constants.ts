@@ -130,6 +130,41 @@ export const accountStatusFilterOptions = computed(() => ([
   { label: statusLabels.value.error, value: 'error' },
 ]))
 
+export const accountEvaluationFilterOptions = computed(() => ([
+  {
+    label: t('accounts.filters.allEvaluationStates'),
+    value: '',
+  },
+  {
+    label: t('accounts.filters.evaluationStable'),
+    value: 'stable',
+  },
+  {
+    label: t('accounts.filters.evaluationChanged'),
+    value: 'changed',
+  },
+  {
+    label: t('accounts.filters.evaluationUnknown'),
+    value: 'unknown',
+  },
+  {
+    label: t('accounts.filters.evaluationFailed'),
+    value: 'failed',
+  },
+  {
+    label: t('accounts.filters.evaluationPending'),
+    value: 'pending',
+  },
+  {
+    label: t('accounts.filters.evaluationNoRecord'),
+    value: 'no_record',
+  },
+  {
+    label: t('accounts.evaluationActions.notApplicable'),
+    value: 'not_applicable',
+  },
+]))
+
 /** `error` 分类下具体原因的展示文案（对应后端 `errorReason`）。 */
 export const errorReasonLabels = computed<Record<AccountErrorReason, string>>(() => ({
   account_unverified: t('accounts.fields.identityUnconfirmed'),

@@ -38,11 +38,45 @@ fn evaluation_parameters_enforce_experiment_limits_before_enqueuing() {
 }
 
 #[test]
+fn preference_requires_a_ticket_plan_and_an_independent_source_group() {
+    use gateway_admin::model::evaluation::{
+        EvaluationAccountPreference, EvaluationAccountSelection, EvaluationPlanSettings,
+    };
+    let target = format!("grp_{}", "a".repeat(32));
+    let mut test_parameters = parameters();
+    test_parameters.kind = EvaluationKind::Turnstate;
+    test_parameters.reasoning_effort = Some("low".into());
+    test_parameters.repetitions = 1;
+    let mut settings = EvaluationPlanSettings {
+        account_preference: Some(EvaluationAccountPreference {
+            group_id: target.clone(),
+        }),
+        account_selection: EvaluationAccountSelection::Fixed,
+        name: "优选".into(),
+        parameters: test_parameters,
+        enabled: true,
+        interval_minutes: Some(10),
+        cron_expression: String::new(),
+        timezone: Default::default(),
+    };
+    assert!(settings.validate_parameters().is_ok());
+    settings.parameters.kind = EvaluationKind::Candy;
+    assert!(settings.validate_parameters().is_err());
+    settings.parameters.kind = EvaluationKind::Turnstate;
+    settings.account_selection = EvaluationAccountSelection::Groups {
+        group_ids: vec![target],
+    };
+    settings.parameters.account_ids.clear();
+    assert!(settings.validate_parameters().is_err());
+}
+
+#[test]
 fn plans_validate_five_fields_and_schedule_only_future_slots_in_the_saved_timezone() {
     use chrono::TimeZone as _;
     use gateway_admin::model::evaluation::EvaluationPlanSettings;
     let now = chrono::Utc.with_ymd_and_hms(2026, 10, 20, 2, 0, 0).unwrap();
     let mut settings = EvaluationPlanSettings {
+        account_preference: None,
         account_selection: Default::default(),
         name: "每日检查".to_owned(),
         parameters: parameters(),
@@ -71,6 +105,7 @@ fn minute_intervals_keep_their_phase_across_hours_delays_and_timezone_changes() 
         .with_ymd_and_hms(2026, 10, 20, 2, 40, 17)
         .unwrap();
     let mut settings = EvaluationPlanSettings {
+        account_preference: None,
         account_selection: Default::default(),
         name: "间隔检查".to_owned(),
         parameters: parameters(),
@@ -111,6 +146,7 @@ fn minute_intervals_keep_their_phase_across_hours_delays_and_timezone_changes() 
 fn automatic_plans_accept_an_empty_pool_while_manual_runs_still_require_accounts() {
     use gateway_admin::model::evaluation::{EvaluationAccountSelection, EvaluationPlanSettings};
     let mut plan = EvaluationPlanSettings {
+        account_preference: None,
         account_selection: EvaluationAccountSelection::All,
         name: "自动跟随".to_owned(),
         parameters: parameters(),

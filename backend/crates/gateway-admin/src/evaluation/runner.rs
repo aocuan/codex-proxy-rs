@@ -34,6 +34,7 @@ use crate::{
 
 pub(super) struct EvaluationRunner {
     pub providers: Option<crate::ports::provider::ProviderAdminRegistry>,
+    pub publisher: Option<Arc<dyn gateway_core::runtime::SnapshotControl>>,
     pub snapshot: gateway_core::runtime::RuntimeSnapshotHandle,
     pub typesafe: Option<std::sync::Arc<dyn crate::ports::evaluation::TypeSafeJudgeClient>>,
     pub repository: Arc<dyn EvaluationRepository>,
@@ -47,6 +48,9 @@ impl EvaluationRunner {
         claim: ClaimedEvaluation,
         parent: CancellationToken,
     ) -> Result<(), WorkerTaskError> {
+        if claim.profile.account_preference.is_some() && self.publisher.is_none() {
+            return Err(WorkerTaskError::safe("账号优选的配置发布服务不可用"));
+        }
         let cancellation = parent.child_token();
         let execution = self.execute(&claim, cancellation.clone());
         tokio::pin!(execution);
@@ -63,11 +67,86 @@ impl EvaluationRunner {
             }
         };
         result.completed_at = Utc::now();
-        self.repository
-            .finish_item(&claim.item.id, result)
-            .await
-            .map_err(store_error)?;
+        let mut attempts = 0;
+        loop {
+            result.account_preference = claim
+                .profile
+                .account_preference
+                .as_ref()
+                .map(|rule| self.preference_decision(rule, &claim, &result, attempts >= 3));
+            let finished = self
+                .repository
+                .finish_item(&claim.item.id, result.clone())
+                .await
+                .map_err(store_error)?;
+            if let (Some(revision), Some(publisher)) = (finished.config_revision, &self.publisher) {
+                let revision = gateway_core::routing::ConfigRevision::new(revision.get()).map_err(
+                    |error| WorkerTaskError::safe("优选配置版本无效").with_source(error),
+                )?;
+                publisher.publish_committed(revision).await;
+            }
+            if !finished.retry_preference {
+                break;
+            }
+            attempts += 1;
+        }
         Ok(())
+    }
+
+    fn preference_decision(
+        &self,
+        rule: &EvaluationPreferenceSnapshot,
+        claim: &ClaimedEvaluation,
+        completion: &EvaluationCompletion,
+        exhausted: bool,
+    ) -> EvaluationPreferenceDecision {
+        let desired_member = if completion.status == EvaluationItemStatus::Succeeded {
+            match completion
+                .observation
+                .turn_state
+                .as_ref()
+                .map(|probe| probe.outcome)
+            {
+                Some(TurnStateOutcome::Accepted) => Some(true),
+                Some(TurnStateOutcome::Refreshed) => Some(false),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let mut decision = EvaluationPreferenceDecision {
+            rule: rule.clone(),
+            desired_member,
+            expected_revision: None,
+            skip_reason: None,
+        };
+        if decision.desired_member.is_none() {
+            decision.skip_reason = Some("测票未得出明确结果".into());
+            return decision;
+        }
+        if exhausted {
+            decision.desired_member = None;
+            decision.skip_reason = Some("账号配置持续变化，已保留原分组".into());
+            return decision;
+        }
+        let current = self.snapshot.acquire().ok().and_then(|snapshot| {
+            let account = ProviderAccountId::new(&claim.item.account_id).ok()?;
+            let key = ClientApiKeyId::new(&claim.parameters.client_key_id).ok()?;
+            let policy = snapshot.client_policy(&key)?;
+            if policy.authorize().is_err()
+                || !policy.account_scope().allows(&account)
+                || !super::accounts::independent_preference_key(policy, &rule.group_id)
+            {
+                return None;
+            }
+            crate::model::Revision::new(snapshot.revision().get()).ok()
+        });
+        if current.is_none() {
+            decision.desired_member = None;
+            decision.skip_reason = Some("检测 Key 的授权范围已变化或配置暂不可用".into());
+        }
+        decision.expected_revision = current;
+        decision
     }
 
     pub(super) async fn watch_stop(
@@ -270,7 +349,15 @@ impl EvaluationRunner {
             .acquire()
             .map_err(|error| WorkerTaskError::safe("测票授权配置暂不可用").with_source(error))?;
         if !snapshot.client_policy(&key).is_some_and(|policy| {
-            policy.authorize().is_ok() && policy.account_scope().allows(&account)
+            policy.authorize().is_ok()
+                && policy.account_scope().allows(&account)
+                && claim
+                    .profile
+                    .account_preference
+                    .as_ref()
+                    .is_none_or(|rule| {
+                        super::accounts::independent_preference_key(policy, &rule.group_id)
+                    })
         }) {
             completion.error_code = Some("policy_denied".into());
             completion.message = Some("当前 Key 不再授权此账号，未发送测票请求".into());
@@ -429,6 +516,7 @@ fn empty_completion() -> EvaluationCompletion {
         duration_ms: 0,
         completed_at: Utc::now(),
         observation: Default::default(),
+        account_preference: None,
     }
 }
 

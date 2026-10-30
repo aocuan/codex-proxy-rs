@@ -121,6 +121,27 @@ fn decode_enum<T: serde::de::DeserializeOwned>(value: String) -> AdminStoreResul
 }
 
 #[derive(sqlx::FromRow)]
+pub(super) struct AccountResultRow {
+    account_id: String,
+    provider_kind: String,
+    authentication_kind: String,
+    status: Option<String>,
+    outcome: Option<String>,
+}
+
+impl AccountResultRow {
+    pub(super) fn decode(self) -> AdminStoreResult<EvaluationAccountResultFact> {
+        Ok(EvaluationAccountResultFact {
+            account_id: self.account_id,
+            provider_kind: self.provider_kind,
+            authentication_kind: self.authentication_kind,
+            status: self.status.map(decode_enum).transpose()?,
+            outcome: self.outcome.map(decode_enum).transpose()?,
+        })
+    }
+}
+
+#[derive(sqlx::FromRow)]
 pub(super) struct HistorySourceRow {
     id: String,
     name: String,

@@ -1954,6 +1954,7 @@ async fn accounts_list_should_return_complete_directory_semantics() {
     let page = services
         .accounts()
         .list(AccountListQuery {
+            account_ids: None,
             page: 1,
             page_size: gateway_admin::model::PageSize::new(20).expect("page size"),
             provider_kind: None,
@@ -2042,6 +2043,7 @@ async fn accounts_should_fill_missing_plan_from_quota_without_overriding_known_s
         let page = services
             .accounts()
             .list(AccountListQuery {
+                account_ids: None,
                 page: 1,
                 page_size: gateway_admin::model::PageSize::new(20).expect("page size"),
                 provider_kind: None,
@@ -2127,6 +2129,7 @@ async fn accounts_list_should_degrade_quota_failure_to_empty_window_without_drop
     let page = services
         .accounts()
         .list(AccountListQuery {
+            account_ids: None,
             page: 1,
             page_size: gateway_admin::model::PageSize::new(20).expect("page size"),
             provider_kind: None,
@@ -2183,6 +2186,7 @@ async fn accounts_list_should_prefer_credential_error_over_quota_exhaustion() {
         .await
         .accounts()
         .list(AccountListQuery {
+            account_ids: None,
             page: 1,
             page_size: gateway_admin::model::PageSize::new(20).expect("page size"),
             provider_kind: None,
@@ -2212,6 +2216,7 @@ async fn accounts_list_should_map_unknown_credential_to_error_not_normal() {
         .await
         .accounts()
         .list(AccountListQuery {
+            account_ids: None,
             page: 1,
             page_size: gateway_admin::model::PageSize::new(20).expect("page size"),
             provider_kind: None,
@@ -2261,6 +2266,7 @@ async fn accounts_list_should_not_derive_rate_limited_from_provider_quota_view()
         .await
         .accounts()
         .list(AccountListQuery {
+            account_ids: None,
             page: 1,
             page_size: gateway_admin::model::PageSize::new(20).expect("page size"),
             provider_kind: None,
@@ -2310,6 +2316,7 @@ async fn accounts_list_should_not_derive_exhaustion_from_provider_quota_view() {
         .await
         .accounts()
         .list(AccountListQuery {
+            account_ids: None,
             page: 1,
             page_size: gateway_admin::model::PageSize::new(20).expect("page size"),
             provider_kind: None,
@@ -2689,6 +2696,7 @@ async fn api_key_list_and_detail_should_accumulate_local_usage_without_subscript
     let page = services
         .accounts()
         .list(AccountListQuery {
+            account_ids: None,
             page: 1,
             page_size: gateway_admin::model::PageSize::new(20).unwrap(),
             provider_kind: None,
@@ -2756,6 +2764,7 @@ async fn accounts_list_should_attach_local_usage_to_quota_windows() {
         .await
         .accounts()
         .list(AccountListQuery {
+            account_ids: None,
             page: 1,
             page_size: gateway_admin::model::PageSize::new(20).expect("page size"),
             provider_kind: None,
@@ -2840,6 +2849,7 @@ async fn accounts_list_and_quota_refresh_should_select_the_same_weekly_or_monthl
         let page = services
             .accounts()
             .list(AccountListQuery {
+                account_ids: None,
                 page: 1,
                 page_size: gateway_admin::model::PageSize::new(20).expect("page size"),
                 provider_kind: None,
@@ -2938,6 +2948,7 @@ async fn accounts_list_should_not_attach_account_usage_to_model_specific_quota_w
         .await
         .accounts()
         .list(AccountListQuery {
+            account_ids: None,
             page: 1,
             page_size: gateway_admin::model::PageSize::new(20).expect("page size"),
             provider_kind: None,
@@ -3600,6 +3611,7 @@ async fn unregistered_provider_accounts_have_no_live_management_capabilities() {
     let page = services
         .accounts()
         .list(AccountListQuery {
+            account_ids: None,
             page: 1,
             page_size: gateway_admin::model::PageSize::new(20).unwrap(),
             provider_kind: None,
@@ -3739,6 +3751,7 @@ async fn account_capacity_should_batch_page_ids_and_distinguish_idle_from_unavai
             let page = services
                 .accounts()
                 .list(AccountListQuery {
+                    account_ids: None,
                     page: 1,
                     page_size: gateway_admin::model::PageSize::new(20).unwrap(),
                     provider_kind: None,

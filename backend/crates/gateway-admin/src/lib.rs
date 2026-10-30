@@ -457,12 +457,15 @@ async fn initialize_inner(
         backup_ports.object_store(),
     )
     .with_timezone(timezone);
-    let evaluations = Arc::new(evaluation::EvaluationService::new(
-        store.evaluations(),
-        gateway_version.clone(),
-        timezone,
-        published_snapshot.clone(),
-    ));
+    let evaluations = Arc::new(
+        evaluation::EvaluationService::new(
+            store.evaluations(),
+            gateway_version.clone(),
+            timezone,
+            published_snapshot.clone(),
+        )
+        .with_turnstate(registry.clone()),
+    );
     let evaluation_task = evaluation::EvaluationTask::new(
         store.evaluations(),
         execution,
@@ -472,7 +475,8 @@ async fn initialize_inner(
         published_snapshot.clone(),
     )
     .with_typesafe(typesafe)
-    .with_turnstate(registry.clone());
+    .with_turnstate(registry.clone())
+    .with_snapshot_control(snapshot.clone());
     let system_preflight = Arc::new(use_case::plugin_update::PluginSystemUpdatePreflight::new(
         store.plugins(),
         plugin_inspector.clone(),

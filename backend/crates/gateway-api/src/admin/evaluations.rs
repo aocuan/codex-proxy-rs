@@ -170,10 +170,23 @@ fn history_limit() -> u32 {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct HistoryItemView {
+pub(super) struct HistoryItemView {
     #[serde(flatten)]
     item: EvaluationHistoryItem,
     tested_at_display: String,
+}
+
+pub(super) fn history_items_view(
+    items: Vec<EvaluationHistoryItem>,
+    time: TimePresenter,
+) -> Vec<HistoryItemView> {
+    items
+        .into_iter()
+        .map(|item| HistoryItemView {
+            tested_at_display: time.datetime(&item.started_at.unwrap_or(item.created_at)),
+            item,
+        })
+        .collect()
 }
 
 async fn history_sources<S: SessionState + Send + Sync>(
@@ -211,15 +224,7 @@ async fn account_history<S: SessionState + Send + Sync>(
     let time = TimePresenter::new(services.timezone());
     Ok(AdminResponse::new(
         StatusCode::OK,
-        AdminEnvelope::ok(
-            items
-                .into_iter()
-                .map(|item| HistoryItemView {
-                    tested_at_display: time.datetime(&item.started_at.unwrap_or(item.created_at)),
-                    item,
-                })
-                .collect::<Vec<_>>(),
-        ),
+        AdminEnvelope::ok(history_items_view(items, time)),
     ))
 }
 
@@ -228,6 +233,8 @@ async fn account_history<S: SessionState + Send + Sync>(
 struct PlanRequest {
     #[serde(default)]
     account_selection: EvaluationAccountSelection,
+    #[serde(default)]
+    account_preference: Option<EvaluationAccountPreference>,
     name: String,
     parameters: EvaluationParameters,
     enabled: bool,
@@ -244,6 +251,7 @@ impl PlanRequest {
     ) -> EvaluationPlanSettings {
         EvaluationPlanSettings {
             account_selection: self.account_selection,
+            account_preference: self.account_preference,
             name: self.name,
             parameters: self.parameters,
             enabled: self.enabled,

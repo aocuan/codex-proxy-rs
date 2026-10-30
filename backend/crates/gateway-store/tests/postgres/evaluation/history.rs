@@ -165,6 +165,7 @@ async fn default_history_uses_quick_probe_conditions_and_keeps_outcomes_separate
                 .finish_item(&claimed.item.id, finished)
                 .await
                 .unwrap()
+                .finished
         );
     }
     let source = repository.history_sources().await.unwrap().remove(0);

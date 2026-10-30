@@ -20,9 +20,35 @@ pub struct EvaluationService {
     version: String,
     timezone: DeploymentTimeZone,
     snapshot: RuntimeSnapshotHandle,
+    providers: Option<crate::ports::provider::ProviderAdminRegistry>,
 }
 
 impl EvaluationService {
+    /// 测票结果由已保存事实派生，先解析整个账号范围再交给目录分页
+    pub async fn filter_account_ids(
+        &self,
+        status: EvaluationAccountStatus,
+    ) -> Result<Vec<String>, AdminError> {
+        let facts = self
+            .repository
+            .account_result_facts()
+            .await
+            .map_err(|error| map_store_error(error, "evaluation.account_results"))?;
+        Ok(facts
+            .into_iter()
+            .filter(|fact| {
+                let supported = super::accounts::supports_turnstate(
+                    &fact.account_id,
+                    &fact.provider_kind,
+                    &fact.authentication_kind,
+                    self.providers.as_ref(),
+                );
+                EvaluationAccountStatus::from_result(supported, fact.status, fact.outcome) == status
+            })
+            .map(|fact| fact.account_id)
+            .collect())
+    }
+
     /// 仅预检当前 Key 的账号授权，执行时仍由 Core 重新鉴权和准入
     pub fn account_access(
         &self,
@@ -159,17 +185,53 @@ impl EvaluationService {
             version,
             timezone,
             snapshot,
+            providers: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_turnstate(
+        mut self,
+        providers: crate::ports::provider::ProviderAdminRegistry,
+    ) -> Self {
+        self.providers = Some(providers);
+        self
+    }
+
+    async fn retain_supported_accounts(
+        &self,
+        parameters: &mut EvaluationParameters,
+    ) -> Result<(), AdminError> {
+        if parameters.kind != EvaluationKind::Turnstate || parameters.account_ids.is_empty() {
+            return Ok(());
+        }
+        let accounts = self
+            .repository
+            .account_states()
+            .await
+            .map_err(|error| map_store_error(error, "evaluation.accounts"))?;
+        let kind = parameters.kind;
+        parameters.account_ids.retain(|id| {
+            accounts.iter().any(|account| {
+                &account.id == id
+                    && super::accounts::supports(account, kind, self.providers.as_ref())
+            })
+        });
+        Ok(())
     }
 
     pub async fn submit(
         &self,
         submission_id: Uuid,
-        parameters: EvaluationParameters,
+        mut parameters: EvaluationParameters,
         context: &MutationContext,
     ) -> Result<EvaluationRun, AdminError> {
         parameters.validate()?;
         self.validate_parameter_access(&parameters)?;
+        self.retain_supported_accounts(&mut parameters).await?;
+        if parameters.account_ids.is_empty() {
+            return Err(AdminError::invalid("没有支持快速探票的账号"));
+        }
         self.validate_judge_connection(&parameters).await?;
         self.repository
             .enqueue_manual(
@@ -275,8 +337,15 @@ impl EvaluationService {
             .await
             .map_err(|error| map_store_error(error, "evaluation.accounts"))?;
         for plan in &mut plans {
-            plan.available_accounts =
-                Some(super::accounts::resolve(&plan.settings, &accounts, &self.snapshot)?.len());
+            plan.available_accounts = Some(
+                super::accounts::resolve(
+                    &plan.settings,
+                    &accounts,
+                    &self.snapshot,
+                    self.providers.as_ref(),
+                )?
+                .len(),
+            );
         }
         Ok(plans)
     }
@@ -296,10 +365,37 @@ impl EvaluationService {
         // 时区由部署决定，不能由请求伪造显示为另一套调度时间
         settings.timezone = self.timezone;
         let next_run_at = settings.next_run_after(Utc::now())?;
-        if settings.enabled {
-            if settings.account_selection.is_fixed() {
+        if settings.enabled
+            && let Some(preference) = &settings.account_preference
+        {
+            let snapshot = self
+                .snapshot
+                .acquire()
+                .map_err(|_| AdminError::internal("当前账号授权配置不可用"))?;
+            let key = ClientApiKeyId::new(settings.parameters.client_key_id.clone())
+                .map_err(|_| AdminError::invalid("Client Key ID 无效"))?;
+            let policy = snapshot
+                .client_policy(&key)
+                .filter(|policy| policy.authorize().is_ok())
+                .ok_or_else(|| AdminError::invalid("所选 Key 不存在或已停用"))?;
+            if !super::accounts::independent_preference_key(policy, &preference.group_id) {
+                return Err(AdminError::invalid(
+                    "优选计划的授权 Key 不能绑定优选分组，请使用独立的检测范围",
+                ));
+            }
+        }
+        if settings.account_selection.is_fixed() {
+            if settings.enabled {
                 self.validate_parameter_access(&settings.parameters)?;
-            } else {
+            }
+            self.retain_supported_accounts(&mut settings.parameters)
+                .await?;
+            if settings.enabled && settings.parameters.account_ids.is_empty() {
+                return Err(AdminError::invalid("没有支持快速探票的账号"));
+            }
+        }
+        if settings.enabled {
+            if !settings.account_selection.is_fixed() {
                 let snapshot = self
                     .snapshot
                     .acquire()

@@ -120,8 +120,8 @@ pub(super) async fn save_output(
 pub(super) async fn finish(
     pool: &PgPool,
     item_id: &str,
-    completion: EvaluationCompletion,
-) -> AdminStoreResult<bool> {
+    mut completion: EvaluationCompletion,
+) -> AdminStoreResult<EvaluationFinish> {
     if !completion.status.is_terminal() || completion.status == EvaluationItemStatus::Skipped {
         return Err(invalid("已领取任务只能迁移到执行终态"));
     }
@@ -143,12 +143,12 @@ pub(super) async fn finish(
     .bind(completion.status.as_str())
     .bind(completion.verdict.as_str())
     .bind(completion.final_answer)
-    .bind(completion.error_code)
-    .bind(completion.message)
+    .bind(&completion.error_code)
+    .bind(&completion.message)
     .bind(completion.ttft_ms)
     .bind(completion.duration_ms)
     .bind(completion.completed_at)
-    .bind(Json(completion.observation))
+    .bind(Json(&completion.observation))
     .execute(&mut *transaction)
     .await
     .map_err(db_error)?;
@@ -174,6 +174,37 @@ pub(super) async fn finish(
             .map_err(db_error)?;
         }
     }
+    let mut config_revision = None;
+    if result.rows_affected() == 1
+        && let Some(decision) = completion.account_preference
+    {
+        let (preference, revision) =
+            match super::preference::apply(&mut transaction, item_id, decision).await? {
+                super::preference::PreferenceApplication::Applied(preference, revision) => {
+                    (preference, revision)
+                }
+                super::preference::PreferenceApplication::Stale(revision) => {
+                    transaction.rollback().await.map_err(db_error)?;
+                    return Ok(EvaluationFinish {
+                        finished: false,
+                        config_revision: Some(revision),
+                        retry_preference: true,
+                    });
+                }
+            };
+        completion.observation.account_preference = Some(preference);
+        sqlx::query("update evaluation_items set observation_json = $2 where id = $1")
+            .bind(item_id)
+            .bind(Json(&completion.observation))
+            .execute(&mut *transaction)
+            .await
+            .map_err(db_error)?;
+        config_revision = revision;
+    }
     transaction.commit().await.map_err(db_error)?;
-    Ok(result.rows_affected() == 1)
+    Ok(EvaluationFinish {
+        finished: result.rows_affected() == 1,
+        config_revision,
+        retry_preference: false,
+    })
 }

@@ -5,6 +5,7 @@ mod history;
 mod items;
 mod judgments;
 mod plans;
+mod preference;
 mod retention;
 mod rows;
 mod runs;
@@ -35,6 +36,10 @@ impl PgEvaluationRepository {
 
 #[async_trait]
 impl EvaluationRepository for PgEvaluationRepository {
+    async fn account_result_facts(&self) -> AdminStoreResult<Vec<EvaluationAccountResultFact>> {
+        history::account_result_facts(&self.pool).await
+    }
+
     async fn account_states(&self) -> AdminStoreResult<Vec<EvaluationAccountState>> {
         accounts::list(&self.pool).await
     }
@@ -177,7 +182,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         &self,
         item_id: &str,
         completion: EvaluationCompletion,
-    ) -> AdminStoreResult<bool> {
+    ) -> AdminStoreResult<EvaluationFinish> {
         items::finish(&self.pool, item_id, completion).await
     }
 

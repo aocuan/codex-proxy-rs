@@ -37,6 +37,7 @@ fn seed(parameters: EvaluationParameters) -> EvaluationRunSeed {
 pub(super) fn completion(status: EvaluationItemStatus) -> EvaluationCompletion {
     EvaluationCompletion {
         judge_target: None,
+        account_preference: None,
         status,
         verdict: EvaluationVerdict::Ungraded,
         final_answer: None,
@@ -56,6 +57,7 @@ async fn plan(repository: &PgEvaluationRepository) -> EvaluationPlan {
                 id: format!("eval_plan_{}", uuid::Uuid::now_v7().simple()),
                 expected_revision: None,
                 settings: EvaluationPlanSettings {
+                    account_preference: None,
                     account_selection: Default::default(),
                     name: "每小时测评".to_owned(),
                     parameters: parameters(&["acct_a"], 1),
@@ -172,6 +174,7 @@ async fn concurrent_claims_respect_account_and_global_limits_and_stop_is_persist
                 .finish_item(&claim.item.id, completion(EvaluationItemStatus::Cancelled))
                 .await
                 .unwrap()
+                .finished
         );
     }
     assert!(repository.claim_next(now).await.unwrap().is_none());
@@ -254,6 +257,7 @@ async fn restart_preserves_output_but_never_replays_or_grades_an_unconfirmed_req
             .finish_item(&claim.item.id, completion(EvaluationItemStatus::Succeeded))
             .await
             .unwrap()
+            .finished
     );
     assert_eq!(
         repository.load_output(&claim.item.id).await.unwrap(),
@@ -298,6 +302,7 @@ async fn only_saved_output_can_succeed_and_wrong_answer_is_still_a_successful_ex
             .finish_item(&claim.item.id, result.clone())
             .await
             .unwrap()
+            .finished
     );
     let oversized = EvaluationOutput {
         response_text: "x".repeat(MAX_RESPONSE_BYTES + 1),
@@ -326,12 +331,14 @@ async fn only_saved_output_can_succeed_and_wrong_answer_is_still_a_successful_ex
             .finish_item(&claim.item.id, result.clone())
             .await
             .unwrap()
+            .finished
     );
     assert!(
         !repository
             .finish_item(&claim.item.id, result)
             .await
             .unwrap()
+            .finished
     );
     let detail = repository.load_run(&run.id).await.unwrap().unwrap();
     assert_eq!(detail.run.succeeded_items, 1);

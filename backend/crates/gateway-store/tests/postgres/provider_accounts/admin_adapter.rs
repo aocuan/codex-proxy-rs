@@ -51,6 +51,7 @@ async fn account_capacity_should_resolve_limits_for_list_and_detail() {
             let page = store
                 .list_accounts(
                     AccountListQuery {
+                        account_ids: None,
                         page: 1,
                         page_size: PageSize::new(20).unwrap(),
                         provider_kind: None,
@@ -106,6 +107,7 @@ async fn provider_filter_applies_before_pagination_even_on_an_empty_page() {
         repository.insert_provider_account(record).await.unwrap();
     }
     let query = AccountListQuery {
+        account_ids: None,
         page: 2,
         page_size: PageSize::new(1).unwrap(),
         provider_kind: Some(ProviderKind::new("openai").unwrap()),
@@ -123,6 +125,7 @@ async fn provider_filter_applies_before_pagination_even_on_an_empty_page() {
     let literal = store
         .list_accounts(
             AccountListQuery {
+                account_ids: None,
                 page: 1,
                 provider_kind: Some(ProviderKind::new("all").unwrap()),
                 ..query.clone()

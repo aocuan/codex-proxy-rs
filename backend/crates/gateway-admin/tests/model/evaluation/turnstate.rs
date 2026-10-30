@@ -52,3 +52,52 @@ fn ticket_echo_reports_only_stability_and_never_confuses_errors_with_acceptance(
         assert_eq!(TurnStateProbeResult::new(steps, error).outcome, expected);
     }
 }
+
+#[test]
+fn account_probe_filters_distinguish_outcomes_from_execution_and_applicability() {
+    use gateway_admin::model::evaluation::{
+        EvaluationAccountStatus as Filter, EvaluationItemStatus as Status,
+    };
+    for (supported, status, outcome, expected) in [
+        (
+            true,
+            Some(Status::Succeeded),
+            Some(TurnStateOutcome::Accepted),
+            Filter::Stable,
+        ),
+        (
+            true,
+            Some(Status::Succeeded),
+            Some(TurnStateOutcome::Refreshed),
+            Filter::Changed,
+        ),
+        (
+            true,
+            Some(Status::Succeeded),
+            Some(TurnStateOutcome::Unknown),
+            Filter::Unknown,
+        ),
+        (true, Some(Status::Succeeded), None, Filter::Unknown),
+        (
+            true,
+            Some(Status::Failed),
+            Some(TurnStateOutcome::Accepted),
+            Filter::Failed,
+        ),
+        (true, Some(Status::Interrupted), None, Filter::Failed),
+        (true, Some(Status::Queued), None, Filter::Pending),
+        (true, Some(Status::Running), None, Filter::Pending),
+        (true, Some(Status::Cancelled), None, Filter::Unknown),
+        (true, Some(Status::Skipped), None, Filter::Unknown),
+        (true, None, None, Filter::NoRecord),
+        (
+            false,
+            Some(Status::Succeeded),
+            Some(TurnStateOutcome::Accepted),
+            Filter::NotApplicable,
+        ),
+        (false, None, None, Filter::NotApplicable),
+    ] {
+        assert_eq!(Filter::from_result(supported, status, outcome), expected);
+    }
+}

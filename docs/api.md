@@ -738,7 +738,7 @@ config 返回 `{ name, plaintextKey }`，仅读取服务端会话绑定的当前
 
 | 方法 | 路由 | 主要 query/body | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/api/admin/accounts` | `page`、`pageSize`、`provider`、`groupId`、`search`、`status`、排序字段 | 分页查询账号与汇总 |
+| `GET` | `/api/admin/accounts` | `page`、`pageSize`、`provider`、`groupId`、`search`、`status`、`evaluationStatus`、排序字段、可选 `includeEvaluationHistory` | 分页查询账号与汇总，可预取本页测票历史 |
 | `GET` | `/api/admin/accounts/concurrency` | `accountId`、`page=1`、`pageSize=20` | 查询账号当前并发占用；每页最多 100 条 |
 | `GET` | `/api/admin/accounts/detail` | `accountId` | 查询账号详情、额度和本地用量 |
 | `GET` | `/api/admin/accounts/export` | `accountIds`、`confirm=export_sensitive_accounts` | 显式导出最多 200 个账号的敏感 Provider 文档 |
@@ -775,8 +775,25 @@ config 返回 `{ name, plaintextKey }`，仅读取服务端会话绑定的当前
 - `provider`: `openai` 或 `xai`，省略或空值表示不过滤
 - `groupId`: 分组 ID、`ungrouped`，或省略以不过滤
 - `status`: `normal`、`quota_exhausted`、`rate_limited`、`disabled`、`error`
+- `evaluationStatus`: `stable`、`changed`、`unknown`、`failed`、`pending`、`no_record`、`not_applicable`，省略以不过滤
 - `sortBy`: `email`、`status`、`planType`、`usage`、`lastUsedAt`、`expiresAt`
 - `sortDirection`: `asc`、`desc`
+
+`evaluationStatus` 按最近的快速测票条件筛选，范围为整个账号池，与搜索、账号状态、Provider 和分组取交集后分页，
+返回的 `page.total` 为匹配总数，健康状态汇总仍是全局账号池统计。筛选不会发起新的测票请求
+
+筛选结果与历史图表采用同一来源和最近 28 条记录：存在已结束记录时取最近一次已结束结果，
+新一轮等待或执行中保留上次结果。`stable` 表示成功且票据稳定，`changed` 表示成功且票据变化；
+`failed` 包含失败或执行中断，`unknown` 包含成功但未判定、取消和跳过，`pending` 表示窗口内只有等待或执行中的记录，
+`no_record` 表示当前条件暂无记录。Provider 不支持快速测票的账号只匹配 `not_applicable`，
+不依据其旧测票记录归类。界面的“降智／不降智”仅为测票优选口径，不代表能力评测结论
+
+`includeEvaluationHistory=true` 可在列表响应中预取 `evaluationHistory`，格式与独立历史接口一致，
+采用最近的快速测票条件，每账号最多 28 条，单页最多 100 个账号，仅包含支持快速探票的账号
+空数组表示当前条件暂无记录，预取不可用时省略字段，账号列表仍正常返回，客户端可通过独立历史接口读取和重试
+
+账号的只读 `capabilities.turnStateProbe` 由 Provider 根据认证类型声明，表示是否支持快速探票
+OpenAI OAuth 账号支持此操作，API Key 账号不支持，仍可参加普通能力测评
 
 账号视图的 `capacity` 返回查询时的普通并发容量：`usedSlots` 不含独立审批池和排队请求，
 读取运行态失败时为 `null`；`totalSlots` 是应用账号独立配置或全局默认值后的上限，`null` 表示不限。
@@ -2813,6 +2830,8 @@ HTML 评审仅检查源码，未接入渲染截图或视觉模型
 `timeoutSeconds` 限制整组探测，批量、计划、停止与历史保留沿用现有接口
 
 测票仅支持启用且凭据可用的 OpenAI OAuth 账号，直接使用所填上游模型 ID，沿用账号有效代理与当前 Key 分组或全局客户端身份。
+手动提交、固定计划与自动跟随计划均排除 Provider 声明不支持快速探票的账号
+固定计划移除不支持的账号后若名单为空则暂停，自动跟随计划没有可用账号时继续等待后续时段
 Key 仍用于账号范围授权；测票属于原生账号诊断，不经过模型路由、准入或计费账本，会消耗上游额度，费用和 Token 未观测时保持为空。
 不会主动刷新令牌、自动重试失败请求或改变账号状态
 
@@ -2836,6 +2855,19 @@ Key 仍用于账号范围授权；测票属于原生账号诊断，不经过模�
 Cron 为 5 段，时区由 `host.timezone` 决定，不接受调用方指定。
 保存后返回 `revision`、`settings.timezone`、`nextRunAt` 和 `nextRunAtDisplay`；
 修改、启停与删除须携带当前 revision，过期返回 409，重新加载后再编辑
+
+快速测票计划可选设置 `accountPreference: {groupId}` 启用账号优选，目标分组须存在且启用，
+同一目标分组只能有一个启用的优选计划。测票明确为 `accepted` 时加入目标分组，明确为 `refreshed` 时移出；
+失败、取消、超时及 `unknown` 均不调整分组，其他分组不受影响。票据状态是用户选择的分组规则，
+不能证明模型能力或账号健康。新规则仅作用于其启用后创建的计划批次，不回放历史
+
+检测范围不能依赖目标分组：指定跟随分组时不得选择目标分组，授权 Key 也不能绑定目标分组；
+可使用未绑定分组的 Key 或绑定独立检测分组的 Key。分组变化影响绑定该分组的 Key 的账号调度。
+计划暂停、删除或修改后，在途旧结果不再执行优选。目标分组或账号停用、检测范围或 Key 授权变化时保留现状
+
+优选批次条目的 `observation.accountPreference` 返回 `groupId`、`status` 和可空的 `reason`：
+`joined`、`removed`、`unchanged` 分别表示加入、移出或原本已是目标状态，`skipped` 表示未调整。
+分组变更和测评终态一同持久化，账号与目标分组各记录一条同请求标识的系统审计，保留动作与配置版本
 
 `accountSelection` 缺省为 `{"mode":"fixed"}`，使用 `parameters.accountIds`。
 自动跟随使用 `{"mode":"all"}` 或 `{"mode":"groups","groupIds":["grp_…"]}`，此时 `accountIds` 必须为空。

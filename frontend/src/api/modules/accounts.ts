@@ -1,10 +1,14 @@
 import type { RequestOptions } from '../request'
 import type { RelativeTimeView } from '../time'
+import type { EvaluationHistoryItem } from './evaluations'
 import type { AccountGroupRef } from './groups'
 import request from '../request'
 
 export type AccountStatus
   = 'normal' | 'quota_exhausted' | 'rate_limited' | 'disabled' | 'error'
+
+export type AccountEvaluationStatus
+  = 'stable' | 'changed' | 'unknown' | 'failed' | 'pending' | 'no_record' | 'not_applicable'
 
 export type AccountErrorReason
   = 'account_unverified'
@@ -172,6 +176,7 @@ export interface Account {
 }
 
 export interface AccountCapabilities {
+  turnStateProbe: boolean
   quota: boolean
   quotaRefresh: boolean
   profile: boolean
@@ -231,6 +236,7 @@ export interface AccountListResponse {
   items: Account[]
   page: AccountPageMeta
   summary: AccountSummary
+  evaluationHistory?: EvaluationHistoryItem[]
 }
 
 export interface AccountRefreshResponse {
@@ -401,9 +407,11 @@ interface AccountListParams {
   search?: string
   provider?: string
   status?: string
+  evaluationStatus?: AccountEvaluationStatus
   groupId?: string
   sortBy?: string
   sortDirection?: string
+  includeEvaluationHistory?: boolean
 }
 
 interface AccountIdParam {

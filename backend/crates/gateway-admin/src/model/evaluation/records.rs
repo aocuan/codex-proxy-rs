@@ -66,10 +66,12 @@ impl EvaluationAccountSelection {
     }
 }
 
-/// 仓储仅提供账号存在性和启用事实，授权继续复用 Core 快照
+/// 仓储提供账号、认证类型与分组事实，能力由 Provider 判断，授权复用 Core 快照
 #[derive(Debug, Clone)]
 pub struct EvaluationAccountState {
     pub id: String,
+    pub provider_kind: String,
+    pub authentication_kind: String,
     pub enabled: bool,
     pub group_ids: Vec<String>,
 }
@@ -135,6 +137,8 @@ pub struct EvaluationProfile {
     #[serde(default, skip_serializing_if = "EvaluationAccountSelection::is_fixed")]
     pub account_selection: EvaluationAccountSelection,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_preference: Option<EvaluationPreferenceSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub definition: Option<EvaluationDefinition>,
     pub prompt: String,
     pub prompt_version: String,
@@ -148,6 +152,7 @@ impl EvaluationProfile {
     pub fn current(kind: EvaluationKind, gateway_version: &str) -> Self {
         Self {
             account_selection: Default::default(),
+            account_preference: None,
             definition: None,
             prompt: kind.prompt().to_owned(),
             prompt_version: kind.prompt_version().to_owned(),
@@ -164,6 +169,7 @@ impl EvaluationProfile {
         };
         Self {
             account_selection: Default::default(),
+            account_preference: None,
             definition: Some(definition.clone()),
             prompt: definition.prompt.clone(),
             prompt_version: definition.version(),
@@ -344,6 +350,54 @@ pub struct EvaluationCompletion {
     pub duration_ms: i64,
     pub completed_at: DateTime<Utc>,
     pub observation: EvaluationObservation,
+    pub account_preference: Option<EvaluationPreferenceDecision>,
+}
+
+/// 测评计划针对一个目标分组的自动维护规则
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EvaluationAccountPreference {
+    pub group_id: String,
+}
+
+/// 本轮冻结的规则和计划版本，过期结果不能改变分组
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EvaluationPreferenceSnapshot {
+    pub group_id: String,
+    pub plan_revision: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvaluationPreferenceDecision {
+    pub rule: EvaluationPreferenceSnapshot,
+    pub desired_member: Option<bool>,
+    pub expected_revision: Option<crate::model::Revision>,
+    pub skip_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluationPreferenceStatus {
+    Joined,
+    Removed,
+    Unchanged,
+    Skipped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvaluationPreferenceResult {
+    pub group_id: String,
+    pub status: EvaluationPreferenceStatus,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvaluationFinish {
+    pub finished: bool,
+    pub config_revision: Option<crate::model::Revision>,
+    pub retry_preference: bool,
 }
 
 /// 已终结请求的只读观测快照；缺失值不估算，费用仍以 Core 用量记录为准
@@ -352,6 +406,8 @@ pub struct EvaluationCompletion {
 pub struct EvaluationObservation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_state: Option<super::TurnStateProbeResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_preference: Option<EvaluationPreferenceResult>,
     pub request_history_available: bool,
     pub provider: Option<String>,
     pub account_id: Option<String>,
@@ -374,6 +430,7 @@ impl From<crate::model::observability::UsageRecord> for EvaluationObservation {
         Self {
             request_history_available: true,
             turn_state: None,
+            account_preference: None,
             provider: record.provider_kind,
             account_id: record.provider_account_ref,
             upstream_model: record.upstream_model_id,
@@ -398,6 +455,8 @@ impl From<crate::model::observability::UsageRecord> for EvaluationObservation {
 pub struct EvaluationPlanSettings {
     #[serde(default)]
     pub account_selection: EvaluationAccountSelection,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_preference: Option<EvaluationAccountPreference>,
     pub name: String,
     pub parameters: EvaluationParameters,
     pub enabled: bool,
@@ -411,6 +470,18 @@ pub struct EvaluationPlanSettings {
 impl EvaluationPlanSettings {
     pub fn validate_parameters(&self) -> Result<(), AdminError> {
         self.account_selection.validate()?;
+        if let Some(preference) = &self.account_preference {
+            gateway_core::account::scope::AccountGroupId::new(preference.group_id.clone())
+                .map_err(|_| AdminError::invalid("优选分组 ID 无效"))?;
+            if self.parameters.kind != EvaluationKind::Turnstate {
+                return Err(AdminError::invalid("账号优选目前仅支持快速测票"));
+            }
+            if let EvaluationAccountSelection::Groups { group_ids } = &self.account_selection
+                && group_ids.contains(&preference.group_id)
+            {
+                return Err(AdminError::invalid("检测范围不能包含优选分组"));
+            }
+        }
         if self.account_selection.is_fixed() {
             if self.enabled || !self.parameters.account_ids.is_empty() {
                 self.parameters.validate()?;

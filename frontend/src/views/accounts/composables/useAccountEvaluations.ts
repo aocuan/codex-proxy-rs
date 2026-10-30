@@ -1,35 +1,52 @@
 import type { Ref } from 'vue'
 import type { Account, EvaluationHistoryItem, EvaluationItem, EvaluationRun } from '@/api'
 import { useDocumentVisibility, useIntervalFn } from '@vueuse/core'
+import { isEqual } from 'es-toolkit'
 import { computed, shallowRef, watch } from 'vue'
 import { getAccountEvaluationHistory, getEvaluationDetail } from '@/api'
 import { useRequestState } from '@/composables/useRequestState'
 
-export function useAccountEvaluations(accounts: Ref<Account[]>) {
+export interface AccountEvaluationSnapshot {
+  accountIds: string[]
+  items: EvaluationHistoryItem[] | undefined
+}
+
+export function useAccountEvaluations(accounts: Ref<Account[]>, options: {
+  enabled: Ref<boolean>
+  prefetched: Ref<AccountEvaluationSnapshot | undefined>
+}) {
   const visibility = useDocumentVisibility()
   const request = useRequestState()
   const resultRequest = useRequestState()
   const history = shallowRef(new Map<string, EvaluationHistoryItem[]>())
-  const ids = computed(() => accounts.value.map(account => account.id).join(','))
+  const ids = computed(() => accounts.value.map(account => account.id).sort().join(','))
   const open = shallowRef(false)
   const item = shallowRef<EvaluationItem | null>(null)
   const run = shallowRef<EvaluationRun | null>(null)
 
+  function updateHistory(items: EvaluationHistoryItem[], accountIds: string[]) {
+    const grouped = new Map(accountIds.map(id => [id, [] as EvaluationHistoryItem[]]))
+    for (const point of items)
+      grouped.get(point.accountId)?.push(point)
+    for (const [id, points] of grouped) {
+      const previous = history.value.get(id)
+      if (previous && isEqual(previous, points))
+        grouped.set(id, previous)
+    }
+    if (grouped.size !== history.value.size || [...grouped].some(([id, points]) => history.value.get(id) !== points))
+      history.value = grouped
+  }
+
   async function refresh() {
-    if (!ids.value || visibility.value !== 'visible')
+    if (!options.enabled.value || !ids.value || visibility.value !== 'visible')
       return
+    const accountIds = ids.value.split(',')
     const id = request.start()
     try {
-      const result = await getAccountEvaluationHistory(ids.value.split(','), { signal: request.signal, silent: true })
+      const result = await getAccountEvaluationHistory(accountIds, { signal: request.signal, silent: true })
       if (!request.isCurrent(id))
         return
-      const grouped = new Map<string, EvaluationHistoryItem[]>()
-      for (const point of result) {
-        const points = grouped.get(point.accountId) ?? []
-        points.push(point)
-        grouped.set(point.accountId, points)
-      }
-      history.value = grouped
+      updateHistory(result, accountIds)
     }
     catch (error) {
       request.fail(id, error)
@@ -58,12 +75,25 @@ export function useAccountEvaluations(accounts: Ref<Account[]>) {
     }
   }
 
-  watch([ids, visibility], ([accountIds], previous) => {
+  watch([
+    ids,
+    visibility,
+    options.enabled,
+    options.prefetched,
+  ], ([accountIds, , enabled, prefetched], previous) => {
     request.invalidate()
     if (accountIds !== previous?.[0]) {
-      history.value = new Map()
       resultRequest.invalidate()
       open.value = false
+    }
+    if (!enabled)
+      return
+    if (prefetched !== previous?.[3] && prefetched?.items !== undefined
+      && [...prefetched.accountIds].sort().join(',') === accountIds) {
+      const id = request.start()
+      updateHistory(prefetched.items, prefetched.accountIds)
+      request.finish(id)
+      return
     }
     if (accountIds && visibility.value === 'visible')
       void refresh()

@@ -5,17 +5,21 @@ use gateway_admin::{model::evaluation::EvaluationAccountState, ports::store::Adm
 use sqlx::PgPool;
 
 pub(super) async fn list(pool: &PgPool) -> AdminStoreResult<Vec<EvaluationAccountState>> {
-    let rows: Vec<(String, bool, Vec<String>)> = sqlx::query_as(
-        "select a.id, a.enabled, array(select g.account_group_id from account_group_accounts g where g.provider_account_id = a.id order by g.account_group_id)
+    let rows: Vec<(String, bool, Vec<String>, String, String)> = sqlx::query_as(
+        "select a.id, a.enabled, array(select g.account_group_id from account_group_accounts g where g.provider_account_id = a.id order by g.account_group_id), a.provider_kind, a.authentication_kind
          from provider_accounts a order by a.id")
         .fetch_all(pool).await.map_err(db_error)?;
     Ok(rows
         .into_iter()
-        .map(|(id, enabled, group_ids)| EvaluationAccountState {
-            id,
-            enabled,
-            group_ids,
-        })
+        .map(
+            |(id, enabled, group_ids, provider_kind, authentication_kind)| EvaluationAccountState {
+                id,
+                provider_kind,
+                authentication_kind,
+                enabled,
+                group_ids,
+            },
+        )
         .collect())
 }
 

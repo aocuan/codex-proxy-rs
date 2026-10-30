@@ -177,6 +177,15 @@
       "label": "賬號篩選與操作",
       "searchLabel": "搜索賬號",
       "statusLabel": "按賬號狀態篩選",
+      "evaluationStatusLabel": "按測票狀態篩選",
+      "evaluationStatusHelp": "按最近測票條件的結果篩選，進行中保留上次結果，票據訊號不代表能力評測結論",
+      "allEvaluationStates": "全部測票狀態",
+      "evaluationStable": "不降智 · 票據穩定",
+      "evaluationChanged": "降智 · 票據變化",
+      "evaluationUnknown": "未判定",
+      "evaluationFailed": "檢測失敗",
+      "evaluationPending": "首次檢測中",
+      "evaluationNoRecord": "暫無記錄",
       "groupLabel": "按賬號分組篩選",
       "deleteSelected": "刪除 ({count})",
       "exportSelected": "導出 ({count})",
@@ -629,7 +638,10 @@
       "refreshSettingPaused": "自動刷新設置，當前已暫停",
       "seconds": "{seconds} 秒",
       "evaluateSelected": "測評所選",
-      "evaluateMax": "測評所選（最多 20 個）"
+      "evaluateMax": "測評所選（最多 20 個）",
+      "notApplicable": "不適用",
+      "oauthOnly": "快速探票僅支持 OpenAI OAuth 帳號，API Key 帳號自動排除",
+      "probeExecutionHint": "直接探測所填上游模型並沿用帳號代理，授權 Key 用於範圍校驗，消耗上游額度但不進入模型計費帳本"
     }
   }
 }

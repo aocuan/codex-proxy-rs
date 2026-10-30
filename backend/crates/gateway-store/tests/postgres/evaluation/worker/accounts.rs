@@ -13,6 +13,7 @@ async fn due_plan(
                 id: "eval_plan_accounts".to_owned(),
                 expected_revision: None,
                 settings: EvaluationPlanSettings {
+                    account_preference: None,
                     account_selection: selection,
                     name: "跟随账号".to_owned(),
                     parameters: parameters(accounts, 1),

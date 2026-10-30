@@ -85,6 +85,7 @@ pub(crate) async fn load_admin_account_page(
                    lower(coalesce(a.upstream_account_id, '')) like $4 escape '\\' or
                    lower(coalesce(a.upstream_user_id, '')) like $4 escape '\\')
               and ($5::text is null or status.admin_status = $5)
+              and ($13::text[] is null or a.id = any($13::text[]))
               and ($6::smallint = 0 or
                    ($6 = 1 and exists (
                      select 1
@@ -166,6 +167,7 @@ pub(crate) async fn load_admin_account_page(
                     .bind(usage_ids)
                     .bind(usage_tokens)
                     .bind(usage_latest)
+                    .bind(query.account_ids.clone())
                     .fetch_all(&mut *snapshot.tx)
                     .await
                     .map_err(|source| postgres_unavailable("load admin account page", source))?;

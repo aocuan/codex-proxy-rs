@@ -102,6 +102,16 @@ pub(super) async fn enqueue_scheduled(
         .clone_from(&settings.parameters.account_ids);
     if settings.parameters != template
         || settings.account_selection != command.seed.profile.account_selection
+        || settings
+            .account_preference
+            .as_ref()
+            .map(|rule| (&rule.group_id, command.expected_revision))
+            != command
+                .seed
+                .profile
+                .account_preference
+                .as_ref()
+                .map(|rule| (&rule.group_id, rule.plan_revision))
     {
         return Err(conflict("测评计划参数已变化"));
     }

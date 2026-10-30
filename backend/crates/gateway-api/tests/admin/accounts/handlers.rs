@@ -9,6 +9,211 @@ use tower::ServiceExt as _;
 
 use super::super::{AdminTestFixture, AdminTestState};
 
+fn history_prefetch_account() -> gateway_admin::model::accounts::AccountPageItem {
+    use gateway_core::account::{AccountStatusFacts, CredentialState, QuotaState};
+    account_page_item(
+        AccountStatusFacts {
+            enabled: true,
+            credential_state: CredentialState::Ready,
+            access_token_expires_at: None,
+            quota: QuotaState::unknown(),
+            cooldown: None,
+            last_error_reason: None,
+            last_error_message: None,
+        },
+        chrono::Utc::now(),
+        "oauth",
+    )
+}
+
+fn account_list_request(uri: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header("x-request-id", "req_history_prefetch")
+        .header(header::COOKIE, "cpr_session=valid-session")
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn account_list_prefetch_uses_current_page_and_server_time() {
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    *fixture.account.lock().unwrap() = Some(history_prefetch_account());
+    let point = serde_json::from_value(serde_json::json!({
+        "id": "eval_item_prefetch", "runId": "eval_prefetch", "accountId": "acct_cooldown",
+        "name": "快速测票", "profileVersion": "turnstate-test", "graderType": "none",
+        "judgmentStatus": null, "kind": "turnstate", "model": "gpt-6.1-sol",
+        "reasoningEffort": "low", "status": "running", "verdict": "ungraded",
+        "finalAnswer": null, "turnState": null, "durationMs": null,
+        "createdAt": "2026-10-01T00:00:00Z", "startedAt": "2026-10-01T00:00:05Z",
+        "completedAt": null,
+    }))
+    .unwrap();
+    *fixture.evaluations.history.lock().unwrap() = Some(Ok(vec![point]));
+    let response = admin::accounts::router::<AdminTestState>()
+        .with_state(fixture.state())
+        .oneshot(account_list_request(
+            "/api/admin/accounts?includeEvaluationHistory=true",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 32768).await.unwrap()).unwrap();
+    assert_eq!(body["data"]["items"][0]["id"], "acct_cooldown");
+    let point = &body["data"]["evaluationHistory"][0];
+    assert_eq!(point["accountId"], "acct_cooldown");
+    assert_eq!(point["status"], "running");
+    assert_eq!(point["testedAtDisplay"], "2026-10-01 08:00:05");
+    assert_eq!(
+        *fixture.evaluations.history_queries.lock().unwrap(),
+        vec![vec!["acct_cooldown".to_owned()]]
+    );
+}
+
+#[tokio::test]
+async fn account_list_does_not_query_history_without_opt_in() {
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    *fixture.account.lock().unwrap() = Some(history_prefetch_account());
+    let response = admin::accounts::router::<AdminTestState>()
+        .with_state(fixture.state())
+        .oneshot(account_list_request("/api/admin/accounts"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 32768).await.unwrap()).unwrap();
+    assert!(body["data"].get("evaluationHistory").is_none());
+    assert!(
+        fixture
+            .evaluations
+            .history_queries
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn account_list_remains_available_when_history_prefetch_fails() {
+    use gateway_admin::ports::store::{AdminStoreError, AdminStoreErrorKind};
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    *fixture.account.lock().unwrap() = Some(history_prefetch_account());
+    *fixture.evaluations.history.lock().unwrap() = Some(Err(AdminStoreError::new(
+        AdminStoreErrorKind::Unavailable,
+        "evaluation",
+        "history unavailable",
+    )));
+    let response = admin::accounts::router::<AdminTestState>()
+        .with_state(fixture.state())
+        .oneshot(account_list_request(
+            "/api/admin/accounts?includeEvaluationHistory=true",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 32768).await.unwrap()).unwrap();
+    assert_eq!(body["data"]["items"][0]["id"], "acct_cooldown");
+    assert!(body["data"].get("evaluationHistory").is_none());
+}
+
+#[tokio::test]
+async fn account_list_distinguishes_empty_history_from_unavailable_prefetch() {
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    *fixture.account.lock().unwrap() = Some(history_prefetch_account());
+    *fixture.evaluations.history.lock().unwrap() = Some(Ok(Vec::new()));
+    let response = admin::accounts::router::<AdminTestState>()
+        .with_state(fixture.state())
+        .oneshot(account_list_request(
+            "/api/admin/accounts?includeEvaluationHistory=true",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 32768).await.unwrap()).unwrap();
+    assert_eq!(body["data"]["evaluationHistory"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn api_key_accounts_remain_in_the_directory_without_ticket_history_queries() {
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    let mut account = history_prefetch_account();
+    account.account.authentication_kind = "api_key".into();
+    *fixture.account.lock().unwrap() = Some(account);
+    let response = admin::accounts::router::<AdminTestState>()
+        .with_state(fixture.state())
+        .oneshot(account_list_request(
+            "/api/admin/accounts?includeEvaluationHistory=true",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 32768).await.unwrap()).unwrap();
+    assert_eq!(body["data"]["items"][0]["id"], "acct_cooldown");
+    assert_eq!(
+        body["data"]["items"][0]["capabilities"]["turnStateProbe"],
+        false
+    );
+    assert_eq!(body["data"]["evaluationHistory"], serde_json::json!([]));
+    assert!(
+        fixture
+            .evaluations
+            .history_queries
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn evaluation_filter_limits_directory_results_and_keeps_health_summary_separate() {
+    use gateway_admin::model::evaluation::{
+        EvaluationAccountResultFact, EvaluationItemStatus, TurnStateOutcome,
+    };
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    *fixture.account.lock().unwrap() = Some(history_prefetch_account());
+    *fixture.evaluations.account_results.lock().unwrap() =
+        Some(Ok(vec![EvaluationAccountResultFact {
+            account_id: "acct_cooldown".into(),
+            provider_kind: "openai".into(),
+            authentication_kind: "oauth".into(),
+            status: Some(EvaluationItemStatus::Succeeded),
+            outcome: Some(TurnStateOutcome::Accepted),
+        }]));
+    let app = admin::accounts::router::<AdminTestState>().with_state(fixture.state());
+    for (value, expected) in [("stable", 1), ("changed", 0), ("no_record", 0)] {
+        let response = app
+            .clone()
+            .oneshot(account_list_request(&format!(
+                "/api/admin/accounts?evaluationStatus={value}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 32768).await.unwrap()).unwrap();
+        assert_eq!(body["data"]["items"].as_array().unwrap().len(), expected);
+        assert_eq!(body["data"]["page"]["total"], expected);
+        assert_eq!(body["data"]["summary"]["total"], 1);
+    }
+    let response = app
+        .oneshot(account_list_request(
+            "/api/admin/accounts?evaluationStatus=invalid",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test]
 async fn account_proxy_binding_is_distinct_from_the_redacted_endpoint() {
     use chrono::Utc;

@@ -14,6 +14,8 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
   const name = shallowRef('')
   const intervalMinutes = shallowRef('60')
   const enabled = shallowRef(true)
+  const preferenceEnabled = shallowRef(false)
+  const preferenceGroupId = shallowRef('')
   const accountSelection = ref<EvaluationAccountSelection>({ mode: 'fixed' })
   const action = useAsyncAction()
   let submission: { fingerprint: string, id: string } | undefined
@@ -42,6 +44,8 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
       : '60'
     enabled.value = plan?.settings.enabled ?? true
     accountSelection.value = structuredClone(plan?.settings.accountSelection ?? { mode: 'fixed' })
+    preferenceEnabled.value = !!plan?.settings.accountPreference
+    preferenceGroupId.value = plan?.settings.accountPreference?.groupId ?? ''
     submission = undefined
     open.value = true
   }
@@ -73,6 +77,16 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
       ZNotification.warning({ message: '请选择自动跟随的账号分组' })
       return
     }
+    if (isPlan.value && preferenceEnabled.value) {
+      if (params.kind !== 'turnstate' || !preferenceGroupId.value) {
+        ZNotification.warning({ message: '账号优选仅支持快速测票，请选择目标分组' })
+        return
+      }
+      if (accountSelection.value.mode === 'groups' && accountSelection.value.groupIds.includes(preferenceGroupId.value)) {
+        ZNotification.warning({ message: '检测范围不能包含优选分组' })
+        return
+      }
+    }
     const grader = params.definition?.grader
     if ((grader?.type === 'exact' && !grader.expected.trim()) || (grader?.type === 'regex' && !grader.pattern.trim())) {
       ZNotification.warning({ message: '请填写判分规则' })
@@ -101,6 +115,9 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
           intervalMinutes: minutes,
           enabled: enabled.value,
           accountSelection: accountSelection.value,
+          accountPreference: preferenceEnabled.value
+            ? { groupId: preferenceGroupId.value }
+            : undefined,
           parameters: params,
         }
         const plan = editing.value
@@ -135,6 +152,8 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
     name,
     intervalMinutes,
     enabled,
+    preferenceEnabled,
+    preferenceGroupId,
     accountSelection,
     saving: action.loading,
     show,

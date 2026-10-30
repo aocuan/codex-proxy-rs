@@ -25,6 +25,8 @@ pub enum MutationAuditOperation {
     EvaluationPlanCreate,
     EvaluationPlanUpdate,
     EvaluationPlanDelete,
+    EvaluationAccountPreference { joined: bool },
+    EvaluationGroupPreference { joined: bool },
     EvaluationSettingsUpdate,
     BackupCreate,
     BackupDelete,
@@ -93,6 +95,22 @@ impl MutationAuditOperation {
             Self::EvaluationPlanCreate => ("create", "evaluation_plan"),
             Self::EvaluationPlanUpdate => ("update", "evaluation_plan"),
             Self::EvaluationPlanDelete => ("delete", "evaluation_plan"),
+            Self::EvaluationAccountPreference { joined } => (
+                if joined {
+                    "auto_group_join"
+                } else {
+                    "auto_group_remove"
+                },
+                "provider_account",
+            ),
+            Self::EvaluationGroupPreference { joined } => (
+                if joined {
+                    "auto_group_join"
+                } else {
+                    "auto_group_remove"
+                },
+                "account_group",
+            ),
             Self::EvaluationSettingsUpdate => ("update", "evaluation_settings"),
             Self::BackupCreate => ("backup.created", "backup"),
             Self::BackupDelete => ("backup.delete_requested", "backup"),

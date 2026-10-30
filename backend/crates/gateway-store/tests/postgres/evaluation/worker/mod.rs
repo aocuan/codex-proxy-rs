@@ -628,6 +628,7 @@ async fn scheduled_work_skips_missed_slots_and_uses_the_saved_experiment() {
                 id: "eval_plan_due".to_owned(),
                 expected_revision: None,
                 settings: EvaluationPlanSettings {
+                    account_preference: None,
                     account_selection: Default::default(),
                     name: "定时检查".to_owned(),
                     parameters: parameters(&["acct_right"], 1),
@@ -676,6 +677,7 @@ async fn deployment_timezone_change_rebases_the_next_slot_without_replaying_the_
                 id: "eval_plan_timezone".to_owned(),
                 expected_revision: None,
                 settings: EvaluationPlanSettings {
+                    account_preference: None,
                     account_selection: Default::default(),
                     name: "每天检查".to_owned(),
                     parameters: parameters(&["acct_right"], 1),
@@ -715,6 +717,7 @@ async fn minute_plan_advances_atomically_without_drift_or_timezone_rebase() {
             None,
             None,
             EvaluationPlanSettings {
+                account_preference: None,
                 account_selection: Default::default(),
                 name: "45 分钟检查".to_owned(),
                 parameters: parameters(&["acct_right"], 1),

@@ -1,5 +1,7 @@
 import type { TableSort } from '@codex-proxy/ui'
-import type { Account } from '@/api'
+import type { Ref } from 'vue'
+import type { AccountEvaluationSnapshot } from './useAccountEvaluations'
+import type { Account, AccountEvaluationStatus } from '@/api'
 
 import { useDocumentVisibility, useTimeoutPoll } from '@vueuse/core'
 import { computed, onMounted, shallowRef, watch } from 'vue'
@@ -8,14 +10,16 @@ import { usePagedQuery } from '@/composables/usePagedQuery'
 import { useTableSort } from '@/composables/useTableSort'
 import { accountColumns } from '../constants'
 
-export function useAccountsQuery() {
+export function useAccountsQuery(options: { includeEvaluationHistory: Ref<boolean> }) {
   const searchQuery = shallowRef('')
   const providerQuery = shallowRef('')
   const statusQuery = shallowRef('')
+  const evaluationStatusQuery = shallowRef<AccountEvaluationStatus | ''>('')
   const groupQuery = shallowRef('')
   const sort = useTableSort(accountColumns, 'accounts')
   const refreshInterval = shallowRef('0')
   const refreshing = shallowRef(false)
+  const evaluationSnapshot = shallowRef<AccountEvaluationSnapshot>()
   const accountSummary = shallowRef({
     total: 0,
     normal: 0,
@@ -27,19 +31,25 @@ export function useAccountsQuery() {
 
   const query = usePagedQuery({
     initialPageSize: 20,
-    load: ({ page, pageSize }, options) =>
+    load: ({ page, pageSize }, requestOptions) =>
       getAccounts({
         page,
         pageSize,
         search: searchQuery.value,
         provider: providerQuery.value || undefined,
         status: statusQuery.value || undefined,
+        evaluationStatus: evaluationStatusQuery.value || undefined,
         groupId: groupQuery.value || undefined,
         sortBy: sort.value?.key,
         sortDirection: sort.value?.direction,
-      }, options),
+        includeEvaluationHistory: options.includeEvaluationHistory.value || undefined,
+      }, requestOptions),
     onSuccess: (result) => {
       accountSummary.value = result.summary
+      evaluationSnapshot.value = {
+        accountIds: result.items.filter(account => account.capabilities.turnStateProbe).map(account => account.id),
+        items: result.evaluationHistory,
+      }
     },
   })
 
@@ -106,7 +116,12 @@ export function useAccountsQuery() {
     onCleanup(() => clearTimeout(timer))
   })
 
-  watch([providerQuery, statusQuery, groupQuery], () => {
+  watch([
+    providerQuery,
+    statusQuery,
+    groupQuery,
+    evaluationStatusQuery,
+  ], () => {
     void query.reloadFromStart()
   })
 
@@ -123,11 +138,13 @@ export function useAccountsQuery() {
     refreshInterval,
     refreshAccounts,
     accounts: query.items,
+    evaluationSnapshot,
     loadAccounts: query.execute,
     refreshAccountsSilently: () => query.execute({ silent: true }),
     searchQuery,
     providerQuery,
     statusQuery,
+    evaluationStatusQuery,
     groupQuery,
     sort,
     accountSummary,

@@ -1,4 +1,6 @@
-//! 不涉及测评的管理端 fixture 必须显式注入端口，意外调用立即使测试失败
+//! 测评测试端口允许显式配置历史查询，未配置的方法拒绝意外调用
+
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -9,10 +11,23 @@ use gateway_admin::{
 };
 use gateway_core::{engine::execution::*, error::GatewayError, routing::PublicModelId};
 
-pub struct UnusedEvaluationRepository;
+#[derive(Default)]
+pub struct TestEvaluationRepository {
+    pub account_results: Mutex<Option<AdminStoreResult<Vec<EvaluationAccountResultFact>>>>,
+    pub history: Mutex<Option<AdminStoreResult<Vec<EvaluationHistoryItem>>>>,
+    pub history_queries: Mutex<Vec<Vec<String>>>,
+}
 
 #[async_trait]
-impl EvaluationRepository for UnusedEvaluationRepository {
+impl EvaluationRepository for TestEvaluationRepository {
+    async fn account_result_facts(&self) -> AdminStoreResult<Vec<EvaluationAccountResultFact>> {
+        self.account_results
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("this fixture does not exercise evaluation account filtering")
+    }
+
     async fn account_states(&self) -> AdminStoreResult<Vec<EvaluationAccountState>> {
         unreachable!()
     }
@@ -92,11 +107,19 @@ impl EvaluationRepository for UnusedEvaluationRepository {
 
     async fn account_history(
         &self,
-        _account_ids: &[String],
+        account_ids: &[String],
         _limit: u32,
         _source_id: Option<&str>,
     ) -> AdminStoreResult<Vec<EvaluationHistoryItem>> {
-        unreachable!("this fixture does not exercise evaluations")
+        self.history_queries
+            .lock()
+            .unwrap()
+            .push(account_ids.to_vec());
+        self.history
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("this fixture does not exercise evaluation history")
     }
 
     async fn load_run(&self, _id: &str) -> AdminStoreResult<Option<EvaluationRunDetail>> {
@@ -135,7 +158,7 @@ impl EvaluationRepository for UnusedEvaluationRepository {
         &self,
         _item_id: &str,
         _completion: EvaluationCompletion,
-    ) -> AdminStoreResult<bool> {
+    ) -> AdminStoreResult<EvaluationFinish> {
         unreachable!("this fixture does not exercise evaluations")
     }
 

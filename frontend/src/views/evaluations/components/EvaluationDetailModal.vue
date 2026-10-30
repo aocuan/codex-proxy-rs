@@ -4,7 +4,7 @@ import { ZButton, ZDialog, ZEmpty, ZTable, ZTag } from '@codex-proxy/ui'
 import { turnStateLabels } from '@/components/evaluation/presenter'
 import { durationText, itemColumns, kindLabels, runStatus, statusLabels, verdictLabels } from '../presenter'
 
-defineProps<{ detail: EvaluationDetail | null, loading: boolean, error: string, stopping: boolean, retryingItemId: string | null, accountName: (id: string) => string }>()
+defineProps<{ detail: EvaluationDetail | null, loading: boolean, error: string, stopping: boolean, retryingItemId: string | null, accountName: (id: string) => string, groupName: (id: string) => string }>()
 const emit = defineEmits<{
   retryJudgment: [item: EvaluationItem]
   refresh: []
@@ -13,6 +13,12 @@ const emit = defineEmits<{
   compare: [item: EvaluationItem, run: EvaluationRun]
 }>()
 const open = defineModel<boolean>({ required: true })
+const preferenceLabels = {
+  joined: '已加入',
+  removed: '已移出',
+  unchanged: '保持不变',
+  skipped: '未调整',
+}
 </script>
 
 <template>
@@ -64,6 +70,7 @@ const open = defineModel<boolean>({ required: true })
             {{ row.observation.turnState ? turnStateLabels[row.observation.turnState.outcome] : row.judgment?.status === 'queued' ? '等待判题' : row.judgment?.status === 'running' ? '正在判题' : verdictLabels[row.verdict] }}
           </ZTag>
           <span v-if="row.judgment" class="mt-1 block text-cp-xs text-cp-text-tertiary">AI 评审</span>
+          <span v-if="row.observation.accountPreference" class="mt-1 block text-cp-xs text-cp-text-secondary" :title="row.observation.accountPreference.reason ?? undefined">{{ groupName(row.observation.accountPreference.groupId) }} · {{ preferenceLabels[row.observation.accountPreference.status] }}{{ row.observation.accountPreference.reason ? `（${row.observation.accountPreference.reason}）` : '' }}</span>
         </template>
         <template #duration="{ row }">
           {{ durationText(row.durationMs) }}
