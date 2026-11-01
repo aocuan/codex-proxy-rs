@@ -103,9 +103,9 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fork-container-cargo
-          key: fork-container-cargo-v1-${{ matrix.arch }}-${{ hashFiles('backend/Cargo.lock', 'backend/rust-toolchain.toml', 'backend/**/Cargo.toml', 'deploy/Dockerfile', '.github/actions/cargo-cache/Dockerfile') }}
+          key: fork-container-cargo-v2-${{ matrix.arch }}-${{ hashFiles('backend/Cargo.lock', 'backend/rust-toolchain.toml', 'backend/**/Cargo.toml', 'deploy/Dockerfile', '.github/actions/cargo-cache/Dockerfile') }}
           restore-keys: |
-            fork-container-cargo-v1-${{ matrix.arch }}-
+            fork-container-cargo-v2-${{ matrix.arch }}-
 
       - name: Restore Cargo mounts to BuildKit
         id: cargo-restore
@@ -115,6 +115,9 @@ jobs:
           builder: ${{ steps.buildx.outputs.name }}
           path: ${{ runner.temp }}/fork-container-cargo
           architecture: ${{ matrix.arch }}
+
+      - name: Release restored Cargo snapshot
+        run: rm -rf "$RUNNER_TEMP/fork-container-cargo"
 
       - name: Login to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0

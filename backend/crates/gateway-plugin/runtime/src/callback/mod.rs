@@ -20,6 +20,7 @@ mod model;
 pub(crate) mod outbound;
 mod ports;
 pub(crate) mod private_state;
+mod replay;
 pub(crate) mod request_limits;
 mod resources;
 mod scope;

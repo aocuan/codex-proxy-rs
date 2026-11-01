@@ -144,6 +144,7 @@ async fn usage_summary_preserves_counts_latency_samples_and_costs_across_read_pa
                 range,
                 filter,
                 gateway_admin::model::observability::Granularity::Hour,
+                true,
             )
             .await
             .unwrap()
@@ -233,6 +234,7 @@ async fn usage_summary_preserves_counts_latency_samples_and_costs_across_read_pa
             full,
             exact_filter,
             gateway_admin::model::observability::Granularity::Hour,
+            true,
         )
         .await
         .unwrap();
@@ -302,6 +304,7 @@ async fn provider_counts_match_for_rollups_boundaries_and_filtered_facts() {
                 range,
                 filter.clone(),
                 gateway_admin::model::observability::Granularity::Hour,
+                true,
             )
             .await
             .map(|snapshot| snapshot.overview)
@@ -411,6 +414,7 @@ async fn insights_share_bucket_states_without_merging_exact_percentiles() {
                 range,
                 filter.clone(),
                 gateway_admin::model::observability::Granularity::Hour,
+                true,
             )
             .await
             .map(|snapshot| snapshot.overview)
@@ -431,7 +435,7 @@ async fn insights_share_bucket_states_without_merging_exact_percentiles() {
             gateway_admin::model::observability::Granularity::Hour,
         ] {
             let observation = repo
-                .usage_insights_observation(range, filter.clone(), granularity)
+                .usage_insights_observation(range, filter.clone(), granularity, true)
                 .await
                 .unwrap();
             assert_eq!(observation.overview.requests, expected.requests);
@@ -455,8 +459,8 @@ async fn insights_share_bucket_states_without_merging_exact_percentiles() {
 }
 
 #[tokio::test]
-async fn prefix_search_ignores_request_ids_and_matches_snapshot_names() {
-    let Some(database) = TestDatabase::create("analytics_search_prefix").await else {
+async fn contains_search_ignores_request_ids_and_matches_snapshot_names() {
+    let Some(database) = TestDatabase::create("analytics_search_contains").await else {
         return;
     };
     let start = Utc::now() - TimeDelta::hours(1);
@@ -471,7 +475,7 @@ async fn prefix_search_ignores_request_ids_and_matches_snapshot_names() {
             ObservabilityRange::new(start - TimeDelta::seconds(1), start + TimeDelta::seconds(1))
                 .unwrap(),
             UsageRecordFilter {
-                search: Some("literal_".to_owned()),
+                search: Some("eral_".to_owned()),
                 ..Default::default()
             },
         )
@@ -1110,6 +1114,7 @@ async fn persisted_histograms_merge_long_tails_and_distinguish_empty_from_zero()
             range,
             Default::default(),
             gateway_admin::model::observability::Granularity::Hour,
+            true,
         )
         .await
         .map(|snapshot| snapshot.overview)
@@ -1122,6 +1127,7 @@ async fn persisted_histograms_merge_long_tails_and_distinguish_empty_from_zero()
                 ..Default::default()
             },
             gateway_admin::model::observability::Granularity::Hour,
+            true,
         )
         .await
         .map(|snapshot| snapshot.overview)
@@ -1156,6 +1162,7 @@ async fn persisted_histograms_merge_long_tails_and_distinguish_empty_from_zero()
             ObservabilityRange::new(start, start + TimeDelta::minutes(10)).unwrap(),
             Default::default(),
             gateway_admin::model::observability::Granularity::Hour,
+            true,
         )
         .await
         .map(|snapshot| snapshot.overview)
@@ -1170,6 +1177,7 @@ async fn persisted_histograms_merge_long_tails_and_distinguish_empty_from_zero()
                 .unwrap(),
             Default::default(),
             gateway_admin::model::observability::Granularity::Hour,
+            true,
         )
         .await
         .map(|snapshot| snapshot.overview)
@@ -1692,6 +1700,185 @@ async fn daily_rank_counts_follow_rebuilds_rollbacks_deletions_and_dirty_days() 
 }
 
 #[tokio::test]
+async fn insights_concurrency_counts_logical_request_overlap_once_per_bucket() {
+    let Some(database) = TestDatabase::create("analytics_concurrency").await else {
+        return;
+    };
+    let start = DateTime::parse_from_rfc3339("2026-09-01T10:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    for (id, from, to) in [
+        ("concurrency_serial_a", 1, Some(4)),
+        ("concurrency_serial_b", 4, Some(6)),
+        ("concurrency_cross_bucket", 10, Some(25)),
+        ("concurrency_overlap", 12, Some(14)),
+        ("concurrency_running", 30, None),
+        ("concurrency_xai", 5, Some(20)),
+        ("concurrency_instant", 7, Some(7)),
+    ] {
+        seed(&database.pool, id, start, &[]).await;
+        sqlx::query("update model_requests set started_at=$2,completed_at=$3,recovery_lease_expires_at=$2+interval '1 hour',provider_kind=case when id='concurrency_xai' then 'xai' else 'openai' end,provider_account_ref='account_concurrency',upstream_transport='http_sse',upstream_send_state='sent',attempt_count=case when id='concurrency_serial_a' then 3 else 1 end,outcome=case when $3 is null then 'running' else 'succeeded' end where id=$1")
+            .bind(id)
+            .bind(start + TimeDelta::minutes(from))
+            .bind(to.map(|minute| start + TimeDelta::minutes(minute)))
+            .execute(&database.pool)
+            .await
+            .unwrap();
+    }
+    drain_analytics(&database.pool).await;
+    let repo = observability_repository(&database.pool);
+    use gateway_admin::model::observability::Granularity::{FifteenMinutes, Hour};
+
+    for (provider, from, to, granularity, expected) in [
+        (
+            Some("openai"),
+            0,
+            60,
+            FifteenMinutes,
+            vec![(0.8, 2), (2.0 / 3.0, 1), (1.0, 1), (1.0, 1)],
+        ),
+        (Some("openai"), 0, 10, FifteenMinutes, vec![(0.5, 1)]),
+        (Some("openai"), 4, 6, FifteenMinutes, vec![(1.0, 1)]),
+        (
+            Some("openai"),
+            3,
+            17,
+            FifteenMinutes,
+            vec![(5.0 / 6.0, 2), (1.0, 1)],
+        ),
+        (Some("openai"), 35, 40, FifteenMinutes, vec![(1.0, 1)]),
+        (Some("openai"), -15, 0, FifteenMinutes, vec![(0.0, 0)]),
+        (Some("openai"), 0, 60, Hour, vec![(13.0 / 15.0, 2)]),
+        (
+            Some("xai"),
+            0,
+            60,
+            FifteenMinutes,
+            vec![(2.0 / 3.0, 1), (1.0 / 3.0, 1), (0.0, 0), (0.0, 0)],
+        ),
+        (
+            Some("xai"),
+            10,
+            17,
+            FifteenMinutes,
+            vec![(1.0, 1), (1.0, 1)],
+        ),
+        (
+            None,
+            0,
+            60,
+            FifteenMinutes,
+            vec![(22.0 / 15.0, 3), (1.0, 2), (1.0, 1), (1.0, 1)],
+        ),
+    ] {
+        let insights = repo
+            .usage_insights_observation(
+                ObservabilityRange::new(
+                    start + TimeDelta::minutes(from),
+                    start + TimeDelta::minutes(to),
+                )
+                .unwrap(),
+                UsageRecordFilter {
+                    provider_kind: provider.map(str::to_owned),
+                    ..Default::default()
+                },
+                granularity,
+                true,
+            )
+            .await
+            .unwrap();
+        let without_concurrency = repo
+            .usage_insights_observation(
+                ObservabilityRange::new(
+                    start + TimeDelta::minutes(from),
+                    start + TimeDelta::minutes(to),
+                )
+                .unwrap(),
+                UsageRecordFilter {
+                    provider_kind: provider.map(str::to_owned),
+                    ..Default::default()
+                },
+                granularity,
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(without_concurrency.concurrency.is_empty());
+        assert_eq!(
+            without_concurrency.overview.requests,
+            insights.overview.requests
+        );
+        assert_eq!(
+            without_concurrency.overview.attempts,
+            insights.overview.attempts
+        );
+        assert_eq!(without_concurrency.trend, insights.trend);
+        assert_eq!(without_concurrency.costs, insights.costs);
+        assert_eq!(insights.concurrency.len(), expected.len());
+        for (point, (average, peak)) in insights.concurrency.iter().zip(expected) {
+            assert!(
+                (point.average_concurrency - average).abs() < 1e-10,
+                "{provider:?} {from}..{to}: {point:?}"
+            );
+            assert_eq!(point.peak_concurrency, peak, "{provider:?} {from}..{to}");
+        }
+    }
+    database.close().await;
+}
+
+#[tokio::test]
+async fn insights_concurrency_weights_calendar_days_across_dst() {
+    let Some(database) = TestDatabase::create("analytics_concurrency_days").await else {
+        return;
+    };
+    let repo =
+        observability_repository(&database.pool).with_timezone("America/New_York".parse().unwrap());
+    for (date, hours) in [("2026-03-08T05:00:00Z", 23), ("2026-11-01T04:00:00Z", 25)] {
+        let start = DateTime::parse_from_rfc3339(date)
+            .unwrap()
+            .with_timezone(&Utc);
+        let next_day = start + TimeDelta::hours(hours);
+        for (suffix, from, to) in [("completed", -1, Some(1)), ("running", 12, None)] {
+            let id = format!("concurrency_{date}_{suffix}");
+            seed(&database.pool, &id, start, &[]).await;
+            sqlx::query("update model_requests set started_at=$2,completed_at=$3,recovery_lease_expires_at=$2+interval '2 days',outcome=case when $3 is null then 'running' else 'succeeded' end,requested_model_id=$4 where id=$1")
+                .bind(id)
+                .bind(start + TimeDelta::hours(from))
+                .bind(to.map(|hour| start + TimeDelta::hours(hour)))
+                .bind(date)
+                .execute(&database.pool)
+                .await
+                .unwrap();
+        }
+        drain_analytics(&database.pool).await;
+        let insights = repo
+            .usage_insights_observation(
+                ObservabilityRange::new(start, next_day + TimeDelta::hours(6)).unwrap(),
+                UsageRecordFilter {
+                    model: Some(date.to_owned()),
+                    ..Default::default()
+                },
+                gateway_admin::model::observability::Granularity::Day,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(insights.concurrency.len(), 2);
+        assert_eq!(insights.concurrency[0].bucket_start, start);
+        assert!(
+            (insights.concurrency[0].average_concurrency - (hours - 11) as f64 / hours as f64)
+                .abs()
+                < 1e-10
+        );
+        assert_eq!(insights.concurrency[0].peak_concurrency, 1);
+        assert_eq!(insights.concurrency[1].bucket_start, next_day);
+        assert_eq!(insights.concurrency[1].average_concurrency, 1.0);
+        assert_eq!(insights.concurrency[1].peak_concurrency, 1);
+    }
+    database.close().await;
+}
+
+#[tokio::test]
 async fn sql_edge_histograms_preserve_repeated_samples_and_power_of_two_boundaries() {
     let Some(database) = TestDatabase::create("analytics_sql_histogram_boundaries").await else {
         return;
@@ -1724,6 +1911,7 @@ async fn sql_edge_histograms_preserve_repeated_samples_and_power_of_two_boundari
             range,
             Default::default(),
             gateway_admin::model::observability::Granularity::Hour,
+            true,
         )
         .await
         .unwrap()
@@ -1735,6 +1923,7 @@ async fn sql_edge_histograms_preserve_repeated_samples_and_power_of_two_boundari
             range,
             Default::default(),
             gateway_admin::model::observability::Granularity::Hour,
+            true,
         )
         .await
         .unwrap()

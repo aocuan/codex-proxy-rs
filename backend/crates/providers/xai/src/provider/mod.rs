@@ -154,6 +154,10 @@ impl GrokBuildProvider {
 
 #[async_trait]
 impl Provider for GrokBuildProvider {
+    fn is_direct_account(&self, authentication_kind: &str) -> bool {
+        crate::credential::is_direct_account_kind(authentication_kind)
+    }
+
     fn resolve_request_profile(
         &self,
         configuration: &gateway_core::account::OpaqueProviderData,
@@ -772,6 +776,7 @@ fn provider_call_metadata(
         selected.account_id().clone(),
         UpstreamTransport::new(HTTP_SSE_TRANSPORT).map_err(|_| protocol_not_sent())?,
     )
+    .with_credential_revision(selected.credential_revision())
     .with_account_snapshot(selected.account_snapshot().cloned())
     .with_selection_observation(ProviderSelectionObservation::new(
         account_selection_wait_ms,
@@ -898,6 +903,7 @@ fn grok_model_presentation(model: &GrokCatalogModel) -> ModelPresentation {
         .iter()
         .map(|effort| effort.as_str().to_owned())
         .collect::<Vec<_>>();
+    let reasoning_summary = reasoning_efforts.iter().any(|effort| effort != "none");
     let default_reasoning = model
         .capabilities()
         .default_reasoning_effort()
@@ -913,6 +919,7 @@ fn grok_model_presentation(model: &GrokCatalogModel) -> ModelPresentation {
         model.metadata().description().map(str::to_owned),
     )
     .with_reasoning(default_reasoning, reasoning_efforts)
+    .with_reasoning_summary(reasoning_summary)
     .with_context_window_tokens(context_window_tokens)
     .with_max_context_window_tokens(
         model

@@ -24,9 +24,7 @@ use gateway_core::engine::{
 };
 use gateway_core::lifecycle::CancellationToken;
 use gateway_core::policy::ClientApiKeyId;
-use gateway_core::provider_ports::{
-    ProviderCooldownPort, ProviderLeasePort, ProviderSessionAffinityKey,
-};
+use gateway_core::provider_ports::{ProviderCooldownPort, ProviderSessionAffinityKey};
 use gateway_core::routing::{
     ClientRoutingScope, FrozenAccountScope, ProviderKind, RuntimeAccount, RuntimeAccountDirectory,
 };
@@ -232,13 +230,21 @@ fn selector_with_runtime(
         verified_at: chrono::Utc::now(),
     });
     let http = reqwest::Client::builder().build().expect("HTTP client");
+    let catalog = Arc::new(
+        provider_openai::credential::CodexCredentialCatalogService::new(
+            store.repository(),
+            profile.clone(),
+            http.clone(),
+            OFFICIAL_CODEX_BASE_URL.to_owned(),
+            crate::support::catalog_cache(),
+        ),
+    );
     let quota = Arc::new(CodexCredentialQuotaService::new(
         store.repository(),
         profile,
         http,
         OFFICIAL_CODEX_BASE_URL.to_owned(),
-        cooldowns,
-        Arc::clone(&leases) as Arc<dyn ProviderLeasePort>,
+        cooldowns.clone(),
         crate::support::runtime_policy(),
     ));
     CodexCredentialSelector::new(
@@ -248,6 +254,8 @@ fn selector_with_runtime(
         session_affinity,
         Arc::new(MemorySessionExclusions::default()),
         quota,
+        catalog,
+        cooldowns,
         account_feedback,
         CodexCookiePolicy::official().expect("official cookie policy"),
     )
@@ -325,6 +333,40 @@ fn codec_persists_tokens_as_plaintext_provider_json() {
             "schema_version",
         ]
     );
+}
+
+#[test]
+fn api_key_codec_reads_persisted_settings_without_restoring_manual_discovery() {
+    use gateway_core::account::PlaintextCredential;
+
+    for enabled in [false, true] {
+        let value = serde_json::json!({
+            "schema_version": 1,
+            "installation_id": "00000000-0000-4000-8000-000000000001",
+            "base_url": "https://relay.example/v1",
+            "api_key": "sk-test-only",
+            "transport": "http",
+            "upstream_info_enabled": enabled,
+        });
+        let credential = PlaintextCredential::new(value.as_object().unwrap().clone());
+        let runtime = CodexCredentialCodec::decode(&credential).unwrap();
+        assert!(matches!(
+            runtime.authentication,
+            provider_openai::credential::CodexRuntimeAuthentication::ApiKey(_)
+        ));
+        let decoded = CodexCredentialCodec::decode_complete(&credential).unwrap();
+        let encoded = CodexCredentialCodec::encode_complete(decoded).unwrap();
+        assert!(
+            !encoded
+                .expose_to_provider()
+                .contains_key("upstream_info_enabled")
+        );
+        let mut invalid = encoded.expose_to_provider().clone();
+        invalid.insert("unknown_field".into(), serde_json::json!(true));
+        let invalid = PlaintextCredential::new(invalid);
+        assert!(CodexCredentialCodec::decode(&invalid).is_err());
+        assert!(CodexCredentialCodec::decode_complete(&invalid).is_err());
+    }
 }
 
 #[test]
@@ -1558,6 +1600,7 @@ fn native_continuation_surfaces_the_original_accounts_quota_signal_to_the_coordi
     });
     let observed_at = SystemTime::now();
     let outcome = block_on(store.compare_and_swap_quota(QuotaObservation {
+        expected_connection: None,
         plan_type: None,
         account_id: original.id().clone(),
         expected_revision: original.revision(),

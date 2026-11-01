@@ -489,7 +489,15 @@ impl Peer {
             )
             .await;
             let credits = self.streams.lock().await.get(&id).unwrap().clone();
-            for sequence in 0..128_u64 {
+            let chunks = if method.starts_with("stream_single") {
+                self.callback(id, "test.stream_ready", json!({}))
+                    .await
+                    .unwrap();
+                1
+            } else {
+                128
+            };
+            for sequence in 0..chunks {
                 credits.take(8192).await;
                 let payload = if method == "stream_overflow" {
                     vec![b'x'; 256 * 1024 + 1]
@@ -498,6 +506,9 @@ impl Peer {
                 };
                 let sequence = sequence + u64::from(method == "stream_sequence");
                 self.send(Message::Stream { id, sequence }, payload).await;
+            }
+            if method == "stream_single_crash" {
+                std::process::exit(7);
             }
             self.send(Message::End { id, error: None }, vec![]).await;
             return;
@@ -1737,6 +1748,27 @@ impl Peer {
             .into_iter()
             .flatten()
         {
+            if let Some(marker) = callback["pending_marker"].as_str() {
+                // 等真实服务器确认收到字节，再报告失败，避免依赖回调调度顺序
+                let _pending = self
+                    .send_callback(
+                        id,
+                        callback["method"].as_str().unwrap(),
+                        callback["params"].clone(),
+                        body.clone(),
+                    )
+                    .await;
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while !std::path::Path::new(marker).exists() {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .map_err(|_| {
+                    PluginFault::new(ErrorCode::Timeout, "pending HTTP fixture did not start")
+                })?;
+                continue;
+            }
             let callbacks = callback
                 .as_array()
                 .map_or_else(|| std::slice::from_ref(callback), Vec::as_slice);
@@ -1787,7 +1819,11 @@ impl Peer {
                 }
             }
         }
-        let events = self.configuration["upstream_events"].as_array().unwrap();
+        let events = self.configuration["upstream_account_events"]
+            .get(&request.account_id)
+            .unwrap_or(&self.configuration["upstream_events"])
+            .as_array()
+            .unwrap();
         let credits = self.streams.lock().await.get(&id).unwrap().clone();
         for (sequence, event) in events.iter().enumerate() {
             let mut message = UpstreamAdapterEvent::new(

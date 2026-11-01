@@ -4,14 +4,15 @@ mod admin;
 mod affinity;
 mod api_key;
 mod catalog;
+mod codec;
 mod cookie;
+mod eligibility;
 mod oauth;
 mod profile_statistics;
 mod quota;
 mod recovery_log;
 mod refresh;
 mod repository;
-mod security;
 mod selector;
 pub mod token_client;
 mod types;
@@ -22,6 +23,7 @@ pub(crate) use affinity::{
     derive_codex_transport_key, derive_endpoint_affinity_with_headers,
     derive_live_session_affinity, derive_previous_response_id_hash, derive_turn_alias,
 };
+pub(crate) use eligibility::CodexSelectionModel;
 pub(crate) use oauth::oauth_owner_ref;
 pub(crate) use types::parse_access_token_expiration;
 
@@ -38,6 +40,10 @@ pub use admin::{
 pub use catalog::{
     CodexCatalogScope, CodexCredentialCatalogError, CodexCredentialCatalogService,
     CodexCredentialCatalogSnapshot, CodexPlanCatalog,
+};
+pub use codec::{
+    CodexCredentialCodec, CodexCredentialDataError, CodexRuntimeAuthentication,
+    CodexRuntimeCredential,
 };
 pub use cookie::{CodexCookiePolicy, CookiePolicyError};
 pub use oauth::{
@@ -60,17 +66,11 @@ pub use refresh::{
     DueCodexCredential,
 };
 pub use repository::{CodexCredentialRepository, CredentialRepositoryError};
-pub use security::{
-    CodexCredentialCodec, CodexCredentialDataError, CodexRuntimeAuthentication,
-    CodexRuntimeCredential,
-};
 pub use selector::{
     CodexAccountFailure, CodexCredentialLease, CodexCredentialSelector, CredentialSelectionError,
     SelectCodexCredential,
 };
-pub(crate) use selector::{
-    CodexCyberPolicyScope, CodexSelectionModel, SelectCodexProviderEndpointCredential,
-};
+pub(crate) use selector::{CodexCyberPolicyScope, SelectCodexProviderEndpointCredential};
 pub use types::{
     CODEX_AUTHENTICATION_KIND_OAUTH, CodexAccountProfile, CodexCookie, CodexCookieCaptureOutcome,
     CodexCredentialData, CodexCredentialPrincipal, CodexOAuthCredentialData, CodexOAuthSecret,
@@ -78,3 +78,8 @@ pub use types::{
 };
 
 mod diagnostics;
+
+/// 直连资格由 Provider 拥有，执行快照与只读导出使用同一判断
+pub(crate) fn is_direct_account_kind(authentication_kind: &str) -> bool {
+    authentication_kind == CODEX_AUTHENTICATION_KIND_OAUTH
+}

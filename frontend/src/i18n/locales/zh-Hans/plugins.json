@@ -162,7 +162,10 @@
       "disableDescription": "以下配置将停止处理新请求，设置、密钥与私有数据保留",
       "willBeDeactivated": "将停用",
       "confirmSwitch": "确认切换",
-      "confirmEnable": "确认启用"
+      "confirmEnable": "确认启用",
+      "incompatibleRisk": "启动不兼容版本可能导致系统不稳定，是否继续？",
+      "confirmationScope": "确认仅对本次启动有效，下次宿主启动时会重新检查",
+      "continueStartup": "继续启动"
     },
     "extensions": {
       "emptyTitle": "暂无插件管理页面",
@@ -200,11 +203,9 @@
       "identityMappingDescription": "身份映射说明",
       "identityHelp": "身份标识必须与插件返回的值完全一致，同一身份只能映射一次",
       "keyHelp": "选择该身份使用的 API密钥，已停用或删除的 API密钥不会获得执行权限",
-      "reloadClientKey": "重新加载 API密钥",
       "addMapping": "添加映射",
       "identityMark": "身份标识",
       "identityPlaceholder": "填写插件返回的身份标识",
-      "failedToLoadTryAgain": "加载失败，请重试",
       "selectClientApiKey": "选择 API密钥",
       "noClientKeyYet": "暂无 API密钥",
       "removeIdentityMapping": "移除第 {value} 条身份映射"
@@ -302,7 +303,6 @@
       "pluginDataLoadingFailed": "插件数据加载失败"
     },
     "frame": {
-      "pluginPageCannotBeLoaded": "插件页面无法加载",
       "versionChanged": "插件页面版本已变更，正在刷新",
       "navigationBlocked": "插件页面尝试离开已隔离的管理文档，已停止加载",
       "invalidQueryParameter": "查询参数无效",
@@ -378,7 +378,6 @@
       "configurationDescription": "使用插件提供的功能，当前配置为「{name}」",
       "description": "加载已启用插件的管理页面",
       "unpublished": "该配置或页面未发布，可能已停用或切换版本",
-      "refreshFailed": "页面目录刷新失败，当前显示上次成功加载的版本：{loadError}",
       "loadingPage": "正在加载页面"
     },
     "refreshPage": "刷新页面",
@@ -389,7 +388,6 @@
       "multipleSelectionsAllowed": "{label}（可多选）",
       "unlimitedPlaceholder": "不限（可多选）",
       "loading": "正在加载",
-      "isTemporarilyUnavailable": "暂时无法获取{label}",
       "noMatches": "没有匹配项",
       "no": "暂无{label}",
       "createOneInFirst": "请先在{value}中创建"
@@ -419,14 +417,15 @@
       "runFailed": "运行失败",
       "compatibilityReminder": "兼容性提醒",
       "deprecatedApi": "接口待升级，当前仍兼容",
-      "startupUnverified": "可以尝试启动，运行结果仍需验证",
+      "startupUnverified": "默认不自动启动，可在插件页确认风险后尝试启动",
       "compatibilityWindow": "旧接口还将兼容至少 {remainingReleases} 个正式版本",
       "compatibilityEnding": "兼容窗口已满，后续正式版本将移除旧接口转换",
       "unsupportedVersionHelp": "配置与数据保留，请安装可加载的插件版本",
       "restartHelp": "启用配置保留，可在插件详情中重新启动",
       "upgradeHelp": "请更新插件，或联系作者升级接口",
       "unknown": "运行状态未知",
-      "unknownDescription": "暂时无法读取运行状态，启用配置保持不变"
+      "unknownDescription": "暂时无法读取运行状态，启用配置保持不变",
+      "incompatibleNotStarted": "未启动：版本不兼容"
     },
     "updates": {
       "packageRequired": "请选择插件包以确认版本与兼容性",

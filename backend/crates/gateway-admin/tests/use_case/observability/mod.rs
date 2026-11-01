@@ -22,8 +22,9 @@ use gateway_admin::{
             DiagnosticDimension, DiagnosticObservation, DiagnosticsObservation, Granularity,
             HealthStatus, LatencyPercentiles, ObservabilityPageSize, OpsErrorPage, OpsErrorQuery,
             PercentileMilliseconds, RequestMetricPoint, RequestMetrics, TimeRange, TrendKind,
-            UsageBilling, UsageDetail, UsageFilter, UsageInsightsObservation, UsageListRecord,
-            UsageOverview, UsagePage, UsageProjectedCostPoint, UsageQuery, UsageSummaryObservation,
+            UsageBilling, UsageConcurrencyPoint, UsageDetail, UsageFilter,
+            UsageInsightsObservation, UsageListRecord, UsageOverview, UsagePage,
+            UsageProjectedCostPoint, UsageQuery, UsageSummaryObservation,
         },
         settings::{
             AdminApiKey, AdminApiKeyMutation, ReplaceRuntimeSettings, RotationStrategy,
@@ -678,10 +679,26 @@ async fn observability_services_should_calculate_usage_insights_and_diagnostic_s
     assert_eq!(insights.health.success_rate, 0.75);
     assert_eq!(insights.health.completion_rate, 1.0);
     assert_eq!(insights.granularity, Granularity::FifteenMinutes);
-    assert_eq!(insights.performance.latency_coverage, 0.5);
-    assert_eq!(insights.performance.admission_decision_coverage, 1.0);
-    assert_eq!(insights.performance.account_selection_wait_coverage, 0.8);
-    assert_eq!(insights.performance.capacity_coverage, 0.8);
+    assert_eq!(
+        insights
+            .performance
+            .load
+            .admission_decision_p95_ms
+            .map(|value| value.as_f64()),
+        Some(5.0)
+    );
+    assert_eq!(
+        insights
+            .performance
+            .load
+            .account_selection_wait_p95_ms
+            .map(|value| value.as_f64()),
+        Some(40.0)
+    );
+    assert_eq!(
+        insights.performance.points[0].load,
+        insights.performance.load
+    );
     assert_eq!(insights.performance.output_throughput_p50, Some(50));
     assert_eq!(insights.cost.tokens_per_request, 100.0);
     assert_eq!(
@@ -740,6 +757,52 @@ async fn observability_services_should_calculate_usage_insights_and_diagnostic_s
     );
     assert_eq!(diagnostics.items[0].request_share, 0.75);
     assert_eq!(diagnostics.items[1].request_share, 0.25);
+}
+
+#[tokio::test]
+async fn usage_insights_should_weight_concurrency_by_effective_bucket_duration() {
+    let bucket_start = DateTime::parse_from_rfc3339("2026-09-01T10:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let range = TimeRange::new(
+        bucket_start + Duration::minutes(5),
+        bucket_start + Duration::minutes(20),
+    )
+    .unwrap();
+    let store = Arc::new(FixtureObservabilityStore::new(range));
+    store.replace_trend(vec![
+        health_metric_point(bucket_start, RequestMetrics::default()),
+        health_metric_point(
+            bucket_start + Duration::minutes(15),
+            RequestMetrics::default(),
+        ),
+    ]);
+    *store.concurrency.lock().unwrap() = vec![
+        UsageConcurrencyPoint {
+            bucket_start,
+            average_concurrency: 1.0,
+            peak_concurrency: 1,
+        },
+        UsageConcurrencyPoint {
+            bucket_start: bucket_start + Duration::minutes(15),
+            average_concurrency: 3.0,
+            peak_concurrency: 4,
+        },
+    ];
+
+    let insights = observability_services(store)
+        .await
+        .observability()
+        .usage_insights(range, UsageFilter::default())
+        .await
+        .unwrap();
+
+    assert!((insights.performance.load.average_concurrency - 5.0 / 3.0).abs() < 1e-10);
+    assert_eq!(insights.performance.load.peak_concurrency, 4);
+    assert_eq!(insights.performance.points[0].load.average_concurrency, 1.0);
+    assert_eq!(insights.performance.points[0].load.peak_concurrency, 1);
+    assert_eq!(insights.performance.points[1].load.average_concurrency, 3.0);
+    assert_eq!(insights.performance.points[1].load.peak_concurrency, 4);
 }
 
 #[tokio::test]
@@ -932,11 +995,13 @@ async fn dashboard_should_preserve_provider_plan_names() {
     *store.account_usage.lock().unwrap() = plans
         .iter()
         .map(|(plan, _)| DashboardAccountUsage {
+            upstream: None,
             account_id: format!("account-{plan}"),
             provider_kind: "openai".to_owned(),
             authentication_kind: "oauth".to_owned(),
             name: (*plan).to_owned(),
             email: None,
+            notes: None,
             plan_type: Some((*plan).to_owned()),
             plan_type_display: None,
             request_count: 0,
@@ -982,12 +1047,59 @@ async fn dashboard_should_preserve_provider_plan_names() {
     }
 }
 
+#[tokio::test]
+async fn dashboard_and_usage_insights_keep_concurrency_cache_entries_separate() {
+    for dashboard_first in [true, false] {
+        let now = Utc::now();
+        let range = observation_range(now);
+        let store = Arc::new(FixtureObservabilityStore::new(range));
+        store
+            .concurrency
+            .lock()
+            .unwrap()
+            .push(UsageConcurrencyPoint {
+                bucket_start: range.start,
+                average_concurrency: 2.0,
+                peak_concurrency: 3,
+            });
+        let services = observability_services(store.clone()).await;
+        for dashboard in [
+            dashboard_first,
+            !dashboard_first,
+            dashboard_first,
+            !dashboard_first,
+        ] {
+            if dashboard {
+                services
+                    .observability()
+                    .dashboard_trend(range, TrendKind::Usage)
+                    .await
+                    .unwrap();
+            } else {
+                let result = services
+                    .observability()
+                    .usage_insights(range, UsageFilter::default())
+                    .await
+                    .unwrap();
+                assert_eq!(result.performance.load.peak_concurrency, 3);
+            }
+        }
+        assert_eq!(
+            *store.concurrency_selections.lock().unwrap(),
+            vec![!dashboard_first, dashboard_first]
+        );
+    }
+}
+
 struct FixtureObservabilityStore {
     yesterday: Mutex<RequestMetrics>,
     trend: Mutex<Vec<RequestMetricPoint>>,
     overview: Mutex<UsageOverview>,
     projected_costs: Mutex<Vec<UsageProjectedCostPoint>>,
+    concurrency: Mutex<Vec<UsageConcurrencyPoint>>,
     insights_fail: AtomicBool,
+    concurrency_selections: Mutex<Vec<bool>>,
+    metric_selections: Mutex<Vec<gateway_admin::model::observability::UsageInsightMetric>>,
     summary_fail: AtomicBool,
     diagnostics: Mutex<DiagnosticsObservation>,
     runtime_slots: Mutex<Option<DashboardRuntimeSlots>>,
@@ -1014,7 +1126,10 @@ impl FixtureObservabilityStore {
                 providers: Vec::new(),
             }),
             projected_costs: Mutex::new(Vec::new()),
+            concurrency: Mutex::new(Vec::new()),
             insights_fail: AtomicBool::new(false),
+            concurrency_selections: Mutex::new(Vec::new()),
+            metric_selections: Mutex::new(Vec::new()),
             summary_fail: AtomicBool::new(false),
             diagnostics: Mutex::new(DiagnosticsObservation::default()),
             runtime_slots: Mutex::new(None),
@@ -1131,8 +1246,13 @@ impl ObservabilityStore for FixtureObservabilityStore {
         _: TimeRange,
         _: UsageFilter,
         granularity: Granularity,
+        include_concurrency: bool,
     ) -> AdminStoreResult<UsageInsightsObservation> {
         self.usage_granularities.lock().unwrap().push(granularity);
+        self.concurrency_selections
+            .lock()
+            .unwrap()
+            .push(include_concurrency);
         if self.insights_fail.load(Ordering::SeqCst) {
             return Err(super::unavailable("projection read failed"));
         }
@@ -1144,7 +1264,29 @@ impl ObservabilityStore for FixtureObservabilityStore {
                 .lock()
                 .expect("projected costs")
                 .clone(),
+            concurrency: if include_concurrency {
+                self.concurrency.lock().expect("concurrency").clone()
+            } else {
+                Vec::new()
+            },
         })
+    }
+
+    async fn usage_metric_observation(
+        &self,
+        range: gateway_admin::model::observability::TimeRange,
+        filter: gateway_admin::model::observability::UsageFilter,
+        granularity: gateway_admin::model::observability::Granularity,
+        metric: gateway_admin::model::observability::UsageInsightMetric,
+    ) -> AdminStoreResult<gateway_admin::model::observability::UsageInsightsObservation> {
+        self.metric_selections.lock().unwrap().push(metric);
+        self.usage_insights_observation(
+            range,
+            filter,
+            granularity,
+            metric == gateway_admin::model::observability::UsageInsightMetric::Load,
+        )
+        .await
     }
 
     async fn list_usage_records(&self, query: UsageQuery) -> AdminStoreResult<UsagePage> {
@@ -1253,13 +1395,7 @@ impl SettingsStore for FixtureSettingsStore {
                 usage_retention_days: 31,
                 ops_event_retention_days: 30,
                 audit_retention_days: 30,
-                account_auto_freeze_enabled: true,
-                account_auto_freeze_threshold: 12,
-                account_auto_freeze_window_seconds: 600,
-                account_auto_freeze_duration_seconds: 7_200,
-                account_auto_freeze_probe_enabled: true,
-                account_auto_freeze_probe_model: None,
-                account_auto_freeze_adaptive_concurrency: true,
+                account_error_protection: gateway_core::account::AccountErrorProtection::default(),
                 account_warmup_enabled: false,
                 account_warmup_schedule_time: "08:00".to_owned(),
                 account_warmup_model: None,
@@ -1424,6 +1560,7 @@ fn diagnostic(name: &str, request_count: u64) -> DiagnosticObservation {
         retry_count: 0,
         retried_request_count: 0,
         account_provider_kind: None,
+        account_authentication_kind: None,
         account_plan_type: None,
         key: name.to_owned(),
         name: name.to_owned(),
@@ -1679,4 +1816,49 @@ async fn insights_cache_should_reject_deleted_building_and_old_generation_times(
             "{reason}"
         );
     }
+}
+
+#[tokio::test]
+async fn usage_metric_cache_isolates_selections_and_filters() {
+    use gateway_admin::model::observability::UsageInsightMetric as Metric;
+    let range = observation_range(Utc::now());
+    let store = Arc::new(FixtureObservabilityStore::new(range));
+    let services = observability_services(store.clone()).await;
+    let metrics = [
+        Metric::Health,
+        Metric::Latency,
+        Metric::FirstToken,
+        Metric::Throughput,
+        Metric::Load,
+        Metric::Cost,
+        Metric::Savings,
+        Metric::Cache,
+    ];
+    for _ in 0..2 {
+        for metric in metrics {
+            services
+                .observability()
+                .usage_metric(range, UsageFilter::default(), metric)
+                .await
+                .unwrap();
+        }
+    }
+    assert_eq!(*store.metric_selections.lock().unwrap(), metrics);
+    assert_eq!(
+        *store.concurrency_selections.lock().unwrap(),
+        vec![false, false, false, false, true, false, false, false]
+    );
+    services
+        .observability()
+        .usage_metric(
+            range,
+            UsageFilter {
+                provider_kind: Some("openai".into()),
+                ..Default::default()
+            },
+            Metric::Latency,
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.metric_selections.lock().unwrap().len(), 9);
 }

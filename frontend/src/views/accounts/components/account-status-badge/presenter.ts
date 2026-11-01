@@ -1,5 +1,5 @@
 import type { Component } from 'vue'
-import type { AccountErrorReason, AccountStatus } from '@/api'
+import type { AccountErrorReason, AccountProtectionRule, AccountStatus } from '@/api'
 import { AlertTriangle, CircleCheck, Gauge, Power, Timer } from '@lucide/vue'
 import { computed } from 'vue'
 import { t } from '@/i18n'
@@ -39,6 +39,7 @@ interface AccountStatusPresentation {
   nextRefreshDisplay: string | null
   rateLimitRecovery: string | null
   recoveryTimeLabel: string
+  protectionRules: AccountProtectionRule[]
   triggerLabel: string
 }
 
@@ -47,7 +48,8 @@ interface AccountStatusPresentationInput {
   errorReason: AccountErrorReason | null
   errorMessage: string | null
   rateLimitRecoveryDisplay: string | null
-  rateLimitReason: 'upstream_rate_limit' | 'capacity_freeze' | null
+  rateLimitReason: 'upstream_rate_limit' | 'error_protection' | null
+  protectionRules: AccountProtectionRule[]
   recoveryProbeRequired: boolean
   nextRefreshAt: string | null
   nextRefreshAtDisplay: string | null
@@ -56,34 +58,34 @@ interface AccountStatusPresentationInput {
 
 const statusStyles: Record<AccountStatusTone, AccountStatusStyle> = {
   success: {
-    text: 'text-cp-success-text',
-    dot: 'bg-cp-success',
-    badge: 'bg-cp-success-container text-cp-success-on-container',
-    icon: 'bg-cp-success-container text-cp-success-on-container',
+    text: 'text-z-success-text',
+    dot: 'bg-z-success',
+    badge: 'bg-z-success-container text-z-success-on-container',
+    icon: 'bg-z-success-container text-z-success-on-container',
   },
   danger: {
-    text: 'text-cp-error-text',
-    dot: 'bg-cp-error',
-    badge: 'bg-cp-error-container text-cp-error-on-container',
-    icon: 'bg-cp-error-container text-cp-error-on-container',
+    text: 'text-z-error-text',
+    dot: 'bg-z-error',
+    badge: 'bg-z-error-container text-z-error-on-container',
+    icon: 'bg-z-error-container text-z-error-on-container',
   },
   warning: {
-    text: 'text-cp-warning-text',
-    dot: 'bg-cp-warning',
-    badge: 'bg-cp-warning-container text-cp-warning-on-container',
-    icon: 'bg-cp-warning-container text-cp-warning-on-container',
+    text: 'text-z-warning-text',
+    dot: 'bg-z-warning',
+    badge: 'bg-z-warning-container text-z-warning-on-container',
+    icon: 'bg-z-warning-container text-z-warning-on-container',
   },
   info: {
-    text: 'text-cp-info-text',
-    dot: 'bg-cp-info',
-    badge: 'bg-cp-info-container text-cp-info-on-container',
-    icon: 'bg-cp-info-container text-cp-info-on-container',
+    text: 'text-z-info-text',
+    dot: 'bg-z-info',
+    badge: 'bg-z-info-container text-z-info-on-container',
+    icon: 'bg-z-info-container text-z-info-on-container',
   },
   normal: {
-    text: 'text-cp-text-secondary',
-    dot: 'bg-cp-text-quaternary',
-    badge: 'bg-cp-fill-quaternary text-cp-text-secondary',
-    icon: 'bg-cp-fill-quaternary text-cp-text-secondary',
+    text: 'text-z-text-secondary',
+    dot: 'bg-z-text-quaternary',
+    badge: 'bg-z-fill-quaternary text-z-text-secondary',
+    icon: 'bg-z-fill-quaternary text-z-text-secondary',
   },
 }
 
@@ -148,12 +150,13 @@ export function resolveAccountStatusPresentation(
     && input.nextRefreshAt !== null
     && Date.parse(input.nextRefreshAt) > input.now
   const mode: AccountStatusDisplayMode = isBackoff ? 'refresh_backoff' : input.status
-  const isFreeze = mode === 'rate_limited' && input.rateLimitReason === 'capacity_freeze'
-  const waitsForProbe = isFreeze && input.recoveryProbeRequired
-  const definition = isFreeze
+  const isProtected = mode === 'rate_limited' && input.rateLimitReason === 'error_protection'
+  const waitsForProbe = isProtected && input.recoveryProbeRequired
+  const definition = isProtected
     ? {
         ...displayDefinitions.value.rate_limited,
-        description: t('accounts.status.capacityFailuresHelp'),
+        label: t('accounts.status.errorProtection'),
+        description: t('accounts.status.protectionFailuresHelp'),
         recoveryHint: waitsForProbe
           ? t('accounts.status.recoveryProbeHelp')
           : t('accounts.status.recoveryHelp'),
@@ -191,6 +194,9 @@ export function resolveAccountStatusPresentation(
     recoveryTimeLabel: waitsForProbe
       ? t('accounts.status.resumeDetection')
       : t('accounts.status.expectedToRecover'),
+    protectionRules: isProtected
+      ? input.protectionRules
+      : [],
     triggerLabel,
   }
 }

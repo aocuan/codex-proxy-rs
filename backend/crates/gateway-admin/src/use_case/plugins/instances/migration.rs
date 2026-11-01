@@ -9,8 +9,8 @@ use crate::{
         AdminError, MutationContext, Revision,
         plugins::{
             instances::{
-                PluginInstance, PluginInstanceMutation, PluginInstanceReplacement,
-                PluginInstanceSnapshot,
+                PluginCompatibilityConfirmation, PluginInstance, PluginInstanceMutation,
+                PluginInstanceReplacement, PluginInstanceSnapshot,
             },
             state::{PluginStateCommit, PluginStateConfiguration},
         },
@@ -22,12 +22,18 @@ impl PluginsService {
     pub(super) async fn configure_instance_with_state_transition(
         &self,
         mut snapshot: PluginInstanceSnapshot,
-        previous: PluginInstance,
         mut target: PluginInstance,
         target_state: PluginStateConfiguration,
         replacements: &[PluginInstanceReplacement],
+        confirmation: Option<&PluginCompatibilityConfirmation>,
         context: &MutationContext,
     ) -> Result<PluginInstanceMutation, AdminError> {
+        let previous = snapshot
+            .instances
+            .iter()
+            .find(|instance| instance.id == target.id)
+            .cloned()
+            .ok_or_else(|| AdminError::not_found("插件实例不存在"))?;
         let previous_state = self.preparation.validate(previous.clone()).await?;
         let original_revision = snapshot.config_revision;
         // 即使最终保持停用，迁移也必须由目标制品的受控候选执行
@@ -39,7 +45,9 @@ impl PluginsService {
             .retain(|instance| instance.id != migration_instance.id);
         snapshot.instances.push(migration_instance);
         apply_replacements(&mut snapshot, replacements);
-        let migration_prepared = self.preparation.prepare(snapshot).await?;
+        let migration_prepared = self
+            .prepare_instance_candidate(snapshot, confirmation)
+            .await?;
 
         let mut disabled_revision = None;
         let disabled = if previous.enabled {
@@ -111,7 +119,9 @@ impl PluginsService {
             current.instances.push(target.clone());
             current.config_revision = candidate_revision;
             apply_replacements(&mut current, replacements);
-            let prepared = self.preparation.prepare(current.clone()).await?;
+            let prepared = self
+                .prepare_instance_candidate(current.clone(), confirmation)
+                .await?;
             let result = self
                 .store
                 .save_instance_replacing(
@@ -144,7 +154,7 @@ impl PluginsService {
                     .await);
             }
         };
-        self.publish_instance(current, prepared, &result, replacements)
+        self.publish_instance(current, prepared, &result, replacements, confirmation)
             .await?;
         drop(migration_prepared);
         Ok(result)
@@ -197,7 +207,7 @@ impl PluginsService {
                 )
                 .await
                 .map_err(|error| map_store_error(error, "plugin"))?;
-            self.publish_instance(snapshot, prepared, &mutation, &[])
+            self.publish_instance(snapshot, prepared, &mutation, &[], None)
                 .await?;
             Ok::<(), AdminError>(())
         }

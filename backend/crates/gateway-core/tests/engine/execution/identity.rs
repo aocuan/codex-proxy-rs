@@ -16,9 +16,10 @@ fn identity_queries_keep_frozen_permissions_without_using_execution_resources() 
         let service = DefaultExecutionService::new(
             snapshots.clone(),
             store.clone(),
-            ProviderRegistry::new([
-                Arc::new(NativeCatalogProvider { fail: false }) as Arc<dyn Provider>
-            ])
+            ProviderRegistry::new([Arc::new(NativeCatalogProvider {
+                fail: false,
+                empty: false,
+            }) as Arc<dyn Provider>])
             .unwrap(),
             Arc::new(UnusedAdmissions),
             Arc::new(UnusedContinuation),
@@ -90,9 +91,10 @@ fn execution_scope_limits_apply_only_when_starting_a_model() {
         let service = DefaultExecutionService::new(
             RuntimeSnapshotHandle::new(start_snapshot()),
             store.clone(),
-            ProviderRegistry::new([
-                Arc::new(NativeCatalogProvider { fail: false }) as Arc<dyn Provider>
-            ])
+            ProviderRegistry::new([Arc::new(NativeCatalogProvider {
+                fail: false,
+                empty: false,
+            }) as Arc<dyn Provider>])
             .unwrap(),
             Arc::new(UnusedAdmissions),
             Arc::new(UnusedContinuation),

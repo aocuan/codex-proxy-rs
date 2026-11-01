@@ -99,6 +99,7 @@ impl Environment {
             .client_keys()
             .create_client_key(
                 NewClientKey {
+                    peer_sharing: Default::default(),
                     request_profile_overrides: BTreeMap::new(),
                     id: ClientApiKeyId::new(id).unwrap(),
                     name: format!("fixture {id}"),
@@ -494,6 +495,7 @@ impl Environment {
             super::native::admin_registry(),
             self.store.admin_ports().accounts(),
             core.snapshot_control(),
+            None,
         );
         runtime.bind_account_ports(&access).unwrap();
         self.plugin_accounts
@@ -585,6 +587,7 @@ impl Environment {
                 typesafe: None,
                 execution: core.execution_service(),
                 gateway_version: "test".to_owned(),
+                upstream_info: None,
                 timezone: Default::default(),
                 service_middleware: {
                     let snapshots = core.snapshots();

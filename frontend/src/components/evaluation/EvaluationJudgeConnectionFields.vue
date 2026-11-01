@@ -69,7 +69,7 @@ const effort = computed({
         <ZSelect :model-value="judge.accountId || undefined" :disabled="disabled" :options="accountOptions" remote filterable :loading="loadingAccounts" placeholder="搜索判题账号" @update:model-value="judge.accountId = $event ?? ''" @query-change="emit('searchAccounts', $event)">
           <template #option="{ option }">
             <span class="min-w-0 flex-1 truncate" :title="option.label">{{ option.label }}</span>
-            <span class="max-w-1/2 shrink-0 truncate text-cp-xs font-normal" :class="option.disabled ? 'text-cp-text-disabled' : 'text-cp-text-secondary'" :title="option.description">{{ option.description }}</span>
+            <span class="max-w-1/2 shrink-0 truncate text-z-xs font-normal" :class="option.disabled ? 'text-z-text-disabled' : 'text-z-text-secondary'" :title="option.description">{{ option.description }}</span>
           </template>
         </ZSelect>
       </ZFormItem>

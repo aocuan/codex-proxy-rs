@@ -43,7 +43,11 @@ pub(super) fn account_refresh_data(
     }
 }
 
-pub(super) fn account_models_data(result: ProviderModels) -> AccountModelsData {
+pub(super) fn account_models_data(
+    result: ProviderModels,
+    time: crate::time::TimePresenter,
+) -> AccountModelsData {
+    let observed_at = result.observed_at;
     AccountModelsData {
         models: result
             .models
@@ -56,6 +60,9 @@ pub(super) fn account_models_data(result: ProviderModels) -> AccountModelsData {
                 }
             })
             .collect(),
+        observed_at: observed_at.map(|value| time.rfc3339(&value)),
+        observed_at_display: observed_at
+            .map_or_else(|| "—".to_owned(), |value| time.datetime(&value)),
     }
 }
 
@@ -72,6 +79,7 @@ pub(super) fn account_view(
         projection,
         usage,
         quota,
+        protection_rules,
     } = item;
     let status = projection.status.as_str().to_owned();
     let cooldown = projection.cooldown;
@@ -84,10 +92,31 @@ pub(super) fn account_view(
     let usage_period = quota.usage_window().map(|(_, period)| period);
     let mut usage = account_usage_view(usage, usage_period, now, time);
     if account.authentication_kind == "api_key" {
-        usage.window_kind = AccountUsageWindowKind::General;
+        usage.window_kind = if quota
+            .upstream
+            .as_ref()
+            .is_some_and(|upstream| upstream.discovered)
+        {
+            match quota
+                .upstream_usage_window()
+                .and_then(|window| window.window_seconds)
+            {
+                Some(86_400) => AccountUsageWindowKind::Daily,
+                Some(604_800) => AccountUsageWindowKind::Weekly,
+                _ => AccountUsageWindowKind::Quota,
+            }
+        } else {
+            AccountUsageWindowKind::General
+        };
     }
-    let (quota, refresh_token_expires_at) = account_quota_view(quota, cooldown, now, time);
+    let upstream = quota
+        .upstream
+        .clone()
+        .map(|value| super::upstream_info::view(value, now, time));
+    let (mut quota, refresh_token_expires_at) = account_quota_view(quota, cooldown, now, time);
+    quota.protection_rules = protection_rules;
     AccountView {
+        upstream,
         capabilities: capabilities.into(),
         id: account.id.clone(),
         name: account.name,
@@ -232,8 +261,8 @@ pub(super) fn account_quota_view(
         }
     });
     let rate_limit_reason = cooldown.map(|value| {
-        if value.kind.is_capacity_freeze() {
-            "capacity_freeze".to_owned()
+        if value.kind.is_error_protection() {
+            "error_protection".to_owned()
         } else {
             "upstream_rate_limit".to_owned()
         }
@@ -251,6 +280,7 @@ pub(super) fn account_quota_view(
             rate_limit_recovery_display,
             rate_limit_reason,
             recovery_probe_required,
+            protection_rules: Vec::new(),
             windows,
             credits: quota.credits.map(|credits| AccountQuotaCreditsView {
                 has_credits: credits.has_credits,
@@ -267,6 +297,7 @@ pub(crate) fn quota_window_view(
     time: crate::time::TimePresenter,
 ) -> AccountQuotaWindowView {
     let ProviderQuotaWindow {
+        upstream,
         key,
         group,
         label,
@@ -285,6 +316,16 @@ pub(crate) fn quota_window_view(
         .as_ref()
         .map_or_else(|| label.clone(), |name| format!("{name} · {label}"));
     AccountQuotaWindowView {
+        source_account_id: upstream.as_ref().and_then(|value| value.account_id.clone()),
+        amount: upstream
+            .as_ref()
+            .and_then(|value| value.amount.as_ref())
+            .map(super::upstream_info::amount_view),
+        observed_at_display: upstream
+            .as_ref()
+            .and_then(|value| value.observed_at)
+            .map(|value| time.datetime(&value)),
+        stale: upstream.as_ref().is_some_and(|value| value.stale),
         label_display,
         window_label_display: label,
         key,
@@ -294,8 +335,7 @@ pub(crate) fn quota_window_view(
         role: role.map(|value| value.as_str().to_owned()),
         window_seconds,
         used_percent,
-        used_percent_display: used_percent
-            .map_or_else(|| "—".to_owned(), |value| format!("{value:.1}%")),
+        used_percent_display: used_percent.map_or_else(|| "—".to_owned(), format_percentage),
         limit_reached,
         local_usage: local_usage
             .as_ref()

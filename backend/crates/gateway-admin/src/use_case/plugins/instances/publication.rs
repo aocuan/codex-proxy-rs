@@ -7,13 +7,29 @@ use crate::{
     model::{
         AdminError,
         plugins::instances::{
-            PluginInstanceMutation, PluginInstanceReplacement, PluginInstanceSnapshot,
+            PluginCompatibilityConfirmation, PluginInstanceMutation, PluginInstanceReplacement,
+            PluginInstanceSnapshot,
         },
     },
     use_case::publish_committed,
 };
 
 impl PluginsService {
+    pub(super) async fn prepare_instance_candidate(
+        &self,
+        snapshot: PluginInstanceSnapshot,
+        confirmation: Option<&PluginCompatibilityConfirmation>,
+    ) -> Result<ExtensionSetReference, AdminError> {
+        match confirmation {
+            Some(confirmation) => {
+                self.preparation
+                    .prepare_confirmed(snapshot, confirmation.clone())
+                    .await
+            }
+            None => self.preparation.prepare(snapshot).await,
+        }
+    }
+
     /// 以事务返回的版本激活并发布，候选强引用必须覆盖整个提交后阶段
     pub(super) async fn publish_instance(
         &self,
@@ -21,6 +37,7 @@ impl PluginsService {
         prepared: ExtensionSetReference,
         mutation: &PluginInstanceMutation,
         replacements: &[PluginInstanceReplacement],
+        confirmation: Option<&PluginCompatibilityConfirmation>,
     ) -> Result<(), AdminError> {
         let prepared = if mutation.config_revision == snapshot.config_revision
             && mutation.instance.revision == snapshot.config_revision
@@ -33,7 +50,8 @@ impl PluginsService {
                 .retain(|item| item.id != mutation.instance.id);
             snapshot.instances.push(mutation.instance.clone());
             apply_replacements(&mut snapshot, replacements);
-            self.preparation.prepare(snapshot).await?
+            self.prepare_instance_candidate(snapshot, confirmation)
+                .await?
         };
         self.preparation
             .activate_state(&prepared, &mutation.instance)

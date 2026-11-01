@@ -100,7 +100,7 @@ pub(crate) fn push_usage_filter(
         query.push_bind(value.clone());
     }
     if let Some(value) = &filter.search {
-        let pattern = literal_prefix_pattern(value);
+        let pattern = literal_contains_pattern(value);
         query.push(format!(" and ({alias}.requested_model_id like "));
         query.push_bind(pattern.clone());
         for column in [
@@ -121,20 +121,6 @@ pub(crate) fn push_usage_filter(
             .push(" escape '\\'");
         query.push(")");
     }
-}
-
-fn literal_contains_pattern(value: &str) -> String {
-    format!("%{}", literal_prefix_pattern(value))
-}
-
-pub(crate) fn literal_prefix_pattern(value: &str) -> String {
-    format!(
-        "{}%",
-        value
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_")
-    )
 }
 
 pub(crate) const USAGE_LIST_RECORD_SELECT: &str =

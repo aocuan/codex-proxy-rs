@@ -1,5 +1,6 @@
 //! 模型请求生命周期、单行持久化 port 与 commit/send/cancellation 边界
 
+mod account_protection;
 pub mod admission;
 pub mod authentication;
 pub mod budget;
@@ -167,7 +168,7 @@ impl AccountAttemptContext {
         }
     }
 
-    /// 附着普通请求认证时冻结的账号范围
+    /// 附着本次尝试的冻结账号范围，包含路由候选的能力限制
     #[must_use]
     pub fn with_account_scope(
         mut self,
@@ -286,6 +287,7 @@ impl ContinuationAttempt {
 /// Provider 每次执行可见的 request-local context
 #[derive(Debug, Clone)]
 pub struct RequestAttemptContext {
+    account_error_protection: Option<account_protection::ProtectionContext>,
     request_body_limit: Option<usize>,
     lease_metadata: Option<Arc<crate::provider_ports::ProviderLeaseMetadata>>,
     response_control: Option<response_control::ResponseControl>,
@@ -312,6 +314,14 @@ pub struct RequestAttemptContext {
 }
 
 impl RequestAttemptContext {
+    fn with_account_error_protection(
+        mut self,
+        protection: Option<account_protection::ProtectionContext>,
+    ) -> Self {
+        self.account_error_protection = protection;
+        self
+    }
+
     #[must_use]
     pub const fn with_request_body_limit(mut self, bytes: usize) -> Self {
         self.request_body_limit = Some(bytes);
@@ -393,6 +403,7 @@ impl RequestAttemptContext {
     #[must_use]
     pub fn new(request_id: ModelRequestId, client_api_key_ref: ClientApiKeyId) -> Self {
         Self {
+            account_error_protection: None,
             response_control: None,
             request_body_limit: None,
             lease_metadata: None,
@@ -777,6 +788,24 @@ impl AttemptContext {
         } else {
             terminal
         };
+        // 保护观察真正的 Provider terminal，先于 attempt 中间件的响应改写
+        let terminal: provider::ProviderMiddlewareTerminal =
+            if let Some(protection) = self.request.account_error_protection.clone() {
+                Box::new(move |operation, headers| {
+                    Box::pin(async move {
+                        let stream = terminal(operation, headers).await?;
+                        Ok(stream
+                            .with_account_error_protection(
+                                protection.store,
+                                protection.policy,
+                                protection.revision,
+                            )
+                            .await)
+                    })
+                })
+            } else {
+                terminal
+            };
         let context = self.middleware_context(
             middleware::MiddlewareMount::Attempt,
             Some(operation.kind()),
@@ -895,7 +924,7 @@ impl AttemptContext {
         self.account.is_diagnostic_required_account()
     }
 
-    /// 普通请求认证时冻结的账号范围；管理端诊断为 `None`
+    /// 当前路由候选的冻结账号范围；管理端诊断为 `None`
     #[must_use]
     pub const fn account_scope(&self) -> Option<&Arc<crate::account::scope::FrozenAccountScope>> {
         self.account.account_scope()
@@ -1247,6 +1276,7 @@ pub struct GatewayEngine<S: ?Sized> {
     store: Arc<S>,
     providers: provider::ProviderRegistry,
     client_retry: Option<Arc<dyn client_retry::ClientRetryStore>>,
+    account_error_protection: Option<Arc<dyn crate::provider_ports::ProviderCooldownPort>>,
 }
 
 impl<S: ?Sized> GatewayEngine<S> {
@@ -1256,7 +1286,17 @@ impl<S: ?Sized> GatewayEngine<S> {
             store,
             providers,
             client_retry: None,
+            account_error_protection: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_account_error_protection(
+        mut self,
+        store: Arc<dyn crate::provider_ports::ProviderCooldownPort>,
+    ) -> Self {
+        self.account_error_protection = Some(store);
+        self
     }
 
     #[must_use]

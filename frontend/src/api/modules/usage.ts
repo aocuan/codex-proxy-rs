@@ -256,47 +256,32 @@ export interface UsageOverviewHealth {
   points: UsageOverviewHealthPoint[]
 }
 
-export interface UsageOverviewPerformancePoint {
-  bucket: string
-  label: string
-  latencyP50Ms: number | null
-  latencyP95Ms: number | null
-  latencyP99Ms: number | null
-  firstTokenP50Ms: number | null
-  firstTokenP95Ms: number | null
-  firstTokenP99Ms: number | null
-  admissionDecisionP50Ms: number | null
+export interface UsageOverviewLoad {
+  averageConcurrency: number
+  peakConcurrency: number
   admissionDecisionP95Ms: number | null
-  accountSelectionWaitP50Ms: number | null
   accountSelectionWaitP95Ms: number | null
-  outputThroughputP10: number | null
-  outputThroughputP50: number | null
-  outputThroughputP90: number | null
-  capacityUtilization: number | null
-  capacityUtilizationP95: number | null
 }
 
-export interface UsageOverviewPerformance {
+export interface UsageOverviewPerformanceMetrics {
   latencyP50Ms: number | null
   latencyP95Ms: number | null
   latencyP99Ms: number | null
   firstTokenP50Ms: number | null
   firstTokenP95Ms: number | null
   firstTokenP99Ms: number | null
-  admissionDecisionP50Ms: number | null
-  admissionDecisionP95Ms: number | null
-  accountSelectionWaitP50Ms: number | null
-  accountSelectionWaitP95Ms: number | null
   outputThroughputP10: number | null
   outputThroughputP50: number | null
   outputThroughputP90: number | null
-  capacityUtilization: number | null
-  capacityUtilizationP95: number | null
-  latencyCoverage: number
-  firstTokenCoverage: number
-  admissionDecisionCoverage: number
-  accountSelectionWaitCoverage: number
-  capacityCoverage: number
+  load: UsageOverviewLoad
+}
+
+export interface UsageOverviewPerformancePoint extends UsageOverviewPerformanceMetrics {
+  bucket: string
+  label: string
+}
+
+export interface UsageOverviewPerformance extends UsageOverviewPerformanceMetrics {
   points: UsageOverviewPerformancePoint[]
 }
 
@@ -342,9 +327,41 @@ export interface UsageInsightsOverviewResponse {
   cost: UsageOverviewCost
 }
 
+export type UsagePerformanceMetric = 'latency' | 'firstToken' | 'throughput' | 'load'
+export type UsageCostMetric = 'cost' | 'savings' | 'cache'
+
+export interface UsageMetricSeries<S, P = S> {
+  summary: S
+  points: { bucket: string, label: string, requestCount: number, value: P }[]
+}
+
+interface UsageLatencyPercentiles {
+  p50Ms: number | null
+  p95Ms: number | null
+  p99Ms: number | null
+}
+
+type UsageCostSummary = Pick<UsageOverviewCost, 'estimatedCost' | 'cacheSavings' | 'tierPremium' | 'costPerSuccessfulRequest' | 'coverage'>
+
+interface UsageMetricData {
+  health: UsageOverviewHealth
+  latency: UsageMetricSeries<UsageLatencyPercentiles>
+  firstToken: UsageMetricSeries<UsageLatencyPercentiles>
+  throughput: UsageMetricSeries<{ p10: number | null, p50: number | null, p90: number | null }>
+  load: UsageMetricSeries<UsageOverviewLoad>
+  cost: UsageMetricSeries<UsageCostSummary, { estimatedCost: string | null, noCacheCost: string | null }>
+  savings: UsageMetricSeries<UsageCostSummary, string | null>
+  cache: UsageMetricSeries<UsageCostSummary, { inputTokens: number, cachedTokenRate: number, cacheHitRequestRate: number | null }>
+}
+
+export type UsageMetricResponse<M extends keyof UsageMetricData> = {
+  [K in M]: { analytics: AnalyticsMetadata, granularity: string, metric: K, data: UsageMetricData[K] }
+}[M]
+
 export interface UsageDiagnosticItem {
   key: string
   name: string
+  authenticationKind: string | null
   accountPlanType: string | null
   accountPlanTypeDisplay: string | null
   requestCount: number
@@ -455,6 +472,33 @@ export function getUsageRecordInsightsOverview(data: UsageRangeQuery, options: R
 export function getUsageRecordInsightsDiagnostics(data: UsageDiagnosticsQuery, options: RequestOptions = {}) {
   return request<UsageDiagnosticsResponse>({
     url: '/api/admin/usage/insights/diagnostics',
+    method: 'GET',
+    params: data,
+    ...options,
+  })
+}
+
+export function getUsageHealth(data: UsageRangeQuery, options: RequestOptions = {}) {
+  return request<UsageMetricResponse<'health'>>({
+    url: '/api/admin/usage/insights/health',
+    method: 'GET',
+    params: data,
+    ...options,
+  })
+}
+
+export function getUsagePerformance<M extends UsagePerformanceMetric>(data: UsageRangeQuery & { metric: M }, options: RequestOptions = {}) {
+  return request<UsageMetricResponse<M>>({
+    url: '/api/admin/usage/insights/performance',
+    method: 'GET',
+    params: data,
+    ...options,
+  })
+}
+
+export function getUsageCost<M extends UsageCostMetric>(data: UsageRangeQuery & { metric: M }, options: RequestOptions = {}) {
+  return request<UsageMetricResponse<M>>({
+    url: '/api/admin/usage/insights/cost',
     method: 'GET',
     params: data,
     ...options,

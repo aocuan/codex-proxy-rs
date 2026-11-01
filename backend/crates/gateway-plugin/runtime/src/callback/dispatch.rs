@@ -94,6 +94,18 @@ impl CallbackHandler for PluginCallbacks {
                 if method == host::LOG {
                     return log.record(&context, params, &payload);
                 }
+                // 只证明受管 HTTP 拒绝；其他能力即使只读，也不推测其业务副作用
+                if let Some(managed) = &scope.upstream
+                    && !matches!(
+                        method.as_str(),
+                        upstream_wire::HTTP_DO
+                            | upstream_wire::HTTP_DO_STREAM
+                            | upstream_wire::HTTP_STREAM_READ
+                            | upstream_wire::HTTP_STREAM_CLOSE
+                    )
+                {
+                    managed.replay.invalidate();
+                }
                 let middleware = if matches!(
                     method.as_str(),
                     middleware_wire::NEXT_METHOD
@@ -225,7 +237,13 @@ impl CallbackHandler for PluginCallbacks {
                     | upstream_wire::WEBSOCKET_READ
                     | upstream_wire::WEBSOCKET_CLOSE
             ) {
-                return upstream::dispatch(&http, &method, params, payload).await;
+                return upstream::dispatch(&http, &method, params, payload)
+                    .await
+                    .inspect_err(|_| {
+                        if let Some(managed) = &scope.upstream {
+                            managed.replay.invalidate();
+                        }
+                    });
             }
             if matches!(
                 method.as_str(),

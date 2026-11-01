@@ -23,7 +23,7 @@ const preferenceLabels = {
 
 <template>
   <ZDialog v-model="open" title="测评详情" width="74rem">
-    <div v-if="loading" class="py-10 text-center text-cp-text-secondary" role="status">
+    <div v-if="loading" class="py-10 text-center text-z-text-secondary" role="status">
       正在读取测评
     </div>
     <ZEmpty v-else-if="!detail" :title="error ? '读取失败' : '暂无测评数据'" :description="error">
@@ -39,7 +39,7 @@ const preferenceLabels = {
         <ZTag :type="detail.run.activeItems ? 'info' : 'default'">
           {{ runStatus(detail.run) }}
         </ZTag>
-        <span class="text-cp-sm text-cp-text-secondary">{{ detail.run.createdAtDisplay }}</span>
+        <span class="text-z-sm text-z-text-secondary">{{ detail.run.createdAtDisplay }}</span>
         <div class="ml-auto flex gap-2">
           <ZButton size="small" @click="emit('refresh')">
             刷新
@@ -49,7 +49,7 @@ const preferenceLabels = {
           </ZButton>
         </div>
       </div>
-      <p v-if="detail.run.retainedItems < detail.run.totalItems" class="text-cp-sm text-cp-warning-text">
+      <p v-if="detail.run.retainedItems < detail.run.totalItems" class="text-z-sm text-z-warning-text">
         部分历史已按保留策略清理，当前显示 {{ detail.run.retainedItems }} / {{ detail.run.totalItems }} 条
       </p>
       <ZTable :columns="itemColumns" :data="detail.items" row-key="id" empty-text="任务记录已清理">
@@ -57,24 +57,24 @@ const preferenceLabels = {
           <div class="truncate" :title="row.accountId">
             {{ accountName(row.accountId) }}
           </div>
-          <span class="text-cp-xs text-cp-text-tertiary">第 {{ row.repetition }} 次</span>
+          <span class="text-z-xs text-z-text-tertiary">第 {{ row.repetition }} 次</span>
         </template>
         <template #status="{ row }">
           <ZTag :type="row.status === 'failed' ? 'danger' : row.status === 'running' ? 'info' : 'default'">
             {{ statusLabels[row.status] }}
           </ZTag>
-          <span v-if="row.message" class="mt-1 block truncate text-cp-xs text-cp-text-tertiary" :title="row.message">{{ row.message }}</span>
+          <span v-if="row.message" class="mt-1 block truncate text-z-xs text-z-text-tertiary" :title="row.message">{{ row.message }}</span>
         </template>
         <template #verdict="{ row }">
           <ZTag :type="row.verdict === 'correct' ? 'success' : row.verdict === 'wrong' ? 'danger' : 'default'">
             {{ row.observation.turnState ? turnStateLabels[row.observation.turnState.outcome] : row.judgment?.status === 'queued' ? '等待判题' : row.judgment?.status === 'running' ? '正在判题' : verdictLabels[row.verdict] }}
           </ZTag>
-          <span v-if="row.judgment" class="mt-1 block text-cp-xs text-cp-text-tertiary">AI 评审</span>
-          <span v-if="row.observation.accountPreference" class="mt-1 block text-cp-xs text-cp-text-secondary" :title="row.observation.accountPreference.reason ?? undefined">{{ groupName(row.observation.accountPreference.groupId) }} · {{ preferenceLabels[row.observation.accountPreference.status] }}{{ row.observation.accountPreference.reason ? `（${row.observation.accountPreference.reason}）` : '' }}</span>
+          <span v-if="row.judgment" class="mt-1 block text-z-xs text-z-text-tertiary">AI 评审</span>
+          <span v-if="row.observation.accountPreference" class="mt-1 block text-z-xs text-z-text-secondary" :title="row.observation.accountPreference.reason ?? undefined">{{ groupName(row.observation.accountPreference.groupId) }} · {{ preferenceLabels[row.observation.accountPreference.status] }}{{ row.observation.accountPreference.reason ? `（${row.observation.accountPreference.reason}）` : '' }}</span>
         </template>
         <template #duration="{ row }">
           {{ durationText(row.durationMs) }}
-          <span class="mt-1 block text-cp-xs text-cp-text-tertiary">首字 {{ durationText(row.ttftMs) }}</span>
+          <span class="mt-1 block text-z-xs text-z-text-tertiary">首字 {{ durationText(row.ttftMs) }}</span>
         </template>
         <template #actions="{ row }">
           <div class="flex gap-2">
@@ -93,16 +93,16 @@ const preferenceLabels = {
           </div>
         </template>
       </ZTable>
-      <section class="mt-5 text-cp-sm" aria-label="测评题目">
+      <section class="mt-5 text-z-sm" aria-label="测评题目">
         <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
-          <h3 class="m-0 text-cp-sm font-emphasis">
+          <h3 class="m-0 text-z-sm font-emphasis">
             题目
           </h3>
-          <span class="text-cp-xs text-cp-text-tertiary">
+          <span class="text-z-xs text-z-text-tertiary">
             推理强度 {{ detail.run.parameters.reasoningEffort ?? '跟随账号配置' }} · 超时 {{ detail.run.parameters.timeoutSeconds }} 秒
           </span>
         </div>
-        <pre class="mt-3 mb-0 max-h-64 overflow-auto rounded-cp bg-cp-fill-quaternary p-3 font-sans whitespace-pre-wrap wrap-anywhere">{{ detail.run.profile.prompt }}</pre>
+        <pre class="mt-3 mb-0 max-h-64 overflow-auto rounded-cp bg-z-fill-quaternary p-3 font-sans whitespace-pre-wrap wrap-anywhere">{{ detail.run.profile.prompt }}</pre>
       </section>
     </template>
   </ZDialog>

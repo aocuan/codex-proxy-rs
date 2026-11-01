@@ -4,13 +4,13 @@ mod automatic_context;
 pub mod canonical;
 pub mod catalog;
 pub mod client;
+mod client_catalog;
 mod client_json;
 mod client_live;
-mod client_sse;
+mod client_stream;
 pub(crate) mod connection;
 mod correlation;
 pub mod diagnostics;
-mod downstream;
 pub mod endpoints;
 pub mod headers;
 mod outbound;
@@ -21,9 +21,9 @@ pub mod protocol;
 pub mod request;
 pub mod reset_credits;
 mod response_meta;
+pub(crate) mod routing_affinity;
 pub(crate) mod session;
 pub mod subscription;
-pub(crate) use downstream::normalize_selected_codex_downstream_body;
 pub(crate) use endpoints::parse_upstream_base_url;
 pub mod tls;
 pub(crate) mod turnstate;
@@ -35,7 +35,7 @@ pub use self::{
     catalog::{
         CodexCatalogCapabilities, CodexCatalogCapabilityEvidence, CodexCatalogLimits,
         CodexCatalogMetadata, CodexCatalogModel, CodexCatalogVisibility, CodexModelCatalogError,
-        CodexModelCatalogSnapshot, MAX_CODEX_MODEL_CATALOG_BYTES, parse_codex_model_catalog,
+        CodexModelCatalogSnapshot, parse_codex_model_catalog,
     },
     client::{
         CodexAccountSelectionTelemetry, CodexBackendClient, CodexBackendJsonResponse,

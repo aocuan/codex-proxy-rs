@@ -23,7 +23,6 @@
     "filters": {
       "searchAccountGroup": "搜索賬號分組",
       "searchGroupName": "搜索分組名稱",
-      "filterByGroupStatus": "按分組狀態篩選",
       "deleteSelected": "刪除 ({count})",
       "createGroup": "創建分組"
     },

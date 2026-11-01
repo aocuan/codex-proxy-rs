@@ -30,7 +30,7 @@ use super::{
     error::CodexWebSocketExchangeError,
     model::{CodexWebSocketConnection, CodexWebSocketRequest, WebSocketContinuationRequirement},
     pool::CodexWebSocketConnectionMetadata,
-    pump::{PumpKeepalive, PumpLogContext, PumpedWebSocket, RawWsStream},
+    pump::{PumpLogContext, PumpedWebSocket, RawWsStream},
 };
 
 use super::control::WEBSOCKET_SEND_TIMEOUT;
@@ -153,16 +153,12 @@ pub(super) async fn connect_sideband_websocket(
 
 pub(super) async fn connect_pumped_websocket(
     connection: &CodexWebSocketConnection,
-    keepalive: PumpKeepalive,
     context: PumpLogContext,
     fast_path: bool,
     proxy_permit: Option<super::pool::ProxyConnectionPermit>,
 ) -> Result<(PumpedWebSocket, WsResponse<Option<Vec<u8>>>), CodexWebSocketExchangeError> {
     let (raw, response) = connect_websocket(connection, fast_path).await?;
-    Ok((
-        PumpedWebSocket::new(raw, keepalive, context, proxy_permit),
-        response,
-    ))
+    Ok((PumpedWebSocket::new(raw, context, proxy_permit), response))
 }
 
 pub(super) async fn send_websocket_request(
@@ -185,6 +181,10 @@ pub(super) fn websocket_connection_metadata(
     connection: &CodexWebSocketConnection,
 ) -> CodexWebSocketConnectionMetadata {
     CodexWebSocketConnectionMetadata {
+        routing_affinity: crate::transport::routing_affinity::ChatGptRoutingAffinity::from_response(
+            &connection.endpoint,
+            response.headers(),
+        ),
         turn_state: response_meta::turn_state(response.headers()),
         set_cookie_headers: response_meta::set_cookie_headers(response.headers()),
         rate_limit_headers: response_meta::rate_limit_headers(response.headers()),

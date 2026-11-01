@@ -18,27 +18,27 @@ const status = computed(() => {
 </script>
 
 <template>
-  <section class="mb-5 rounded-cp bg-cp-fill-quaternary p-4" aria-label="AI 判题结果">
+  <section class="mb-5 rounded-cp bg-z-fill-quaternary p-4" aria-label="AI 判题结果">
     <div class="flex flex-wrap items-center gap-2">
       <span class="font-emphasis">AI 评审</span>
       <ZTag :type="judgment.verdict === 'correct' ? 'success' : judgment.verdict === 'wrong' ? 'danger' : 'default'">
         {{ status }}
       </ZTag>
-      <span v-if="config?.model" class="text-cp-xs text-cp-text-secondary">{{ config.model }}</span>
-      <span v-if="judgment.attempt > 1" class="text-cp-xs text-cp-text-secondary">第 {{ judgment.attempt }} 次判题</span>
+      <span v-if="config?.model" class="text-z-xs text-z-text-secondary">{{ config.model }}</span>
+      <span v-if="judgment.attempt > 1" class="text-z-xs text-z-text-secondary">第 {{ judgment.attempt }} 次判题</span>
     </div>
-    <p v-if="judgment.reason" class="mb-0 text-cp-sm whitespace-pre-wrap wrap-anywhere">
+    <p v-if="judgment.reason" class="mb-0 text-z-sm whitespace-pre-wrap wrap-anywhere">
       {{ judgment.reason }}
     </p>
-    <div v-if="config?.rubric" class="mt-3 text-cp-sm">
-      <h3 class="m-0 text-cp-xs font-emphasis text-cp-text-secondary">
+    <div v-if="config?.rubric" class="mt-3 text-z-sm">
+      <h3 class="m-0 text-z-xs font-emphasis text-z-text-secondary">
         评分标准
       </h3>
       <p class="mt-1 mb-0 max-h-48 overflow-auto whitespace-pre-wrap wrap-anywhere">
         {{ config.rubric }}
       </p>
     </div>
-    <dl class="mt-3 mb-0 flex flex-wrap gap-x-5 gap-y-2 text-cp-xs text-cp-text-secondary">
+    <dl class="mt-3 mb-0 flex flex-wrap gap-x-5 gap-y-2 text-z-xs text-z-text-secondary">
       <div class="flex min-w-0 gap-2">
         <dt class="shrink-0">
           {{ judgment.accountId ? '判题账号' : '判题服务' }}

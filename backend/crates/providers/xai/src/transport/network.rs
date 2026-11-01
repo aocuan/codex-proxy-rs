@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use url::Url;
 
-use crate::credential::discovery::MAX_OAUTH_RESPONSE_BYTES;
+use crate::oauth_http::MAX_OAUTH_RESPONSE_BYTES;
 use crate::{
     GrokBillingRequest, GrokBillingTransport, GrokBillingTransportError,
     GrokBillingTransportErrorKind, GrokBillingTransportFuture, GrokBillingTransportResponse,
@@ -34,7 +34,9 @@ use gateway_core::event::UpstreamHttpVersion;
 use gateway_core::upstream::UpstreamSendState;
 
 use super::egress::{EgressCache, MAX_CACHED_EGRESS_STATES};
-use super::{GrokQuotaFailureKind, classify_grok_quota_failure, scrub_account_fingerprints};
+use super::upstream_error::{
+    GrokQuotaFailureKind, classify_grok_quota_failure, scrub_account_fingerprints,
+};
 use gateway_core::account::OutboundProxy;
 
 pub(crate) const OFFICIAL_OAUTH_HOST: &str = "auth.x.ai";
@@ -1150,6 +1152,12 @@ async fn classify_inference_status(
         ))
         .with_classification("upstream", diagnostic_code),
     );
+    error = error.with_upstream_failure_fields(gateway_core::upstream::UpstreamFailureFields {
+        status: Some(status_code),
+        code: metadata.original_code,
+        error_type: metadata.original_error_type,
+        message: metadata.original_message,
+    });
     let upstream_code = metadata.code;
     if let Some(message) = metadata.client_message.as_deref() {
         error = error.with_client_visible_upstream_error(ClientVisibleUpstreamError::new(
@@ -1175,6 +1183,9 @@ async fn classify_inference_status(
 
 #[derive(Default)]
 struct InferenceErrorMetadata {
+    original_code: Option<String>,
+    original_error_type: Option<String>,
+    original_message: Option<String>,
     code: Option<String>,
     error_type: Option<String>,
     message: Option<String>,
@@ -1307,6 +1318,15 @@ fn inference_error_metadata(body: &[u8]) -> InferenceErrorMetadata {
         .and_then(|error| first_string(error, &["message", "error"]))
         .or_else(|| first_string(root, &["message", "error"]));
     InferenceErrorMetadata {
+        original_code: nested
+            .and_then(|error| first_raw_string(error, &["code", "error_code"]))
+            .or_else(|| first_raw_string(root, &["code", "error_code"])),
+        original_error_type: nested
+            .and_then(|error| first_raw_string(error, &["type", "error_type"]))
+            .or_else(|| first_raw_string(root, &["type", "error_type"])),
+        original_message: nested
+            .and_then(|error| first_raw_string(error, &["message", "error"]))
+            .or_else(|| first_raw_string(root, &["message", "error"])),
         code: nested
             .and_then(|error| first_string(error, &["code", "error_code"]))
             .or_else(|| first_string(root, &["code", "error_code"])),
@@ -1316,6 +1336,13 @@ fn inference_error_metadata(body: &[u8]) -> InferenceErrorMetadata {
         client_message: message.clone(),
         message,
     }
+}
+
+fn first_raw_string(object: &serde_json::Map<String, Value>, fields: &[&str]) -> Option<String> {
+    fields
+        .iter()
+        .find_map(|field| object.get(*field).and_then(Value::as_str))
+        .map(str::to_owned)
 }
 
 fn first_string(object: &serde_json::Map<String, Value>, fields: &[&str]) -> Option<String> {

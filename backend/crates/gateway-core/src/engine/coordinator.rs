@@ -1086,7 +1086,7 @@ where
         let Some(candidate) = self.plan.candidates().get(self.candidate_index).cloned() else {
             let error = GatewayError::new(
                 GatewayErrorKind::NoAvailableProvider,
-                "no upstream Provider is available",
+                "No upstream service is available.",
             );
             self.finish_failure(FailureFinalization {
                 outcome: ExecutionOutcome::Failed,
@@ -1137,7 +1137,7 @@ where
                 pinned_account.clone(),
                 self.account_state_owner.clone(),
             )
-            .with_account_scope(Arc::clone(self.plan.account_scope())),
+            .with_account_scope(Arc::clone(candidate.account_scope())),
         }
         .with_credential_recovery_attempted(pinned_account.as_ref().is_some_and(|account| {
             self.credential_recovery_attempted_accounts
@@ -1177,6 +1177,17 @@ where
         }
         let context = AttemptContext::new(
             RequestAttemptContext::new(self.request_id.clone(), self.client_api_key_ref.clone())
+                .with_account_error_protection(
+                    (!self.account_selection.is_diagnostic()
+                        && self.plan.account_error_protection().policy().enabled)
+                        .then(|| self.engine.account_error_protection.as_ref())
+                        .flatten()
+                        .map(|store| super::account_protection::ProtectionContext {
+                            store: Arc::clone(store),
+                            policy: self.plan.account_error_protection(),
+                            revision: self.plan.account_error_protection_revision(),
+                        }),
+                )
                 .with_lease_metadata(Arc::clone(&self.lease_metadata))
                 .with_response_control(self.response_control.clone())
                 .with_request_profile(self.request_profiles.get(candidate.provider()).cloned())
@@ -1381,7 +1392,7 @@ where
             self.record_provider_failure(candidate.provider().clone());
             let error = GatewayError::new(
                 GatewayErrorKind::Internal,
-                "provider metadata did not match the frozen candidate",
+                "Provider metadata did not match the frozen candidate.",
             );
             self.finish_failure(FailureFinalization {
                 outcome: ExecutionOutcome::Failed,
@@ -1415,7 +1426,7 @@ where
             drop(stream);
             let error = GatewayError::new(
                 GatewayErrorKind::Internal,
-                "provider selected an account outside the frozen client scope",
+                "Provider selected an account outside the frozen client scope.",
             );
             self.finish_failure(FailureFinalization {
                 outcome: ExecutionOutcome::Failed,
@@ -1438,7 +1449,7 @@ where
             drop(stream);
             let error = GatewayError::new(
                 GatewayErrorKind::Internal,
-                "provider did not use the required account",
+                "Provider did not use the required account.",
             );
             self.finish_failure(FailureFinalization {
                 outcome: ExecutionOutcome::Failed,
@@ -1464,7 +1475,7 @@ where
             drop(stream);
             let error = GatewayError::new(
                 GatewayErrorKind::Internal,
-                "native continuation binding did not match selected account",
+                "Native continuation binding did not match selected account.",
             );
             self.finish_failure(FailureFinalization {
                 outcome: ExecutionOutcome::Failed,
@@ -2417,11 +2428,11 @@ where
                 } else {
                     ExecutionOutcome::Failed
                 },
-                GatewayError::new(GatewayErrorKind::Timeout, "request deadline elapsed"),
+                GatewayError::new(GatewayErrorKind::Timeout, "Request deadline elapsed."),
             ),
             _ => (
                 ExecutionOutcome::Failed,
-                GatewayError::new(GatewayErrorKind::Internal, "request execution failed"),
+                GatewayError::new(GatewayErrorKind::Internal, "Request execution failed."),
             ),
         };
         let send_state = if self.attempts == 0 {

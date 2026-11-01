@@ -133,11 +133,13 @@ pub(crate) fn admin_dashboard_account_usage(
     usage: ProviderAccountUsageObservation,
 ) -> admin_observability::DashboardAccountUsage {
     admin_observability::DashboardAccountUsage {
+        upstream: None,
         account_id: usage.account_id,
         provider_kind: usage.provider_kind,
         authentication_kind: usage.authentication_kind,
         name: usage.name,
         email: usage.email,
+        notes: usage.notes,
         plan_type: usage.plan_type,
         plan_type_display: None,
         request_count: usage.request_count,
@@ -278,6 +280,7 @@ fn admin_diagnostic_observation(
         key: observation.key,
         name: observation.name,
         account_provider_kind: observation.account_provider_kind,
+        account_authentication_kind: observation.account_authentication_kind,
         account_plan_type: observation.account_plan_type,
         request_count: observation.request_count,
         success_count: observation.success_count,

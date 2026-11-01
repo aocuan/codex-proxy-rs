@@ -99,6 +99,277 @@ struct CountingExtensionPreparation {
 
 struct AliasLease(Vec<ContributedModelAlias>);
 
+struct ModelLease(Vec<gateway_core::routing::ContributedModel>);
+
+#[test]
+fn same_name_native_and_adapted_sources_keep_account_capabilities_separate() {
+    use gateway_core::{
+        account::{AccountModelAccess, AccountModelAccessMode, ProviderAccountId},
+        operation::{Feature, GenerateRequest, Operation, ProtocolPayload},
+        routing::{ContributedModel, SupportLevel},
+    };
+    struct Catalog;
+    impl ProviderCatalogPort for Catalog {
+        fn catalog_generations(&self) -> BTreeMap<ProviderKind, ProviderCatalogGeneration> {
+            [(
+                ProviderKind::new("alpha").unwrap(),
+                ProviderCatalogGeneration::new(1),
+            )]
+            .into()
+        }
+        fn query_model_capabilities(
+            &self,
+            _: &ProviderKind,
+        ) -> BoxFuture<'_, Result<Vec<ProviderModelCapabilities>, ProviderCatalogUnavailable>>
+        {
+            Box::pin(async {
+                Ok(vec![
+                    ProviderModelCapabilities::new(
+                        UpstreamModelId::new("shared-model").unwrap(),
+                        super::capabilities().with_feature(Feature::Tools, SupportLevel::Native),
+                    )
+                    .with_catalog_accounts([ProviderAccountId::new("acct_a").unwrap()].into())
+                    .with_presentation(ModelPresentation::new(Some("Native".into()), None)),
+                ])
+            })
+        }
+    }
+    let id = PublicModelId::new("shared-model").unwrap();
+    let b = ProviderAccountId::new("acct_b").unwrap();
+    let mut contribution = ContributedModel {
+        owner: "fixture".into(),
+        id: id.clone(),
+        provider: ProviderKind::new("alpha").unwrap(),
+        accounts: [b.clone()].into(),
+        capabilities: super::capabilities(),
+        presentation: ModelPresentation::new(Some("Adapted".into()), None),
+    };
+    let facts = SnapshotFacts::new(
+        revision(1),
+        revision(1),
+        super::settings(),
+        vec![],
+        vec![],
+        ["acct_a", "acct_b", "acct_c"]
+            .into_iter()
+            .map(|id| {
+                SnapshotProviderAccountFacts::new(ProviderAccountId::new(id).unwrap(), "alpha")
+                    .with_model_access(
+                        AccountModelAccess::new(
+                            AccountModelAccessMode::Allowlist,
+                            vec![
+                                if id == "acct_c" {
+                                    "other"
+                                } else {
+                                    "shared-model"
+                                }
+                                .into(),
+                            ],
+                        )
+                        .unwrap(),
+                    )
+            })
+            .collect(),
+        vec![],
+    );
+    let native = block_on(
+        RuntimeSnapshotCompiler::new(
+            Arc::new(TestSnapshotStore::new(Ok(facts))),
+            Arc::new(Catalog),
+        )
+        .compile(),
+    )
+    .unwrap();
+    let scope = native.all_account_scope();
+    let b_only = Arc::new(scope.restricted_to(&Default::default(), &[b.clone()].into()));
+    assert!(native.public_models_for_scope(&b_only).is_empty());
+    assert!(native.allows_public_model_for_account(&id, &b_only, &b));
+    let c = ProviderAccountId::new("acct_c").unwrap();
+    assert!(!native.allows_public_model_for_account(&id, &scope, &c));
+    assert!(!native.allows_public_model_for_account(&id, &b_only, &c));
+    assert!(
+        native
+            .plan(
+                &id,
+                &super::operation(),
+                b_only.clone(),
+                &Default::default()
+            )
+            .unwrap()
+            .candidates()[0]
+            .account_scope()
+            .allows(&b)
+    );
+    let snapshot = native.with_extensions(Some(ExtensionSetReference::new(
+        ExtensionSetId::new("adapted".into()).unwrap(),
+        Arc::new(ModelLease(vec![contribution.clone()])),
+    )));
+    assert_eq!(snapshot.public_models_for_scope(&b_only), vec![id.clone()]);
+    assert_eq!(
+        snapshot.public_model_profiles_for_scope(&b_only)[0].presentation(),
+        &contribution.presentation
+    );
+    let plan = snapshot
+        .plan(
+            &id,
+            &super::operation(),
+            b_only.clone(),
+            &Default::default(),
+        )
+        .unwrap();
+    assert!(plan.candidates()[0].account_scope().allows(&b));
+    let tools = Operation::Generate(GenerateRequest::from_protocol_payload(
+        ProtocolPayload::json_object(
+            "openai",
+            serde_json::json!({"model":"shared-model","tools":[{"type":"function","name":"test"}]})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap(),
+    ));
+    assert!(
+        snapshot
+            .plan(&id, &tools, b_only, &Default::default())
+            .is_err()
+    );
+    let plan = snapshot
+        .plan(&id, &tools, scope.clone(), &Default::default())
+        .unwrap();
+    assert!(
+        plan.candidates()[0]
+            .account_scope()
+            .allows(&ProviderAccountId::new("acct_a").unwrap())
+    );
+    assert!(!plan.candidates()[0].account_scope().allows(&b));
+    contribution.accounts = [ProviderAccountId::new("acct_c").unwrap()].into();
+    let denied = snapshot.with_extensions(Some(ExtensionSetReference::new(
+        ExtensionSetId::new("denied".into()).unwrap(),
+        Arc::new(ModelLease(vec![contribution])),
+    )));
+    let c_only = Arc::new(scope.restricted_to(
+        &Default::default(),
+        &[ProviderAccountId::new("acct_c").unwrap()].into(),
+    ));
+    assert!(denied.public_models_for_scope(&c_only).is_empty());
+    assert!(
+        denied
+            .plan(&id, &super::operation(), c_only, &Default::default())
+            .is_err()
+    );
+}
+
+impl ExtensionSetLease for ModelLease {
+    fn is_ready(&self) -> bool {
+        true
+    }
+    fn models(&self) -> &[gateway_core::routing::ContributedModel] {
+        &self.0
+    }
+}
+
+#[test]
+fn native_model_without_presentation_cannot_borrow_an_unauthorized_plugin_profile() {
+    let snapshot = super::snapshot().with_extensions(Some(ExtensionSetReference::new(
+        ExtensionSetId::new("private-profile".into()).unwrap(),
+        Arc::new(ModelLease(vec![gateway_core::routing::ContributedModel {
+            owner: "fixture".into(),
+            id: PublicModelId::new("gpt-5.5").unwrap(),
+            provider: ProviderKind::new("openai").unwrap(),
+            accounts: [gateway_core::account::ProviderAccountId::new("acct_private").unwrap()]
+                .into(),
+            capabilities: super::capabilities(),
+            presentation: ModelPresentation::new(Some("Private model".into()), None),
+        }])),
+    )));
+    assert!(
+        snapshot
+            .public_model_profiles_for_scope(&super::account_scope())
+            .is_empty()
+    );
+}
+
+#[test]
+fn adapted_models_limit_visibility_and_routing_to_capable_authorized_accounts() {
+    use gateway_core::{
+        account::ProviderAccountId,
+        operation::{Feature, GenerateRequest, Operation, ProtocolPayload},
+        routing::{
+            ClientRoutingScope, ContributedModel, FrozenAccountScope, RuntimeAccount,
+            RuntimeAccountDirectory, SupportLevel,
+        },
+    };
+    let account = ProviderAccountId::new("acct_openai").unwrap();
+    let provider = ProviderKind::new("openai").unwrap();
+    let id = PublicModelId::new("adapted-model").unwrap();
+    let contribution = ContributedModel {
+        owner: "fixture".into(),
+        id: id.clone(),
+        provider,
+        accounts: [account.clone()].into(),
+        capabilities: super::capabilities(),
+        presentation: ModelPresentation::new(Some("Adapted".into()), None),
+    };
+    let snapshot = super::snapshot().with_extensions(Some(ExtensionSetReference::new(
+        ExtensionSetId::new("models".into()).unwrap(),
+        Arc::new(ModelLease(vec![contribution.clone()])),
+    )));
+    let scope = super::account_scope();
+    assert!(snapshot.public_models_for_scope(&scope).contains(&id));
+    assert!(snapshot.allows_public_model_for_account(&id, &scope, &account));
+    let undeclared = ProviderAccountId::new("acct_undeclared").unwrap();
+    let all = FrozenAccountScope::new(
+        Arc::new(RuntimeAccountDirectory::new(BTreeMap::from([(
+            undeclared.clone(),
+            RuntimeAccount::new(ProviderKind::new("openai").unwrap(), Default::default()),
+        )]))),
+        ClientRoutingScope::all_accounts(),
+    );
+    assert!(!snapshot.allows_public_model_for_account(&id, &all, &undeclared));
+    assert!(
+        snapshot
+            .public_model_profiles_for_scope(&scope)
+            .iter()
+            .any(|p| p.model() == &id)
+    );
+    let plan = snapshot
+        .plan(&id, &super::operation(), scope.clone(), &Default::default())
+        .unwrap();
+    assert_eq!(plan.candidates().len(), 1);
+    assert!(plan.candidates()[0].account_scope().allows(&account));
+    let other = Arc::new(scope.restricted_to(
+        &Default::default(),
+        &[ProviderAccountId::new("acct_xai").unwrap()].into(),
+    ));
+    assert!(!snapshot.public_models_for_scope(&other).contains(&id));
+    assert!(
+        snapshot
+            .plan(&id, &super::operation(), other, &Default::default())
+            .is_err()
+    );
+    let tools = Operation::Generate(GenerateRequest::from_protocol_payload(
+        ProtocolPayload::json_object("openai", serde_json::json!({"model":"adapted-model","input":[],"tools":[{"type":"function","name":"test","parameters":{}}]}).as_object().unwrap().clone()).unwrap(),
+    ));
+    assert!(
+        snapshot
+            .plan(&id, &tools, scope.clone(), &Default::default())
+            .is_err()
+    );
+    let mut supported = contribution;
+    supported.capabilities = supported
+        .capabilities
+        .with_feature(Feature::Tools, SupportLevel::Native);
+    let capable = snapshot.with_extensions(Some(ExtensionSetReference::new(
+        ExtensionSetId::new("capable".into()).unwrap(),
+        Arc::new(ModelLease(vec![supported])),
+    )));
+    assert!(
+        capable
+            .plan(&id, &tools, scope, &Default::default())
+            .is_ok()
+    );
+}
+
 impl ExtensionSetLease for AliasLease {
     fn is_ready(&self) -> bool {
         true
@@ -1106,6 +1377,89 @@ fn compiler_should_reject_invalid_persisted_client_min_version() {
 
 fn facts(config_revision: u64, observed_current_revision: u64) -> SnapshotFacts {
     facts_with_min_versions(config_revision, observed_current_revision, None, None)
+}
+
+#[test]
+fn peer_policy_compilation_keeps_only_explicitly_shared_direct_accounts() {
+    use gateway_core::{
+        account::ProviderAccountId, policy::ClientPeerSharing, routing::AccountGroupId,
+    };
+    struct DirectCatalog;
+    impl ProviderCatalogPort for DirectCatalog {
+        fn is_direct_account(&self, provider: &ProviderKind, kind: &str) -> bool {
+            provider.as_str() == "alpha" && kind == "oauth"
+        }
+        fn catalog_generations(&self) -> BTreeMap<ProviderKind, ProviderCatalogGeneration> {
+            BTreeMap::from([(
+                ProviderKind::new("alpha").unwrap(),
+                ProviderCatalogGeneration::new(1),
+            )])
+        }
+        fn query_model_capabilities(
+            &self,
+            _: &ProviderKind,
+        ) -> BoxFuture<'_, Result<Vec<ProviderModelCapabilities>, ProviderCatalogUnavailable>>
+        {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+    let group = AccountGroupId::new("grp_11111111111111111111111111111111").unwrap();
+    let direct = ProviderAccountId::new("acct_direct").unwrap();
+    let proxy = ProviderAccountId::new("acct_proxy").unwrap();
+    for (bound, enabled, expected) in [
+        (true, true, true),
+        (true, false, false),
+        (false, true, false),
+    ] {
+        let facts = SnapshotFacts::new(
+            revision(1),
+            revision(1),
+            SettingsValues::new(3, "smart", BTreeMap::new(), None, None),
+            vec![
+                SnapshotClientPolicyFacts::new(
+                    ClientApiKeyId::new("key_peer").unwrap(),
+                    PlaintextClientApiKey::new("sk_peer_test").unwrap(),
+                    if bound {
+                        vec![group.clone()]
+                    } else {
+                        Vec::new()
+                    },
+                    RateLimits::unlimited(),
+                )
+                .with_peer_sharing(ClientPeerSharing {
+                    enabled: true,
+                    ..Default::default()
+                }),
+            ],
+            vec![SnapshotAccountGroupFacts::new(
+                group.clone(),
+                "共享组".into(),
+                enabled,
+            )],
+            vec![
+                SnapshotProviderAccountFacts::new(direct.clone(), "alpha")
+                    .with_authentication_kind("oauth".into()),
+                SnapshotProviderAccountFacts::new(proxy.clone(), "alpha")
+                    .with_authentication_kind("api_key".into()),
+            ],
+            vec![
+                SnapshotAccountGroupMemberFacts::new(group.clone(), direct.clone()),
+                SnapshotAccountGroupMemberFacts::new(group.clone(), proxy.clone()),
+            ],
+        );
+        let snapshot = block_on(
+            RuntimeSnapshotCompiler::new(
+                Arc::new(TestSnapshotStore::new(Ok(facts))),
+                Arc::new(DirectCatalog),
+            )
+            .compile(),
+        )
+        .unwrap();
+        let scope = snapshot.client_policies().next().unwrap().account_scope();
+        assert_eq!(scope.allows(&direct), expected);
+        assert!(!scope.allows(&proxy));
+        assert_eq!(scope.provider_kinds().is_empty(), !expected);
+    }
 }
 
 fn facts_with_min_versions(

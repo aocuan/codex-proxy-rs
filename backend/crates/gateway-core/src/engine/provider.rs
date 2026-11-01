@@ -50,6 +50,7 @@ pub struct ProviderCallMetadata {
     transport: UpstreamTransport,
     selection_observation: Option<ProviderSelectionObservation>,
     account_snapshot: Option<AccountHistorySnapshot>,
+    credential_revision: Option<crate::account::CredentialRevision>,
 }
 
 /// Provider 账号选择阶段输出的中立运行压力事实
@@ -99,6 +100,7 @@ impl ProviderCallMetadata {
             transport,
             selection_observation: None,
             account_snapshot: None,
+            credential_revision: None,
         }
     }
 
@@ -117,7 +119,23 @@ impl ProviderCallMetadata {
             transport,
             selection_observation: None,
             account_snapshot: None,
+            credential_revision: None,
         }
+    }
+
+    /// 账号实际选定时冻结的凭据版本，不在反馈时重新读取当前账号
+    #[must_use]
+    pub const fn with_credential_revision(
+        mut self,
+        revision: crate::account::CredentialRevision,
+    ) -> Self {
+        self.credential_revision = Some(revision);
+        self
+    }
+
+    #[must_use]
+    pub const fn credential_revision(&self) -> Option<crate::account::CredentialRevision> {
+        self.credential_revision
     }
 
     #[must_use]
@@ -236,6 +254,9 @@ pub struct ProviderStream {
     _lease: Box<dyn ResourceLease>,
     native_response_translator: Option<Box<dyn NativeResponseTranslator>>,
     account_feedback: Option<ProviderStreamAccountFeedback>,
+    account_protection: Option<super::account_protection::AttemptProtection>,
+    protection_feedback:
+        Option<futures::future::BoxFuture<'static, Option<Result<ProviderEvent, ProviderError>>>>,
     validator: Result<EventSequenceValidator, EventSequenceError>,
     strict_canonical_seen: bool,
     terminated: bool,
@@ -343,10 +364,30 @@ impl ProviderStream {
             _lease: Box::new(lease),
             native_response_translator: None,
             account_feedback: None,
+            account_protection: None,
+            protection_feedback: None,
             validator: Ok(EventSequenceValidator::new()),
             strict_canonical_seen: false,
             terminated: false,
         }
+    }
+
+    /// 在第一次发送前捕获反馈栅栏，诊断调用由协调器排除
+    #[must_use]
+    pub async fn with_account_error_protection(
+        mut self,
+        store: Arc<dyn crate::provider_ports::ProviderCooldownPort>,
+        policy: Arc<crate::account::CompiledAccountErrorProtection>,
+        policy_revision: u64,
+    ) -> Self {
+        self.account_protection = super::account_protection::AttemptProtection::begin(
+            store,
+            policy,
+            policy_revision,
+            &self.metadata,
+        )
+        .await;
+        self
     }
 
     /// 让公共 stream 边界统一回灌账号成功率与首个有效输出延迟
@@ -929,6 +970,40 @@ impl Stream for ProviderStream {
 
     fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
+        if let Some(feedback) = this.protection_feedback.as_mut() {
+            return match feedback.as_mut().poll(context) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(result) => {
+                    this.protection_feedback = None;
+                    Poll::Ready(result)
+                }
+            };
+        }
+        let result = this.poll_event(context);
+        // 客户端可在成功终态后停止拉取，不能依赖之后的 EOF 才清除保护证据
+        let protection_terminal = matches!(&result, Poll::Ready(Some(Err(_)) | None))
+            || (matches!(&result, Poll::Ready(Some(Ok(_))))
+                && this
+                    .account_protection
+                    .as_ref()
+                    .is_some_and(super::account_protection::AttemptProtection::is_completed));
+        if protection_terminal
+            && let Some(protection) = this.account_protection.take()
+            && let Poll::Ready(result) = result
+        {
+            this.protection_feedback = Some(protection.complete(result));
+            return Pin::new(this).poll_next(context);
+        }
+        result
+    }
+}
+
+impl ProviderStream {
+    fn poll_event(
+        &mut self,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<ProviderEvent, ProviderError>>> {
+        let this = self;
         if this.terminated {
             return Poll::Ready(None);
         }
@@ -961,6 +1036,9 @@ impl Stream for ProviderStream {
                 }
                 if let Some(feedback) = this.account_feedback.as_mut() {
                     feedback.observe(&event);
+                }
+                if let Some(protection) = this.account_protection.as_mut() {
+                    protection.observe(&event);
                 }
                 Poll::Ready(Some(Ok(event)))
             }
@@ -1016,7 +1094,7 @@ pub struct ProviderRequest {
 pub struct ProviderRequestObservation {
     /// 独立 Provider 端点声明的请求模型，仅用于观测，不参与文本模型目录路由
     pub requested_model: Option<PublicModelId>,
-    /// 客户端原始请求中的推理强度
+    /// Provider 从客户端请求与续接配置中解析的推理强度
     pub reasoning_effort: Option<String>,
     pub reasoning_preset: Option<String>,
     pub request_kind: Option<String>,
@@ -1075,6 +1153,11 @@ impl fmt::Debug for ProviderRequest {
 /// 新的 attempt 再次调用
 #[async_trait]
 pub trait Provider: Send + Sync {
+    /// 声明可用于互联共享的直连认证方式，不执行网络查询
+    fn is_direct_account(&self, _authentication_kind: &str) -> bool {
+        false
+    }
+
     /// Provider 解释自己的隐私规则，Core 仅冻结编译结果
     fn compile_privacy_policy(
         &self,
@@ -1294,6 +1377,12 @@ impl ProviderRegistry {
 }
 
 impl ProviderCatalogPort for ProviderRegistry {
+    fn is_direct_account(&self, provider: &ProviderKind, authentication_kind: &str) -> bool {
+        self.providers
+            .get(provider)
+            .is_some_and(|provider| provider.is_direct_account(authentication_kind))
+    }
+
     fn model_catalog_is_exhaustive(&self, provider: &ProviderKind) -> bool {
         self.providers
             .get(provider)

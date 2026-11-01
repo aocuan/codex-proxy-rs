@@ -61,7 +61,7 @@ const {
   createdKey,
   showImportKeyModal,
   selectedImportKey,
-  revealingKeyIds,
+  revealingKeys,
   openAiBaseUrl,
   showCreatedKey,
   clearCreatedKey,
@@ -164,7 +164,8 @@ watch(
             <template #prefix="{ row }">
               <ApiKeyPrefixCell
                 :prefix="row.prefix"
-                :revealing="revealingKeyIds.has(row.id)"
+                :revealing="revealingKeys.has(row.id)"
+                :copying="revealingKeys.get(row.id) === 'copy'"
                 @copy="copyApiKey(row)"
               />
             </template>
@@ -176,16 +177,16 @@ watch(
             </template>
             <template #limits="{ row }">
               <dl class="m-0 grid grid-cols-[max-content_max-content] gap-x-2 gap-y-1 text-xs tabular-nums">
-                <dt class="text-right text-cp-text-tertiary">
+                <dt class="text-right text-z-text-tertiary">
                   {{ t('keys.page.concurrency') }}
                 </dt>
-                <dd class="m-0 whitespace-nowrap text-cp-text">
+                <dd class="m-0 whitespace-nowrap text-z-text">
                   {{ row.maxConcurrency || '∞' }}
                 </dd>
-                <dt class="text-right text-cp-text-tertiary">
+                <dt class="text-right text-z-text-tertiary">
                   RPM
                 </dt>
-                <dd class="m-0 whitespace-nowrap text-cp-text">
+                <dd class="m-0 whitespace-nowrap text-z-text">
                   {{ row.requestsPerMinute || '∞' }}
                 </dd>
               </dl>
@@ -200,7 +201,8 @@ watch(
               <ApiKeyActions
                 :api-key="row"
                 :deleting="deletingKey"
-                :revealing="revealingKeyIds.has(row.id)"
+                :revealing="revealingKeys.has(row.id)"
+                :configuring="revealingKeys.get(row.id) === 'use'"
                 :updating-status="updatingStatusKeyIds.has(row.id)"
                 @edit="openEdit"
                 @reset-budget="openBudgetReset"

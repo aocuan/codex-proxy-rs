@@ -83,7 +83,7 @@ impl ClientBudgetPort for Budget {
             assert!(self.active.load(Ordering::SeqCst));
             if self.reject {
                 Err(
-                    GatewayError::new(GatewayErrorKind::RateLimited, "budget exhausted")
+                    GatewayError::new(GatewayErrorKind::BudgetExhausted, "budget exhausted")
                         .with_client_code("key_daily_budget_exceeded"),
                 )
             } else {
@@ -2640,7 +2640,7 @@ fn final_observation_is_emitted_once_for_success_rejection_and_detached_cancella
             observation_service(ObservationProviderBehavior::CompleteWithUsage, true);
         assert!(matches!(
             service.start(request(&service, ClientTransport::HttpJson)).await,
-            Err(error) if error.kind() == GatewayErrorKind::RateLimited
+            Err(error) if error.kind() == GatewayErrorKind::BudgetExhausted
         ));
         {
             let observations = observer.observations.lock().unwrap();
@@ -3303,6 +3303,7 @@ struct FailingProvider;
 
 struct NativeCatalogProvider {
     fail: bool,
+    empty: bool,
 }
 
 #[async_trait]
@@ -3332,6 +3333,9 @@ impl Provider for NativeCatalogProvider {
         assert_eq!((protocol, version), ("codex", "0.154.0"));
         if self.fail {
             return Err(gateway_core::routing::ProviderCatalogUnavailable);
+        }
+        if self.empty {
+            return Ok(Some(Vec::new()));
         }
         Ok(Some(
             ["gpt-new", "gpt-start"]
@@ -3363,7 +3367,10 @@ impl Provider for NativeCatalogProvider {
 #[test]
 fn client_catalog_forwards_scope_maps_whole_objects_and_omits_unroutable_models() {
     #[derive(Debug)]
-    struct Aliases(Vec<gateway_core::routing::ContributedModelAlias>);
+    struct Aliases(
+        Vec<gateway_core::routing::ContributedModelAlias>,
+        Vec<gateway_core::routing::ContributedModel>,
+    );
     impl gateway_core::routing::extensions::ExtensionSetLease for Aliases {
         fn is_ready(&self) -> bool {
             true
@@ -3371,8 +3378,29 @@ fn client_catalog_forwards_scope_maps_whole_objects_and_omits_unroutable_models(
         fn model_aliases(&self) -> &[gateway_core::routing::ContributedModelAlias] {
             &self.0
         }
+        fn models(&self) -> &[gateway_core::routing::ContributedModel] {
+            &self.1
+        }
     }
-    for fail in [false, true] {
+    for (fail, empty) in [(false, false), (false, true), (true, false)] {
+        let contributed = [
+            ("gpt-start", "acct_start"),
+            ("adapted", "acct_start"),
+            ("private-model", "acct_other"),
+        ]
+        .into_iter()
+        .map(|(id, account)| gateway_core::routing::ContributedModel {
+            owner: "catalog-plugin".into(),
+            id: PublicModelId::new(id).unwrap(),
+            provider: ProviderKind::new("openai").unwrap(),
+            accounts: [ProviderAccountId::new(account).unwrap()].into(),
+            capabilities: ModelCapabilities::new([OperationKind::Generate].into(), None),
+            presentation: gateway_core::routing::ModelPresentation::new(
+                Some(format!("Plugin {id}")),
+                None,
+            ),
+        })
+        .collect();
         let snapshot = start_snapshot();
         let settings = snapshot
             .settings()
@@ -3387,20 +3415,23 @@ fn client_catalog_forwards_scope_maps_whole_objects_and_omits_unroutable_models(
             .with_extensions(Some(ExtensionSetReference::new(
                 gateway_core::routing::extensions::ExtensionSetId::new("catalog-aliases".into())
                     .unwrap(),
-                Arc::new(Aliases(vec![
-                    gateway_core::routing::ContributedModelAlias {
+                Arc::new(Aliases(
+                    vec![gateway_core::routing::ContributedModelAlias {
                         owner: "catalog-plugin".into(),
                         id: PublicModelId::new("plugin-alias").unwrap(),
                         provider: ProviderKind::new("openai").unwrap(),
                         target: UpstreamModelId::new("gpt-start").unwrap(),
-                    },
-                ])),
+                    }],
+                    contributed,
+                )),
             )));
         let service = DefaultExecutionService::new(
             RuntimeSnapshotHandle::new(snapshot),
             Arc::new(TrackingExecutionStore::default()),
-            ProviderRegistry::new([Arc::new(NativeCatalogProvider { fail }) as Arc<dyn Provider>])
-                .expect("registry"),
+            ProviderRegistry::new([
+                Arc::new(NativeCatalogProvider { fail, empty }) as Arc<dyn Provider>
+            ])
+            .expect("registry"),
             Arc::new(UnusedAdmissions),
             Arc::new(UnusedContinuation),
             Arc::new(RecordingClientApiKeyUsage::default()),
@@ -3416,8 +3447,35 @@ fn client_catalog_forwards_scope_maps_whole_objects_and_omits_unroutable_models(
             continue;
         }
         let models = result.expect("models");
+        let adapted = models
+            .iter()
+            .filter_map(|entry| match entry {
+                gateway_core::routing::PublicModelDescriptor::Adapted(profile) => {
+                    Some(profile.model().as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            adapted,
+            if empty {
+                vec!["gpt-start", "adapted"]
+            } else {
+                vec!["adapted"]
+            }
+        );
+        if empty {
+            assert_eq!(models.len(), 2);
+            continue;
+        }
         let pairs = models
             .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    gateway_core::routing::PublicModelDescriptor::Native { .. }
+                )
+            })
             .map(|entry| {
                 let gateway_core::routing::PublicModelDescriptor::Native { model, payload } = entry
                 else {
@@ -3719,7 +3777,7 @@ fn known_catalog_should_reject_a_model_that_the_provider_did_not_publish() {
         (error.kind(), error.client_message()),
         (
             GatewayErrorKind::ModelNotFound,
-            "the requested model was not found in the provider catalogs available to this API key; check the model name",
+            "Model unavailable for this API key. Check the model name.",
         )
     );
     let rejections = store.entry_rejections.lock().unwrap();

@@ -17,8 +17,8 @@
 | `package` | CLI 生成的协议版本、单一目标平台与文件摘要，不需作者手写 |
 
 作者清单不能包含 `package`。使用 `Manifest::from_author_slice()` 校验并规范化；直接反序列化的 `Manifest`
-不会执行作者清单的 ID 与固定阶段推导，声明的可选字段仍使用其默认值。打包后，`main` 和所有资源都必须进入 `package.files`；宿主用
-`package_for(host, os, architecture)` 检查版本与平台。运行模式为 `trustedProcess`，信任边界见[完整信任](#完整信任)
+不会执行作者清单的 ID 与固定阶段推导，声明的可选字段仍使用其默认值。打包后，`main` 和所有资源都必须进入 `package.files`，
+宿主校验包结构、目标平台与文件完整性，宿主范围和能力版本另行进行兼容检查。运行模式为 `trustedProcess`，信任边界见[完整信任](#完整信任)
 
 宿主实际开放的合同由 [plugin-host-compatibility.json](../../runtime/plugin-host-compatibility.json)
 声明，SDK 的 `Capability::contract_versions()` 只表示 SDK 能描述的行为版本，不能代替宿主支持检查
@@ -38,7 +38,7 @@ RPC v7 的帧布局、编码与会话生命周期见[通信边界](../README.md#
 
 安装包清单校验与已安装元数据读取是两个边界：清单拒绝未知字段，并检查必需字段、类型和版本；
 数据库元数据的读取规则见[制品与发布](../../../../../docs/architecture.md#制品配置与发布)，不改变清单或 RPC 合同。
-`engines.codex-proxy-rs` 声明插件所需的宿主范围。范围或能力版本不匹配时持续提示风险，允许尝试启动；包结构、平台与 RPC 封装校验失败阻止加载。CLI 严格校验作者声明是否符合 SDK 支持的合同
+`engines.codex-proxy-rs` 声明插件所需的宿主范围。范围或已声明能力版本不匹配时不自动启动，管理员确认风险后可尝试本次启动；确认不跨宿主重启保留。包结构、清单格式、平台与 RPC 封装校验失败阻止加载，不能通过风险确认绕过。CLI 严格校验作者声明是否符合 SDK 支持的合同
 
 ## 接口弃用
 
@@ -57,7 +57,8 @@ RPC v7 的帧布局、编码与会话生命周期见[通信边界](../README.md#
 | `scheduler` | `3` |
 | `upstream_adapter` | `5` |
 | `frontend_authentication`、`model_router`、`retry_policy`、`observer`、`management` | `2` |
-| `model_catalog`、`command_line`、`maintenance` | `1` |
+| `model_catalog` | `2` |
+| `command_line`、`maintenance` | `1` |
 
 例如，仅声明管理页面、命令行和模型请求中间件：
 

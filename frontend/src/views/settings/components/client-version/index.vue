@@ -8,13 +8,9 @@ defineOptions({ name: 'ClientVersionSettings' })
 withDefaults(
   defineProps<{
     loading?: boolean
-    desktopError?: string
-    cliError?: string
   }>(),
   {
     loading: false,
-    desktopError: '',
-    cliError: '',
   },
 )
 
@@ -24,7 +20,6 @@ const minCodexCliVersion = defineModel<string>('minCodexCliVersion', { required:
 const {
   open,
   loading: downloadsLoading,
-  error,
   downloads,
   load,
   showGuide,
@@ -36,8 +31,6 @@ const {
     v-model:min-codex-desktop-version="minCodexDesktopVersion"
     v-model:min-codex-cli-version="minCodexCliVersion"
     :loading="loading"
-    :desktop-error="desktopError"
-    :cli-error="cliError"
     @help="showGuide"
   />
 
@@ -45,8 +38,6 @@ const {
     v-model="open"
     :downloads="downloads"
     :loading="downloadsLoading"
-    :error="error"
-    @retry="load(false)"
     @refresh="load(true)"
   />
 </template>

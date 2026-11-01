@@ -8,7 +8,7 @@ export interface InstalledPlugin {
   source?: PluginUpdateSourceBinding
 }
 
-export type PluginCatalogStatus = 'unaccepted' | 'unconfigured' | 'enabled' | 'disabled' | 'pending' | 'failed' | 'unknown'
+export type PluginCatalogStatus = 'unaccepted' | 'unconfigured' | 'enabled' | 'disabled' | 'pending' | 'failed' | 'unknown' | 'incompatible'
 
 export function groupInstalledPlugins(artifacts: PluginArtifact[], instances: PluginInstance[], sources: PluginUpdateSourceBinding[]): InstalledPlugin[] {
   const groups = new Map<string, InstalledPlugin>()
@@ -45,6 +45,8 @@ export function groupInstalledPlugins(artifacts: PluginArtifact[], instances: Pl
 }
 
 export function configurationStatus(instance: PluginInstance): PluginCatalogStatus {
+  if (instance.runtime.failure?.code === 'version_incompatible')
+    return 'incompatible'
   if (instance.loadError)
     return 'failed'
   if (instance.configurationRequired)
@@ -76,7 +78,7 @@ export function pluginStatusType(status: PluginCatalogStatus) {
     return 'success' as const
   if (status === 'failed')
     return 'danger' as const
-  if (status === 'pending' || status === 'unconfigured' || status === 'unaccepted')
+  if (status === 'incompatible' || status === 'pending' || status === 'unconfigured' || status === 'unaccepted')
     return 'warning' as const
   return 'default' as const
 }

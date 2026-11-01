@@ -1019,6 +1019,56 @@ async fn api_key_native_catalog_preserves_unknown_reasoning_and_background_entit
 }
 
 #[tokio::test]
+async fn api_key_client_catalog_distinguishes_filtered_empty_from_fetch_failure() {
+    use gateway_core::account::AccountModelAccess;
+    use provider_openai::credential::ResponsesTransport;
+    for status in [200, 503] {
+        let upstream = MockServer::start().await;
+        let store = Arc::new(MemoryAccountStore::default());
+        store
+            .seed_api_key("acct_api", upstream.uri(), ResponsesTransport::Http)
+            .await;
+        store.set_model_access(
+            "acct_api",
+            AccountModelAccess::new(
+                gateway_core::account::AccountModelAccessMode::Allowlist,
+                vec!["logical-model".into()],
+            )
+            .unwrap(),
+        );
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .set_body_json(serde_json::json!({"data":[{"id":"wire-model"}]})),
+            )
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        let service = service_with_catalog_cache(&store, upstream.uri(), catalog_cache());
+        let result = service
+            .client_model_catalog(
+                &client_scope(&[store.account("acct_api").unwrap()]),
+                "0.155.0",
+            )
+            .await;
+        if status == 200 {
+            assert!(
+                result
+                    .expect("success filtered by account policy")
+                    .is_empty()
+            );
+        } else {
+            assert!(
+                result.is_err(),
+                "fetch failure must not look like a successful empty catalog"
+            );
+        }
+        upstream.verify().await;
+    }
+}
+
+#[tokio::test]
 async fn api_key_client_catalog_keeps_native_sources_stable_and_account_scoped() {
     use gateway_core::routing::ProviderModelContent;
     use provider_openai::credential::ResponsesTransport;
@@ -1522,4 +1572,42 @@ async fn catalog_account_membership_changes_advance_generation_without_model_cha
         refreshed.model_catalog_accounts()["gpt-5.4"],
         BTreeSet::from([first.id().clone(), second.id().clone()])
     );
+}
+
+#[tokio::test]
+async fn client_catalog_byte_budget_evicts_completed_entries_without_rejecting_large_catalogs() {
+    let store = Arc::new(MemoryAccountStore::default());
+    let account = seed_account(&store, "acct_catalog_bytes").await;
+    let scope = client_scope(&[account]);
+    let server = MockServer::start().await;
+    for (version, bytes, calls) in [
+        ("small", 1024, 1),
+        ("large", 17 * 1024 * 1024, 2),
+        ("other", 17 * 1024 * 1024, 1),
+        ("oversized", 33 * 1024 * 1024, 2),
+    ] {
+        Mock::given(method("GET")).and(path("/codex/models"))
+            .and(query_param("client_version", version))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"models":[{
+                "slug":"gpt-large", "display_name":"Large", "base_instructions":"x".repeat(bytes)
+            }]}))).expect(calls).mount(&server).await;
+    }
+    let service = service_with_catalog_cache(&store, server.uri(), catalog_cache());
+    for version in [
+        "large",
+        "other",
+        "other",
+        "large",
+        "small",
+        "oversized",
+        "oversized",
+        "small",
+    ] {
+        let models = service
+            .client_model_catalog(&scope, version)
+            .await
+            .expect("large catalog delivered");
+        assert_eq!(models.len(), 1);
+    }
+    server.verify().await;
 }

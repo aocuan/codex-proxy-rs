@@ -48,11 +48,14 @@ const {
   providerQuery,
   usagePagination,
   loading,
-  error,
-  analyticsLoading,
   records,
   summary,
-  insights,
+  health,
+  performance,
+  cost,
+  diagnostics,
+  performanceMetric,
+  costMetric,
   refreshingList,
   diagnosticDimension,
   loadUsageRecords,
@@ -78,9 +81,9 @@ watch(timeRange, () => {
 
 <template>
   <div class="@container w-full">
-    <ZPageHeader :title="t('navigation.usage')" :description="t('usage.page.description')">
+    <ZPageHeader class="justify-end" :title="t('navigation.usage')" :description="t('usage.page.description')">
       <template #actions>
-        <div class="flex w-[100cqw] max-w-[100cqw] flex-wrap items-center justify-end gap-2 @min-[28rem]:w-auto">
+        <div class="flex w-[100cqw] max-w-[100cqw] flex-wrap items-center justify-end gap-2 @min-[21rem]:flex-nowrap @min-[28rem]:w-auto">
           <ZDatePicker
             v-model="timeRange"
             type="daterange"
@@ -89,7 +92,7 @@ watch(timeRange, () => {
             :disabled-date="disabledDate"
             single-panel
             :aria-label="t('usage.page.dateRangeLabel')"
-            class="min-w-0 w-full @min-[28rem]:w-60"
+            class="min-w-0 flex-1 basis-full @min-[21rem]:basis-auto @min-[28rem]:w-60 @min-[28rem]:flex-none @max-[28rem]:[&>div]:gap-1.5 @max-[28rem]:[&>div]:px-2"
           />
           <ProviderFilter
             v-model="providerQuery"
@@ -100,12 +103,15 @@ watch(timeRange, () => {
       </template>
     </ZPageHeader>
 
-    <UsageSummaryCards :summary="summary" />
+    <UsageSummaryCards :summary="summary.data" :error="summary.error" />
     <UsageInsightsGrid
       v-model:diagnostic-dimension="diagnosticDimension"
-      :overview="insights.overview"
-      :diagnostics="insights.diagnostics"
-      :loading="analyticsLoading"
+      v-model:performance-metric="performanceMetric"
+      v-model:cost-metric="costMetric"
+      :health="health"
+      :performance="performance"
+      :cost="cost"
+      :diagnostics="diagnostics"
     />
 
     <ZCard
@@ -113,11 +119,11 @@ watch(timeRange, () => {
     >
       <template #header>
         <div>
-          <h2 class="m-0 text-xl leading-[1.15] font-heavy text-cp-text">
+          <h2 class="m-0 text-xl leading-[1.15] font-heavy text-z-text">
             {{ t('usage.page.requestDetails') }}
           </h2>
           <p
-            class="mt-1.75 mb-0 text-cp leading-[1.15] font-emphasis text-cp-text-secondary"
+            class="mt-1.75 mb-0 text-z leading-[1.15] font-emphasis text-z-text-secondary"
           >
             {{ t('usage.page.recordsDescription') }}
           </p>
@@ -152,7 +158,7 @@ watch(timeRange, () => {
               :columns="visibleColumns"
               :rows="records"
               :loading="loading"
-              :empty-text="error ? t('usage.page.failedToLoad', { error }) : t('usage.page.noRequestsMatchTheseFilters')"
+              :empty-text="t('usage.page.noRequestsMatchTheseFilters')"
             >
               <template #actions="{ row }">
                 <div class="flex items-center justify-start">

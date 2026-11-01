@@ -25,8 +25,8 @@ use super::admin::{
     CodexCredentialAdmin, CodexCredentialAdminError, PreparedCodexCredentialRotation,
     UnresolvedCodexOAuthCredential,
 };
+use super::codec::CodexCredentialCodec;
 use super::recovery_log::{CodexOAuthRecoveryOperation, record_oauth_recovery};
-use super::security::CodexCredentialCodec;
 use super::token_client::{
     AuthorizationCodeExchangeError, AuthorizationCodeExchanger, AuthorizationCodeGrant,
     OFFICIAL_CODEX_OAUTH_CLIENT_ID, OFFICIAL_CODEX_REDIRECT_URI,
@@ -184,7 +184,7 @@ impl CodexPendingAuthorization {
         if !valid_text(&pending.flow_id)
             || !valid_text(&pending.owner_ref)
             || !valid_text(&pending.started_request_ref)
-            || !valid_text(&pending.name)
+            || !(valid_text(&pending.name) || pending.name.is_empty())
             || pending.expires_at <= Utc::now()
             || !valid_secret(pending.state.expose_secret())
             || !valid_secret(pending.nonce.expose_secret())
@@ -589,7 +589,7 @@ impl CodexOAuthAdminService {
         reauthorization: Option<ProviderAccountId>,
         installation_id: String,
     ) -> Result<CodexOAuthAuthorizationStarted, CodexOAuthAdminError> {
-        if !valid_text(&name) {
+        if !(valid_text(&name) || name.is_empty()) {
             return Err(CodexOAuthAdminError::InvalidInput);
         }
         let expires_at = Utc::now()

@@ -23,7 +23,6 @@
     "filters": {
       "searchAccountGroup": "搜索账号分组",
       "searchGroupName": "搜索分组名称",
-      "filterByGroupStatus": "按分组状态筛选",
       "deleteSelected": "删除 ({count})",
       "createGroup": "创建分组"
     },

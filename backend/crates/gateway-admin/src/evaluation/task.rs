@@ -7,13 +7,16 @@ use futures::{StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
 use gateway_core::{
     engine::execution::ExecutionService,
     lifecycle::CancellationToken,
-    task::{DaemonTask, WorkerDaemonContext, WorkerTaskError},
+    task::{
+        DaemonRestartPolicy, DaemonTask, WorkerContribution, WorkerDaemonContext, WorkerId,
+        WorkerKind, WorkerRegistration, WorkerRunnable, WorkerTaskError,
+    },
     time::DeploymentTimeZone,
 };
 
 use super::runner::{EvaluationRunner, store_error};
 use crate::{
-    model::{MutationActor, MutationContext, evaluation::*},
+    model::{AdminError, MutationActor, MutationContext, evaluation::*},
     ports::{
         evaluation::EvaluationRepository,
         store::{AdminStoreErrorKind, ObservabilityStore},
@@ -28,6 +31,22 @@ pub struct EvaluationTask {
 }
 
 impl EvaluationTask {
+    pub(crate) fn into_worker(self) -> Result<WorkerContribution, AdminError> {
+        let id = WorkerId::try_new(WorkerKind::ModelEvaluation, "admin")
+            .map_err(|_| AdminError::internal("测评 Worker ID 不合法"))?;
+        let restart = DaemonRestartPolicy::try_new(Duration::from_secs(1), Duration::from_secs(60))
+            .map_err(|_| AdminError::internal("测评 Worker 重启策略不合法"))?;
+        let registration = WorkerRegistration::try_new(
+            id,
+            WorkerRunnable::Daemon {
+                restart,
+                task: Box::new(self),
+            },
+        )
+        .map_err(|_| AdminError::internal("测评 Worker 注册失败"))?;
+        Ok(WorkerContribution::Registration(registration))
+    }
+
     #[must_use]
     pub fn new(
         repository: Arc<dyn EvaluationRepository>,

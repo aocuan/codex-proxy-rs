@@ -74,7 +74,7 @@ function applyDefaultJudge() {
       <ZInput v-model="definition.grader.pattern" :disabled="disabled" maxlength="4096" placeholder="\A正确答案\z" class="font-mono" />
     </ZFormItem>
     <template v-else-if="aiConfig">
-      <div class="flex flex-wrap items-center gap-2 text-cp-sm sm:col-span-2">
+      <div class="flex flex-wrap items-center gap-2 text-z-sm sm:col-span-2">
         <span>{{ graderLabel(definition.grader) }}</span>
         <ZButton v-if="defaultJudge" size="small" :disabled="disabled" @click="applyDefaultJudge">
           使用默认判题器
@@ -89,7 +89,7 @@ function applyDefaultJudge() {
       <ZFormItem class="sm:col-span-2" label="参考答案">
         <ZTextarea :model-value="aiConfig.referenceAnswer ?? ''" :disabled="disabled" :rows="3" maxlength="32768" aria-label="参考答案" placeholder="可选" @update:model-value="aiConfig.referenceAnswer = $event || null" />
       </ZFormItem>
-      <p v-if="definition.outputFormat === 'html'" class="m-0 text-cp-sm text-cp-text-secondary sm:col-span-2">
+      <p v-if="definition.outputFormat === 'html'" class="m-0 text-z-sm text-z-text-secondary sm:col-span-2">
         AI 判题读取 HTML 源码，不评判实际画面或动画效果
       </p>
     </template>

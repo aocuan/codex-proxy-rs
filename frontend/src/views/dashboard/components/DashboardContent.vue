@@ -67,7 +67,7 @@ const trendKind = defineModel<DashboardTrendKind>('trendKind', { required: true 
       </template>
       <template #actions>
         <ZIconButton
-          class="text-cp-primary-text"
+          class="text-z-primary-text"
           size="default"
           :aria-label="t('dashboard.refresh.action')"
           :loading="loading || refreshing"
@@ -81,10 +81,6 @@ const trendKind = defineModel<DashboardTrendKind>('trendKind', { required: true 
         </ZIconButton>
       </template>
     </ZPageHeader>
-
-    <p v-if="analyticsError" class="mt-4 text-cp-sm text-cp-warning-text" role="alert">
-      {{ analytics ? t('dashboard.refresh.failed') : t('dashboard.refresh.unavailable') }}
-    </p>
 
     <template v-if="!analyticsError || analytics">
       <section

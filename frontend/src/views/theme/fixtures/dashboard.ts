@@ -338,9 +338,11 @@ export const themeDashboardSummary = computed<DashboardSummaryResponse>(() => ({
   accountUsage: [
     {
       id: 'preview-openai-1',
+      upstream: null,
       provider: 'openai',
       authenticationKind: 'oauth',
       email: 'relay@example.com',
+      notes: null,
       planType: 'team',
       planTypeDisplay: 'Business',
       tokens: '926K',
@@ -371,9 +373,11 @@ export const themeDashboardSummary = computed<DashboardSummaryResponse>(() => ({
     },
     {
       id: 'preview-xai-1',
+      upstream: null,
       provider: 'xai',
       authenticationKind: 'oauth',
       email: 'gateway@example.com',
+      notes: null,
       planType: 'free',
       planTypeDisplay: 'Free',
       tokens: '684K',
@@ -425,9 +429,11 @@ export const themeDashboardSummary = computed<DashboardSummaryResponse>(() => ({
     },
     {
       id: 'preview-openai-2',
+      upstream: null,
       provider: 'openai',
       authenticationKind: 'oauth',
       email: 'control@example.com',
+      notes: null,
       planType: 'pro',
       planTypeDisplay: 'Pro',
       tokens: '512K',

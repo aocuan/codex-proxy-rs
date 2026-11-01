@@ -46,7 +46,7 @@ pub(super) struct MappedProviderFailure {
     /// 原始上游错误描述，仅在凭据错误状态下持久化
     pub(super) error_message: Option<String>,
     pub(super) cyber_policy_failure: bool,
-    pub(super) upstream_capacity_failure: bool,
+    pub(super) model_unsupported: bool,
     pub(super) set_cookie_headers: Vec<String>,
     pub(super) response_origin: Option<Url>,
     pub(super) rate_limit_headers: Vec<(String, String)>,
@@ -62,7 +62,7 @@ impl MappedProviderFailure {
             account_failure: None,
             error_message: None,
             cyber_policy_failure: false,
-            upstream_capacity_failure: false,
+            model_unsupported: false,
             set_cookie_headers: Vec::new(),
             response_origin: None,
             rate_limit_headers: Vec::new(),
@@ -161,7 +161,7 @@ pub(super) struct OpenAiFailureContext<'a> {
     pub(super) response_origin: &'a Url,
     pub(super) cyber_policy_scope: Option<&'a CodexCyberPolicyScope>,
     pub(super) allows_account_state_mutation: bool,
-    pub(super) allows_capacity_feedback: bool,
+    pub(super) upstream_model: Option<&'a UpstreamModelId>,
 }
 
 #[derive(Clone, Copy)]
@@ -311,6 +311,16 @@ pub(super) async fn apply_failure(
         return;
     }
     synchronize_passive_quota_headers(context.quota, account, &failure.rate_limit_headers).await;
+    if failure.model_unsupported
+        && let Some(model) = context.upstream_model
+        && let Err(error) = context
+            .selector
+            .record_model_unsupported(account, model)
+            .await
+    {
+        tracing::warn!(account_id = %account.id(), error = %error,
+            "Failed to persist OpenAI model availability cooldown");
+    }
     let needs_authoritative_quota_refresh = matches!(
         failure.account_failure,
         Some(CodexAccountFailure::QuotaExhausted | CodexAccountFailure::UsageLimitExhausted { .. })
@@ -355,20 +365,26 @@ pub(super) async fn apply_failure(
             )
             .await
     {
-        tracing::warn!(
-            account_id = %account.id(),
-            credential_revision = account.revision().get(),
-            error = %error,
-            "Failed to persist OpenAI response cookies"
-        );
+        match error {
+            // 失败响应同样受版本保护，不能重放旧 Cookie 覆盖较新的凭据
+            CredentialSelectionError::RevisionConflict(_) => {
+                tracing::debug!(
+                    account_id = %account.id(),
+                    credential_revision = account.revision().get(),
+                    "Skipped OpenAI response cookies after credential revision changed"
+                );
+            }
+            error => {
+                tracing::warn!(
+                    account_id = %account.id(),
+                    credential_revision = account.revision().get(),
+                    error = %error,
+                    "Failed to persist OpenAI response cookies"
+                );
+            }
+        }
     }
     // 探测只验证恢复，不能把探测自身的单请求并发当作业务负载证据
-    if context.allows_capacity_feedback && failure.upstream_capacity_failure {
-        context
-            .quota
-            .apply_capacity_failure(account, SystemTime::now())
-            .await;
-    }
 }
 
 pub(super) fn schedule_authoritative_quota_refresh_after_failure(
@@ -470,12 +486,13 @@ pub(super) fn apply_websocket_recovery_policy(
         return;
     }
     // 明确账号拒绝走已有换号路径，业务瞬态失败走请求内退避，不消耗 WS 传输预算
-    if failure.error.replay_is_safe()
-        && (failure.account_failure.is_some()
-            || matches!(
-                failure.error.pre_delivery_retry(),
-                Some(gateway_core::error::PreDeliveryRetry::SameAccountTransientRetry { .. })
-            ))
+    if failure.model_unsupported
+        || (failure.error.replay_is_safe()
+            && (failure.account_failure.is_some()
+                || matches!(
+                    failure.error.pre_delivery_retry(),
+                    Some(gateway_core::error::PreDeliveryRetry::SameAccountTransientRetry { .. })
+                )))
     {
         tracing::warn!(
             request_id = context.request_id,
@@ -803,7 +820,14 @@ pub(super) fn map_client_error(
                     ProviderErrorKind::InvalidRequest,
                     UpstreamSendState::NotSent,
                 )
-                .with_retry_prohibited(),
+                .with_retry_prohibited()
+                .with_client_visible_upstream_error(
+                    ClientVisibleUpstreamError::new(
+                        "A gateway privacy rule could not process this request.",
+                        Some("privacy_policy_rejected".to_owned()),
+                        Some("invalid_request_error".to_owned()),
+                    ),
+                ),
             )
         }
         CodexClientError::ConnectionBudgetExhausted => MappedProviderFailure::plain(
@@ -980,7 +1004,7 @@ pub(super) fn map_client_error(
 }
 
 /// 在消费 transport 错误前提取可持久化事实，不能使用可能携带 URL/凭据的 Display
-fn client_diagnostic(error: &CodexClientError) -> Option<ProviderDiagnostic> {
+pub(super) fn client_diagnostic(error: &CodexClientError) -> Option<ProviderDiagnostic> {
     let (stage, code, message) = match error {
         CodexClientError::ConnectionBudgetExhausted => (
             "connect",
@@ -1255,7 +1279,7 @@ fn websocket_diagnostic_message(error: &CodexWebSocketExchangeError) -> Provider
             let mut message =
                 format!("OpenAI WebSocket stream ended before a terminal response ({reason})");
             if let Some(timeout) = timeout {
-                message.push_str(&format!("; local keepalive timeout after {timeout:?}"));
+                message.push_str(&format!("; local Pong write timeout after {timeout:?}"));
             }
             if let Some(last_event_type) = last_event_type {
                 message.push_str("; last event type: ");
@@ -1309,9 +1333,13 @@ pub(super) fn websocket_client_visible_error(
         .map_or_else(
             || {
                 if message_too_big {
-                    "upstream websocket message too big".to_owned()
+                    "The upstream WebSocket message is too large.".to_owned()
+                } else if let Some(code) = close.code() {
+                    format!(
+                        "The upstream WebSocket closed before the response completed (code {code})."
+                    )
                 } else {
-                    close.to_string()
+                    "The upstream WebSocket closed before the response completed.".to_owned()
                 }
             },
             str::to_owned,
@@ -1359,7 +1387,6 @@ pub(super) fn map_upstream_failure(
     replay_boundary: ReplayBoundary,
 ) -> MappedProviderFailure {
     let category = failure.category();
-    let capacity_unavailable = category == CodexFailureCategory::CapacityUnavailable;
     let retry_policy = transient_retry_policy(category, &failure);
     let cyber_policy_failure = failure
         .status
@@ -1375,7 +1402,8 @@ pub(super) fn map_upstream_failure(
     } else {
         provider_error_kind(category)
     };
-    let mut error = provider_error(error_kind, send_state);
+    let mut error = provider_error(error_kind, send_state)
+        .with_upstream_failure_fields(failure.upstream_fields.clone());
     let replay_safe = failure.replay_is_safe() || cyber_policy_failure;
     // WS opening 的 426 是明确的传输切换信号；普通拒绝不能仅凭 NotSent 触发换号
     let upgrade_required = failure.send_phase == CodexUpstreamSendPhase::BeforePayload
@@ -1476,8 +1504,8 @@ pub(super) fn map_upstream_failure(
         ),
         error_message: failure.client_message,
         cyber_policy_failure,
+        model_unsupported: category == CodexFailureCategory::ModelUnsupported,
         // 普通 5xx 与未知流内错误不足以证明容量拒绝，不能用于冻结账号
-        upstream_capacity_failure: capacity_unavailable,
         set_cookie_headers: failure.set_cookie_headers,
         response_origin: failure.response_origin,
         rate_limit_headers: failure.rate_limit_headers,

@@ -62,18 +62,3 @@ export const accountGroupColumns = computed(() => (defineTableColumns<AccountGro
     size: 'lg',
   },
 ])))
-
-export const accountGroupStatusOptions = computed(() => ([
-  {
-    label: t('common.status.all'),
-    value: '',
-  },
-  {
-    label: t('common.status.enabled'),
-    value: 'enabled',
-  },
-  {
-    label: t('common.status.disabled'),
-    value: 'disabled',
-  },
-]))

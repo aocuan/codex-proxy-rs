@@ -1,6 +1,7 @@
 //! OpenAI 协议 HTTP 与 WebSocket 接口的测试入口
 
 mod auth;
+mod chat_completions;
 mod endpoint;
 mod error;
 mod image_policy;
@@ -8,6 +9,7 @@ mod images;
 mod live;
 mod middleware;
 mod models;
+mod peer_link;
 mod responses;
 mod router;
 mod search;

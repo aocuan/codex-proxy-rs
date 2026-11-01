@@ -1,23 +1,18 @@
 import type { RequestOptions } from '../../request'
-import type { ProxyLocationDetection } from '../proxies'
+import type { RequestLocation, RequestLocationDetection } from '../../types/location'
 import type { CodexPrivacyPolicy } from './privacy'
 import type { ClientProfileSelection, ProviderRequestProfiles, ProviderRequestProfileUpdates, XaiClientProfileSelection } from './profiles'
+import type { AccountErrorProtection } from './protection'
 import request from '../../request'
 
 export * from './backups'
 export * from './pricing'
 export * from './privacy'
+export * from './protection'
 export * from './system'
 
-export interface RequestLocation {
-  country: string
-  region: string
-  city: string
-  timezone: string
-}
-
 export function detectRequestLocation() {
-  return request<ProxyLocationDetection>({
+  return request<RequestLocationDetection>({
     url: '/api/admin/settings/location/detect',
     method: 'POST',
     timeout: 25000,
@@ -66,13 +61,7 @@ export interface RuntimeSettings {
   usageRetentionDays: number
   opsEventRetentionDays: number
   auditRetentionDays: number
-  accountAutoFreezeEnabled: boolean
-  accountAutoFreezeThreshold: number
-  accountAutoFreezeWindowSeconds: number
-  accountAutoFreezeDurationSeconds: number
-  accountAutoFreezeProbeEnabled: boolean
-  accountAutoFreezeProbeModel: string | null
-  accountAutoFreezeAdaptiveConcurrency: boolean
+  accountErrorProtection: AccountErrorProtection
   accountWarmupEnabled: boolean
   accountWarmupScheduleTime: string
   accountWarmupModel: string | null

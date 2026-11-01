@@ -78,35 +78,35 @@ watch([
 </script>
 
 <template>
-  <section class="mb-5 rounded-cp bg-cp-fill-quaternary p-4" :aria-label="title">
+  <section class="mb-5 rounded-cp bg-z-fill-quaternary p-4" :aria-label="title">
     <div class="flex flex-wrap items-center gap-2">
-      <h3 class="m-0 text-cp-sm font-emphasis">
+      <h3 class="m-0 text-z-sm font-emphasis">
         {{ title }}
       </h3>
-      <span v-if="metadata" class="text-cp-xs text-cp-text-secondary wrap-anywhere">{{ metadata }}</span>
+      <span v-if="metadata" class="text-z-xs text-z-text-secondary wrap-anywhere">{{ metadata }}</span>
       <ZButton class="ml-auto" size="small" variant="text" :disabled="loading" @click="copyText(errorText, { successText: '错误信息已复制' })">
         复制错误
       </ZButton>
     </div>
-    <p class="mt-2 mb-0 text-cp-sm text-cp-error-text whitespace-pre-wrap wrap-anywhere">
+    <p class="mt-2 mb-0 text-z-sm text-z-error-text whitespace-pre-wrap wrap-anywhere">
       {{ message }}
     </p>
-    <p v-if="!requestId && errorCode === 'policy_denied'" class="mt-2 mb-0 text-cp-sm text-cp-text-secondary">
+    <p v-if="!requestId && errorCode === 'policy_denied'" class="mt-2 mb-0 text-z-sm text-z-text-secondary">
       请求在调用上游前被网关策略拦截，请检查测评或判题所用 Key 的账号分组与启用状态
     </p>
-    <p v-if="loading" class="mt-3 mb-0 text-cp-sm text-cp-text-secondary" role="status">
+    <p v-if="loading" class="mt-3 mb-0 text-z-sm text-z-text-secondary" role="status">
       正在读取原始报错
     </p>
     <template v-else-if="error">
-      <p class="mt-3 mb-0 text-cp-sm text-cp-warning-text">
+      <p class="mt-3 mb-0 text-z-sm text-z-warning-text">
         原始报错读取失败：{{ error }}
       </p>
       <ZButton size="small" variant="text" @click="load">
         重试
       </ZButton>
     </template>
-    <pre v-else-if="detail?.errorDetails" class="mt-3 mb-0 max-h-80 overflow-auto font-mono text-cp-xs whitespace-pre-wrap wrap-anywhere">{{ detail.errorDetails }}</pre>
-    <div v-else-if="requestId" class="mt-3 flex flex-wrap items-center gap-2 text-cp-xs text-cp-text-secondary">
+    <pre v-else-if="detail?.errorDetails" class="mt-3 mb-0 max-h-80 overflow-auto font-mono text-z-xs whitespace-pre-wrap wrap-anywhere">{{ detail.errorDetails }}</pre>
+    <div v-else-if="requestId" class="mt-3 flex flex-wrap items-center gap-2 text-z-xs text-z-text-secondary">
       <span>未找到原始报错，可能尚未写入、未记录或已清理</span>
       <ZButton size="small" variant="text" @click="load">
         重新读取

@@ -3,7 +3,181 @@
 use super::*;
 
 #[tokio::test]
-async fn account_existence_does_not_require_capacity_settings() {
+async fn import_name_only_overrides_a_single_account_and_keeps_batch_names() {
+    use gateway_admin::model::accounts::AccountImportSettings;
+
+    let Some(database) = TestDatabase::create("import_account_name").await else {
+        return;
+    };
+    let repository = PgProviderAccountRepository::new(database.pool.clone());
+    for (index, (name, expected)) in [
+        (Some("  自定义账号  "), vec!["自定义账号"]),
+        (None, vec!["导入名称 0"]),
+        (Some("  "), vec!["导入名称 0"]),
+        (Some("批量不改名"), vec!["导入名称 0", "导入名称 1"]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let records = (0..expected.len())
+            .map(|item| {
+                let id = format!("acct_name_{index}_{item}");
+                let mut record = account(&id, &id);
+                record.name = format!("导入名称 {item}");
+                record
+            })
+            .collect::<Vec<_>>();
+        let result = repository
+            .import_provider_accounts(ImportProviderAccounts {
+                outbound_proxy: None,
+                settings: Some(AccountImportSettings {
+                    name: name.map(str::to_owned),
+                    notes: None,
+                    model_access: Default::default(),
+                    enabled: true,
+                    concurrency_limit: None,
+                    weight: gateway_core::account::AccountWeight::DEFAULT,
+                    group_ids: vec![],
+                }),
+                scope: ProviderAccountAdminScope {
+                    provider_kind: "openai".to_owned(),
+                },
+                accounts: records,
+                audit: audit(
+                    &format!("audit_name_{index}"),
+                    "import",
+                    "provider_accounts",
+                ),
+            })
+            .await
+            .unwrap();
+        for (id, name) in result.account_ids.iter().zip(expected) {
+            assert_eq!(
+                repository
+                    .load_provider_account(id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .summary
+                    .name,
+                name
+            );
+        }
+    }
+    database.close().await;
+}
+
+#[tokio::test]
+async fn scoped_account_reads_follow_current_enabled_groups_without_losing_admin_details() {
+    let Some(database) = TestDatabase::create("account_group_scope").await else {
+        return;
+    };
+    let repository = PgProviderAccountRepository::new(database.pool.clone());
+    for id in ["acct_first", "acct_second", "acct_outside"] {
+        repository
+            .insert_provider_account(account(id, id))
+            .await
+            .unwrap();
+    }
+    let active = AccountGroupId::new(format!("grp_{}", "1".repeat(32))).unwrap();
+    let disabled = AccountGroupId::new(format!("grp_{}", "2".repeat(32))).unwrap();
+    sqlx::query(
+        "insert into account_groups (id, name, color, enabled, created_at, updated_at)
+         values ($1, 'Visible group', '#2563EBFF', true, now(), now()),
+                ($2, 'Disabled group', '#2563EBFF', false, now(), now())",
+    )
+    .bind(active.as_str())
+    .bind(disabled.as_str())
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into account_group_accounts (account_group_id, provider_account_id, created_at)
+         values ($1, 'acct_first', now()), ($1, 'acct_outside', now()),
+                ($2, 'acct_first', now()), ($2, 'acct_second', now())",
+    )
+    .bind(active.as_str())
+    .bind(disabled.as_str())
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let store = admin_account_store(&database.pool);
+    let ids = ["acct_first", "acct_second"].map(|id| ProviderAccountId::new(id).unwrap());
+    assert!(
+        store
+            .load_accounts_in_enabled_groups(&ids, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .load_accounts_in_enabled_groups(&ids, std::slice::from_ref(&disabled))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let accounts = store
+        .load_accounts_in_enabled_groups(&ids, &[active.clone(), disabled])
+        .await
+        .unwrap();
+    assert_eq!(
+        accounts
+            .iter()
+            .map(|account| account.id.as_str())
+            .collect::<Vec<_>>(),
+        ["acct_first"]
+    );
+    assert!(accounts[0].groups.is_empty());
+    let detail = store
+        .load_account("acct_first", AccountRuntimeSnapshot::default())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(detail.account.groups.len(), 2);
+    assert!(
+        detail
+            .account
+            .groups
+            .iter()
+            .any(|group| group.id == active && group.name == "Visible group")
+    );
+
+    sqlx::query("update account_groups set enabled = false where id = $1")
+        .bind(active.as_str())
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .load_accounts_in_enabled_groups(&ids, std::slice::from_ref(&active))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    sqlx::query("update account_groups set enabled = true where id = $1")
+        .bind(active.as_str())
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    sqlx::query("update account_group_accounts set provider_account_id = 'acct_second' where account_group_id = $1 and provider_account_id = 'acct_first'")
+        .bind(active.as_str()).execute(&database.pool).await.unwrap();
+    let accounts = store
+        .load_accounts_in_enabled_groups(&ids, &[active])
+        .await
+        .unwrap();
+    assert_eq!(
+        accounts
+            .iter()
+            .map(|account| account.id.as_str())
+            .collect::<Vec<_>>(),
+        ["acct_second"]
+    );
+    database.close().await;
+}
+
+#[tokio::test]
+async fn lightweight_account_reads_do_not_require_capacity_settings() {
     let Some(database) = TestDatabase::create("account_existence").await else {
         return;
     };
@@ -19,6 +193,22 @@ async fn account_existence_does_not_require_capacity_settings() {
     let store = admin_account_store(&database.pool);
     assert!(store.account_exists("acct_exists").await.unwrap());
     assert!(!store.account_exists("acct_missing").await.unwrap());
+    assert_eq!(
+        store
+            .load_account_record(&ProviderAccountId::new("acct_exists").unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        "acct_exists"
+    );
+    assert!(
+        store
+            .load_account_record(&ProviderAccountId::new("acct_missing").unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
     database.close().await;
 }
 
@@ -45,6 +235,7 @@ async fn account_capacity_should_resolve_limits_for_list_and_detail() {
             Some(BTreeMap::from([("acct_override".to_owned(), 2)])),
         ] {
             let runtime = AccountRuntimeSnapshot {
+                protection_rules: std::collections::BTreeMap::new(),
                 in_flight: counts,
                 ..Default::default()
             };
@@ -87,6 +278,61 @@ async fn account_capacity_should_resolve_limits_for_list_and_detail() {
                     .unwrap();
                 assert_eq!(detail.capacity, item.capacity);
             }
+        }
+    }
+    database.close().await;
+}
+
+#[tokio::test]
+async fn account_search_matches_only_name_and_email_literal_substrings() {
+    let Some(database) = TestDatabase::create("account_contains_search").await else {
+        return;
+    };
+    let repository = PgProviderAccountRepository::new(database.pool.clone());
+    let mut record = account("acct_searchable", "upstream-user-needle");
+    record.name = r"Team\Ops_100%".to_owned();
+    record.email = Some("maker@example.invalid".to_owned());
+    record.upstream_account_id = Some("upstream-account-marker".to_owned());
+    repository.insert_provider_account(record).await.unwrap();
+    let mut other = account("acct_other", "user-other");
+    other.email = None;
+    repository.insert_provider_account(other).await.unwrap();
+    let store = admin_account_store(&database.pool);
+    for (search, expected) in [
+        ("ma", 1),
+        ("ak", 1),
+        ("EXAMPLE", 1),
+        ("invalid", 1),
+        (r"\OPS_", 1),
+        ("_100%", 1),
+        ("%", 1),
+        (r"\", 1),
+        ("searchable", 0),
+        ("user-needle", 0),
+        ("account-marker", 0),
+        ("Ops_100_", 0),
+        ("missing", 0),
+    ] {
+        let page = store
+            .list_accounts(
+                AccountListQuery {
+                    account_ids: None,
+                    page: 1,
+                    page_size: PageSize::new(10).unwrap(),
+                    provider_kind: None,
+                    group_filter: None,
+                    search: Some(search.to_owned()),
+                    status: None,
+                    sort: None,
+                },
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.total, expected, "search: {search}");
+        assert_eq!(page.items.len() as u64, expected, "search: {search}");
+        if expected == 1 {
+            assert_eq!(page.items[0].account.id, "acct_searchable");
         }
     }
     database.close().await;
@@ -372,7 +618,10 @@ async fn reset_credit_automation_persists_pending_checks_cas_and_follows_account
         .await
         .unwrap();
     let store = admin_account_store(&database.pool);
-    let now = Utc::now();
+    let now: chrono::DateTime<Utc> = sqlx::query_scalar("select now()")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
     let mut record = ResetCreditAutomation {
         account_id: "acct_automation".into(),
         enabled: true,
@@ -434,6 +683,11 @@ async fn reset_credit_automation_persists_pending_checks_cas_and_follows_account
     );
     update.values.reset_credit_lead_minutes = 20;
     settings.update_runtime_settings(update).await.unwrap();
+    // 重规划使用数据库时钟，立即到期的断言与后续查询保持相同时间源
+    let replanned_at: chrono::DateTime<Utc> = sqlx::query_scalar("select now()")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
     let replanned = store
         .reset_credit_automation(&record.account_id)
         .await
@@ -444,12 +698,12 @@ async fn reset_credit_automation_persists_pending_checks_cas_and_follows_account
         "replan preserves pending idempotency key"
     );
     assert!(replanned.revision > record.revision);
-    assert!(replanned.next_run_at <= Utc::now());
+    assert!(replanned.next_run_at <= replanned_at);
     record = replanned;
 
     assert_eq!(
         store
-            .due_reset_credit_automations(now + TimeDelta::seconds(1), 1)
+            .due_reset_credit_automations(replanned_at, 1)
             .await
             .unwrap(),
         [record.account_id.clone()]
@@ -473,7 +727,7 @@ async fn reset_credit_automation_persists_pending_checks_cas_and_follows_account
     );
     assert!(
         store
-            .due_reset_credit_automations(now + TimeDelta::seconds(1), 10)
+            .due_reset_credit_automations(replanned_at, 10)
             .await
             .unwrap()
             .is_empty()
@@ -498,7 +752,7 @@ async fn reset_credit_automation_persists_pending_checks_cas_and_follows_account
     );
     assert!(
         store
-            .due_reset_credit_automations(now + TimeDelta::seconds(1), 10)
+            .due_reset_credit_automations(replanned_at, 10)
             .await
             .unwrap()
             .is_empty()

@@ -250,7 +250,15 @@ export interface PluginApiDeprecation {
   migration: string
 }
 
+export interface PluginCompatibilityConfirmation {
+  hostFingerprint: string
+  instanceId: string
+  instanceRevision: number
+  artifactSha256: string
+}
+
 export interface ConfigurePluginInstanceRequest {
+  compatibilityConfirmation?: PluginCompatibilityConfirmation
   creationId?: string
   expectedRevision?: number
   replaceInstances?: { id: string, expectedRevision: number }[]
@@ -507,6 +515,9 @@ export function deletePluginInstance(data: PluginInstanceIdParam, options: Reque
 }
 
 export interface PluginVersionPlan {
+  compatibilityWarning: string | null
+  compatibilityConfirmation: PluginCompatibilityConfirmation | null
+  loadError: string | null
   instanceRevision: number
   artifactSha256: string
   configuration: Record<string, unknown>

@@ -18,8 +18,8 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch}
 
 use super::{
     CallbackHandler, RpcError, RpcLimits, RpcReply, RpcSessionLoad, admission::ExecutionCapacity,
+    stream::StreamIngress,
 };
-use crate::stream::StreamIngress;
 
 pub(crate) struct Shared {
     state: Mutex<State>,
@@ -44,6 +44,7 @@ struct PendingCall {
     execution: Option<OwnedSemaphorePermit>,
     deadline: CallDeadline,
     handler: Arc<dyn CallbackHandler>,
+    revoked: bool,
     transmitted: bool,
     cancellation: Option<RpcError>,
     context: CallContext,
@@ -84,6 +85,10 @@ impl Drop for CallbackTask {
 impl PendingCall {
     /// 关闭资源与封存副作用必须先于任何结果通知；取消确认只延续容量租约
     fn revoke(&mut self) {
+        if self.revoked {
+            return;
+        }
+        self.revoked = true;
         self.handler.finish(&self.context);
         self.callbacks.clear();
         self.stop_resumption();
@@ -201,6 +206,7 @@ impl Shared {
                 execution: Some(execution),
                 deadline: deadline.clone(),
                 handler,
+                revoked: false,
                 transmitted: false,
                 cancellation: None,
                 context,
@@ -256,6 +262,10 @@ impl Shared {
             let observer = (!self.expected_stop.load(Ordering::Acquire))
                 .then(|| self.failure_observer.clone())
                 .flatten();
+            // 消费者可能正在析构已有流；调用对查询者不可见前必须完成同步撤销
+            for call in state.calls.values_mut() {
+                call.revoke();
+            }
             (std::mem::take(&mut state.calls), observer)
         };
         self.execution.close();
@@ -298,7 +308,8 @@ impl Shared {
             drop(state);
             let _ = initial.send(result);
         } else {
-            let pending = state.calls.remove(&id).ok_or(RpcError::Protocol(None))?;
+            let mut pending = state.calls.remove(&id).ok_or(RpcError::Protocol(None))?;
+            pending.revoke();
             drop(state);
             pending.finish(result);
         }
@@ -329,7 +340,8 @@ impl Shared {
         {
             return Ok(());
         }
-        let call = state.calls.remove(&id).ok_or(RpcError::Protocol(None))?;
+        let mut call = state.calls.remove(&id).ok_or(RpcError::Protocol(None))?;
+        call.revoke();
         drop(state);
         if call.stream.is_none() || call.result.is_some() {
             call.finish(Err(RpcError::Protocol(None)));
@@ -416,6 +428,7 @@ impl Shared {
             );
         }
         if !call.transmitted {
+            call.revoke();
             let call = state.calls.remove(&id);
             drop(state);
             if let Some(call) = call {

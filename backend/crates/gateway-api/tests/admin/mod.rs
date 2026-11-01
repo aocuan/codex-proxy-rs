@@ -3,6 +3,7 @@
 #[path = "../../../../test-support/evaluation.rs"]
 mod evaluation_fixture;
 mod plugins;
+mod upstream_info;
 use std::{
     collections::BTreeMap,
     sync::{
@@ -100,6 +101,11 @@ mod settings;
 mod system;
 mod wire;
 
+pub(super) struct ProviderQuotaGate {
+    pub entered: tokio::sync::Semaphore,
+    pub release: tokio::sync::Semaphore,
+}
+
 pub(super) struct AdminTestFixture {
     pub services: AdminServices,
     plugin_ports: Arc<plugins::TestPluginPorts>,
@@ -116,6 +122,8 @@ pub(super) struct AdminTestFixture {
     pub dashboard_summary_range: Arc<Mutex<Option<TimeRange>>>,
     pub provider_error: Arc<Mutex<Option<ProviderAdminError>>>,
     pub provider_quota: Arc<Mutex<Option<ProviderQuota>>>,
+    pub provider_quota_gate: Arc<Mutex<Option<Arc<ProviderQuotaGate>>>>,
+    pub provider_models: Arc<Mutex<Option<ProviderModels>>>,
     pub account: Arc<Mutex<Option<AccountPageItem>>>,
     pub account_usage: Arc<Mutex<Vec<AccountUsage>>>,
     pub evaluations: Arc<evaluation_fixture::TestEvaluationRepository>,
@@ -195,16 +203,22 @@ impl AdminTestFixture {
             plugin_ports.clone(),
         );
         let provider_quota = Arc::new(Mutex::new(None));
+        let provider_quota_gate = Arc::new(Mutex::new(None));
+        let provider_models = Arc::new(Mutex::new(None));
         let providers: Vec<Arc<dyn ProviderAdmin>> = vec![
             Arc::new(UnusedProvider::new(
                 "openai",
                 Arc::clone(&provider_error),
                 Arc::clone(&provider_quota),
+                Arc::clone(&provider_quota_gate),
+                Arc::clone(&provider_models),
             )),
             Arc::new(UnusedProvider::new(
                 "xai",
                 Arc::clone(&provider_error),
                 Arc::clone(&provider_quota),
+                Arc::clone(&provider_quota_gate),
+                Arc::clone(&provider_models),
             )),
         ];
         let bundle = gateway_admin::initialize(
@@ -220,6 +234,9 @@ impl AdminTestFixture {
                 typesafe: None,
                 execution: Arc::new(evaluation_fixture::UnusedEvaluationExecution),
                 gateway_version: "test".to_owned(),
+                upstream_info: Some(Arc::new(upstream_info::TestPeerInfo(Arc::clone(
+                    &provider_quota,
+                )))),
                 timezone,
                 service_middleware: std::sync::Arc::new(|| None),
                 plugin_preparation: plugin_ports.clone(),
@@ -256,6 +273,8 @@ impl AdminTestFixture {
             dashboard_summary_range,
             provider_error,
             provider_quota,
+            provider_quota_gate,
+            provider_models,
             account,
             account_usage,
             evaluations,
@@ -657,13 +676,7 @@ impl SettingsStore for MemorySettingsStore {
                 usage_retention_days: command.values.usage_retention_days,
                 ops_event_retention_days: command.values.ops_event_retention_days,
                 audit_retention_days: command.values.audit_retention_days,
-                account_auto_freeze_enabled: true,
-                account_auto_freeze_threshold: 12,
-                account_auto_freeze_window_seconds: 600,
-                account_auto_freeze_duration_seconds: 7_200,
-                account_auto_freeze_probe_enabled: true,
-                account_auto_freeze_probe_model: None,
-                account_auto_freeze_adaptive_concurrency: true,
+                account_error_protection: command.values.account_error_protection,
                 account_warmup_enabled: false,
                 account_warmup_schedule_time: "08:00".to_owned(),
                 account_warmup_model: None,
@@ -707,7 +720,9 @@ pub(super) struct MemoryClientKeyStore(Arc<Mutex<Option<ClientKeyRecord>>>);
 pub(super) struct MemoryObservations {
     pub summary: Option<UsageOverview>,
     pub trend: Option<Vec<RequestMetricPoint>>,
+    pub concurrency: Vec<gateway_admin::model::observability::UsageConcurrencyPoint>,
     pub summaries: Vec<(TimeRange, UsageFilter)>,
+    pub concurrency_selections: Vec<bool>,
     pub trends: Vec<(TimeRange, UsageFilter)>,
     pub records: Vec<UsageQuery>,
     pub errors: Vec<OpsErrorQuery>,
@@ -1080,6 +1095,7 @@ impl ClientKeyStore for MemoryClientKeyStore {
         let now = Utc::now();
         Ok(Some(ClientKeySecret::new(
             ClientKeyRecord {
+                peer_sharing: Default::default(),
                 request_profile_overrides: Default::default(),
                 budget: Default::default(),
                 id: id.clone(),
@@ -1153,6 +1169,13 @@ impl ClientKeyVerifier for UnusedClientKeyVerifier {
 
 #[async_trait]
 impl AccountStore for UnusedStore {
+    async fn load_account_record(
+        &self,
+        _: &gateway_core::account::ProviderAccountId,
+    ) -> AdminStoreResult<Option<gateway_admin::model::accounts::AccountRecord>> {
+        Err(unavailable("account"))
+    }
+
     async fn account_exists(&self, id: &str) -> AdminStoreResult<bool> {
         Ok(self
             .account
@@ -1344,15 +1367,6 @@ impl AccountStore for UnusedStore {
         Err(unavailable("account enabled"))
     }
 
-    async fn lower_concurrency_limit(
-        &self,
-        _: &gateway_core::account::ProviderAccountId,
-        _: gateway_core::account::AccountConcurrencyLimit,
-        _: &MutationContext,
-    ) -> AdminStoreResult<Option<gateway_admin::model::accounts::AccountUpdateResult>> {
-        Ok(None)
-    }
-
     async fn recover_account(
         &self,
         _: &ProviderAccountId,
@@ -1417,6 +1431,7 @@ impl AccountRuntimeStore for UnusedStore {
     async fn active_rate_limits(&self) -> AdminStoreResult<AccountRuntimeSnapshot> {
         Ok(AccountRuntimeSnapshot {
             cooldown: BTreeMap::new(),
+            protection_rules: BTreeMap::new(),
             in_flight: Some(BTreeMap::new()),
         })
     }
@@ -1424,6 +1439,7 @@ impl AccountRuntimeStore for UnusedStore {
     async fn account_runtime(&self, _: &[String]) -> AdminStoreResult<AccountRuntimeSnapshot> {
         Ok(AccountRuntimeSnapshot {
             cooldown: BTreeMap::new(),
+            protection_rules: BTreeMap::new(),
             in_flight: Some(BTreeMap::new()),
         })
     }
@@ -1431,13 +1447,6 @@ impl AccountRuntimeStore for UnusedStore {
     async fn active_freezes(
         &self,
     ) -> AdminStoreResult<BTreeMap<String, gateway_admin::model::accounts::AccountFreeze>> {
-        Ok(BTreeMap::new())
-    }
-
-    async fn capacity_peaks(
-        &self,
-        _account_ids: &[String],
-    ) -> AdminStoreResult<BTreeMap<String, u32>> {
         Ok(BTreeMap::new())
     }
 
@@ -1528,8 +1537,10 @@ impl ObservabilityStore for UnusedStore {
         range: TimeRange,
         filter: UsageFilter,
         _: Granularity,
+        include_concurrency: bool,
     ) -> AdminStoreResult<gateway_admin::model::observability::UsageInsightsObservation> {
         let mut data = self.observations.lock().expect("observations");
+        data.concurrency_selections.push(include_concurrency);
         data.summaries.push((range, filter.clone()));
         data.trends.push((range, filter));
         Ok(
@@ -1544,8 +1555,29 @@ impl ObservabilityStore for UnusedStore {
                     .clone()
                     .ok_or_else(|| unavailable("usage trend"))?,
                 costs: Vec::new(),
+                concurrency: if include_concurrency {
+                    data.concurrency.clone()
+                } else {
+                    Vec::new()
+                },
             },
         )
+    }
+
+    async fn usage_metric_observation(
+        &self,
+        range: gateway_admin::model::observability::TimeRange,
+        filter: gateway_admin::model::observability::UsageFilter,
+        granularity: gateway_admin::model::observability::Granularity,
+        metric: gateway_admin::model::observability::UsageInsightMetric,
+    ) -> AdminStoreResult<gateway_admin::model::observability::UsageInsightsObservation> {
+        self.usage_insights_observation(
+            range,
+            filter,
+            granularity,
+            metric == gateway_admin::model::observability::UsageInsightMetric::Load,
+        )
+        .await
     }
 
     async fn list_usage_records(&self, query: UsageQuery) -> AdminStoreResult<UsagePage> {
@@ -1620,6 +1652,8 @@ struct UnusedProvider {
     kind: ProviderKind,
     error: Arc<Mutex<Option<ProviderAdminError>>>,
     quota: Arc<Mutex<Option<ProviderQuota>>>,
+    quota_gate: Arc<Mutex<Option<Arc<ProviderQuotaGate>>>>,
+    models: Arc<Mutex<Option<ProviderModels>>>,
 }
 
 impl UnusedProvider {
@@ -1627,11 +1661,15 @@ impl UnusedProvider {
         kind: &str,
         error: Arc<Mutex<Option<ProviderAdminError>>>,
         quota: Arc<Mutex<Option<ProviderQuota>>>,
+        quota_gate: Arc<Mutex<Option<Arc<ProviderQuotaGate>>>>,
+        models: Arc<Mutex<Option<ProviderModels>>>,
     ) -> Self {
         Self {
             kind: ProviderKind::new(kind).expect("provider kind"),
             error,
             quota,
+            quota_gate,
+            models,
         }
     }
 }
@@ -1647,6 +1685,22 @@ impl ProviderAdmin for UnusedProvider {
             turn_state_probe: self.kind.as_str() == "openai" && authentication_kind == "oauth",
             ..Default::default()
         }
+    }
+
+    fn is_direct_account(&self, authentication_kind: &str) -> bool {
+        authentication_kind == "oauth"
+    }
+
+    fn peer_model_eligible(
+        &self,
+        _: &gateway_admin::model::accounts::AccountRecord,
+        _: &str,
+    ) -> Option<bool> {
+        Some(true)
+    }
+
+    fn peer_authentication_kinds(&self) -> &[&str] {
+        &["api_key"]
     }
 
     fn pricing_catalog(&self) -> gateway_admin::model::pricing::ProviderPricingCatalog {
@@ -1737,6 +1791,11 @@ impl ProviderAdmin for UnusedProvider {
         &self,
         _: gateway_admin::model::provider_credentials::ProviderQuotaRequest,
     ) -> Result<ProviderQuota, ProviderAdminError> {
+        let gate = self.quota_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.entered.add_permits(1);
+            gate.release.acquire().await.unwrap().forget();
+        }
         if let Some(quota) = self.quota.lock().expect("provider quota").clone() {
             return Ok(quota);
         }
@@ -1753,7 +1812,11 @@ impl ProviderAdmin for UnusedProvider {
         _: &ProviderAccountId,
         _: bool,
     ) -> Result<ProviderModels, ProviderAdminError> {
-        Err(unsupported_provider())
+        self.models
+            .lock()
+            .expect("provider models")
+            .clone()
+            .ok_or_else(unsupported_provider)
     }
 
     async fn export_credentials(
@@ -1870,13 +1933,7 @@ fn test_runtime_settings() -> RuntimeSettings {
             usage_retention_days: 31,
             ops_event_retention_days: 30,
             audit_retention_days: 90,
-            account_auto_freeze_enabled: true,
-            account_auto_freeze_threshold: 12,
-            account_auto_freeze_window_seconds: 600,
-            account_auto_freeze_duration_seconds: 7_200,
-            account_auto_freeze_probe_enabled: true,
-            account_auto_freeze_probe_model: None,
-            account_auto_freeze_adaptive_concurrency: true,
+            account_error_protection: Default::default(),
             account_warmup_enabled: false,
             account_warmup_schedule_time: "08:00".to_owned(),
             account_warmup_model: None,

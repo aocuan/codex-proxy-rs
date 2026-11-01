@@ -101,8 +101,7 @@ impl PackageInspector {
                     .collect::<Result<_, _>>()?,
                 configuration_schema: manifest.configuration_schema.clone(),
                 secret_fields: manifest.secret_fields.iter().cloned().collect(),
-                state_namespaces: crate::callback::private_state::configuration(manifest)?
-                    .namespaces,
+                state_namespaces: super::state_configuration(manifest)?.namespaces,
             };
             let requirements = super::compatibility::requirements(manifest)?;
             Ok((
@@ -120,6 +119,10 @@ impl PackageInspector {
 
 #[async_trait]
 impl PluginPackageInspector for PackageInspector {
+    fn compatibility_host_fingerprint(&self) -> Result<String, AdminError> {
+        super::compatibility::host_fingerprint(&self.host_version)
+    }
+
     async fn compatibility_warning(
         &self,
         archive: Arc<[u8]>,
@@ -134,7 +137,7 @@ impl PluginPackageInspector for PackageInspector {
         metadata: &PluginArtifactMetadata,
     ) -> Result<Vec<gateway_admin::model::plugins::instances::PluginApiDeprecation>, AdminError>
     {
-        crate::compatibility::warnings(
+        crate::deprecation::warnings(
             metadata
                 .contributes
                 .iter()
@@ -200,6 +203,10 @@ impl PluginPackageInspector for PackageInspector {
             let _permit = permit;
             let package = ValidatedPackage::read(archive, Some(&expected_sha256), limits)
                 .map_err(inspection_error)?;
+            package
+                .manifest()
+                .package_for_platform(std::env::consts::OS, std::env::consts::ARCH)
+                .map_err(|error| inspection_error(error.into()))?;
             super::compatibility::requirements(package.manifest())
         })
         .await
@@ -207,12 +214,22 @@ impl PluginPackageInspector for PackageInspector {
     }
 }
 
-fn inspection_error(error: PackageError) -> AdminError {
+pub(crate) fn inspection_error(error: PackageError) -> AdminError {
     match error {
         PackageError::Manifest(gateway_plugin_sdk::ManifestError::Incompatible) => {
             AdminError::invalid("插件清单或协议版本不兼容，请使用当前 SDK 重新构建")
         }
-        _ => AdminError::invalid("插件包格式、兼容性或摘要校验失败"),
+        PackageError::Manifest(gateway_plugin_sdk::ManifestError::Platform) => {
+            AdminError::invalid("插件不支持当前运行平台")
+        }
+        PackageError::Manifest(gateway_plugin_sdk::ManifestError::Invalid) => {
+            AdminError::invalid("插件清单格式不合法")
+        }
+        PackageError::Digest => AdminError::invalid("插件包摘要校验失败，请重新安装"),
+        PackageError::Archive => AdminError::invalid("插件包损坏或归档格式不合法"),
+        PackageError::Path => AdminError::invalid("插件包包含不安全或重复路径"),
+        PackageError::Limit => AdminError::invalid("插件包超过大小或文件数量限制"),
+        PackageError::Cache => AdminError::unavailable("插件制品缓存暂不可用"),
     }
 }
 

@@ -48,7 +48,7 @@ watch(open, (value) => {
 
 <template>
   <ZDialog v-model="open" title="测评设置" width="44rem" :show-close="!saving" :close-on-click-modal="!saving" :close-on-press-escape="!saving">
-    <p class="mt-0 mb-5 text-cp-sm text-cp-text-secondary">
+    <p class="mt-0 mb-5 text-z-sm text-z-text-secondary">
       保存后自动用于新建测评，已有计划保持各自的配置
     </p>
     <ZForm v-if="draft" class="grid gap-5 sm:grid-cols-2">
@@ -68,7 +68,7 @@ watch(open, (value) => {
         <ZInputNumber v-model="draft.timeoutSeconds" :disabled="saving" :min="1" :max="600" :precision="0" unit="秒" aria-label="默认单次超时" />
       </ZFormItem>
       <EvaluationJudgeConnectionFields v-model="draft.judge" :disabled="saving" :account-options="judgeAccountOptions" :key-options="judgeKeyOptions" :loading-accounts="loadingAccounts" :loading-keys="loadingKeys" @search-accounts="catalog.searchAccounts" @search-keys="catalog.searchKeys" />
-      <p v-if="draft.judge?.type === 'model' && judgeAccessMessage" class="m-0 text-cp-sm text-cp-warning-text wrap-anywhere sm:col-span-2" role="status">
+      <p v-if="draft.judge?.type === 'model' && judgeAccessMessage" class="m-0 text-z-sm text-z-warning-text wrap-anywhere sm:col-span-2" role="status">
         {{ judgeAccessMessage }}
       </p>
       <ZButton v-if="draft.judge?.type === 'model' && judgeAccessError" size="small" variant="text" @click="judgeAccess.refresh">
@@ -78,7 +78,7 @@ watch(open, (value) => {
         <ZFormItem class="sm:col-span-2" label="TypeSafe API Key" :required="!current?.typesafeConfigured" :description="current?.typesafeConfigured ? '已配置，留空保留原密钥' : '仅保存在服务端，费用由 TypeSafe 计收'">
           <ZInput v-model="apiKey" type="password" :disabled="saving" autocomplete="new-password" placeholder="填写 TypeSafe API Key" aria-label="TypeSafe API Key" />
         </ZFormItem>
-        <p class="m-0 text-cp-sm text-cp-text-secondary sm:col-span-2">
+        <p class="m-0 text-z-sm text-z-text-secondary sm:col-span-2">
           Jev 返回概率，不提供文字推理，HTML 仅评审源码，糖果题默认用精确答案判分
         </p>
       </template>

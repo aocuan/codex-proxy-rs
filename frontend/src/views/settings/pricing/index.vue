@@ -2,8 +2,7 @@
 import type { PricingRow } from './model'
 
 import type { ModelPricing, PricingChange } from '@/api'
-import { ZButton, ZConfirmDialog, ZEmpty, ZPagination } from '@codex-proxy/ui'
-import { CircleAlert } from '@lucide/vue'
+import { ZConfirmDialog, ZPagination } from '@codex-proxy/ui'
 import { computed, ref, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import PricingBatchModal from './PricingBatchModal.vue'
@@ -15,7 +14,7 @@ import { usePricing } from './usePricing'
 
 const { t } = useI18n({ useScope: 'global' })
 
-const { catalog, providers, provider, search, source, page, pageSize, selected, error, rows, visible, pagination, loading, saving, syncing, preview, syncOpen, syncCatalog, load, save, startSync, confirmSync, toggle, togglePage } = usePricing()
+const { catalog, providers, provider, search, source, page, pageSize, selected, error, rows, visible, pagination, loading, saving, syncing, preview, syncOpen, syncCatalog, save, startSync, confirmSync, toggle, togglePage } = usePricing()
 const editorOpen = ref(false)
 const editing = shallowRef<PricingRow>()
 const deleting = shallowRef<PricingRow>()
@@ -53,7 +52,7 @@ function requestDelete(row: PricingRow) {
 </script>
 
 <template>
-  <section class="flex min-h-0 min-w-0 flex-col rounded-cp-card bg-cp-bg-container p-3 shadow-cp-card sm:p-4" :aria-label="t('settings.page.tabs.pricing')">
+  <section class="flex min-h-0 min-w-0 flex-col rounded-z-card bg-z-bg-container p-3 shadow-z-card sm:p-4" :aria-label="t('settings.page.tabs.pricing')">
     <PricingToolbar
       v-model:search="search"
       v-model:provider="provider"
@@ -70,21 +69,11 @@ function requestDelete(row: PricingRow) {
       @reset="batch(true)"
       @clear="selected = []"
     />
-    <PricingTable class="min-h-0 flex-1" :rows="error ? [] : visible" :selected="selected" :loading="loading" :disabled="disabled" @toggle="toggle" @toggle-page="togglePage" @edit="edit" @delete="requestDelete">
-      <template v-if="error" #empty>
-        <ZEmpty :title="t('settings.pricing.priceListFailedToLoad')" :description="error" :icon="CircleAlert" surface="none" class="w-full max-w-80" role="alert">
-          <template #action>
-            <ZButton :loading="loading" @click="load">
-              {{ t('common.actions.retry') }}
-            </ZButton>
-          </template>
-        </ZEmpty>
-      </template>
-    </PricingTable>
+    <PricingTable class="min-h-0 flex-1" :rows="visible" :selected="selected" :loading="loading" :disabled="disabled" @toggle="toggle" @toggle-page="togglePage" @edit="edit" @delete="requestDelete" />
     <ZPagination v-bind="pagination" :disabled="loading" @current-change="page = $event" @size-change="pageSize = $event" />
     <PricingEditor v-model="editorOpen" :row="editing" :provider="provider" :saving="saving" @save="saveModel" />
     <ZConfirmDialog v-model="deleteOpen" :title="t('settings.pricing.deleteModelPriceList')" :description="t('settings.pricing.deleteDescription')" destructive :confirm-text="t('common.actions.delete')" :loading="saving" @confirm="deleteModel">
-      <span class="break-all font-mono text-cp-sm font-normal">{{ deleting?.model }}</span>
+      <span class="break-all font-mono text-z-sm font-normal">{{ deleting?.model }}</span>
     </ZConfirmDialog>
     <PricingBatchModal v-model="batchOpen" :rows="targets" :reset="batchReset" :saving="saving" @confirm="saveBatch" />
     <PricingSyncModal v-model="syncOpen" :preview="preview" :catalog="syncCatalog" :saving="saving" @confirm="confirmSync" />

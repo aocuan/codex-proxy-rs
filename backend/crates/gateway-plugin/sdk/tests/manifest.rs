@@ -137,6 +137,7 @@ fn capability_contract_versions_are_checked_independently_of_rpc_version() {
         (Capability::Management, Stage::Management, 2, false),
         (Capability::UpstreamAdapter, Stage::Upstream, 5, true),
         (Capability::Scheduler, Stage::Scheduling, 3, false),
+        (Capability::ModelCatalog, Stage::Registration, 2, false),
     ] {
         for mut manifest in [source_manifest(), packaged_manifest()] {
             let formats = if needs_formats {
@@ -281,14 +282,22 @@ fn icon_wire_is_a_path_or_exact_light_dark_object() {
 #[test]
 fn contribution_ids_are_owned_unique_and_stage_bounded() {
     let mut manifest = source_manifest();
-    let middleware = manifest
-        .contributes
-        .get(&Capability::Middleware)
-        .unwrap()
-        .clone();
+    manifest.contributes.insert(
+        Capability::Scheduler,
+        ContributionDeclaration {
+            id: "9acme.request-tags.scheduler".into(),
+            version: 3,
+            stages: vec![Stage::Scheduling],
+            input_formats: Vec::new(),
+            output_formats: Vec::new(),
+        },
+    );
+    assert!(manifest.validate().is_ok());
     manifest
         .contributes
-        .insert(Capability::Scheduler, middleware);
+        .get_mut(&Capability::Scheduler)
+        .unwrap()
+        .id = manifest.contributes[&Capability::Middleware].id.clone();
     assert_eq!(manifest.validate(), Err(ManifestError::Invalid));
 
     let mut manifest = source_manifest();
@@ -315,13 +324,19 @@ fn installed_manifest_rejects_non_middleware_stage_drift() {
         Capability::Management,
         ContributionDeclaration {
             id: "9acme.request-tags.management".into(),
-            version: 1,
-            stages: vec![Stage::Registration],
+            version: 2,
+            stages: vec![Stage::Management],
             input_formats: Vec::new(),
             output_formats: Vec::new(),
         },
     );
 
+    assert!(manifest.validate().is_ok());
+    manifest
+        .contributes
+        .get_mut(&Capability::Management)
+        .unwrap()
+        .stages = vec![Stage::Registration];
     assert_eq!(manifest.validate(), Err(ManifestError::Invalid));
 }
 

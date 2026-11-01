@@ -68,7 +68,7 @@ const groupOptions = computed(() => [
         class="col-span-2 min-w-0 sm:col-span-3 xl:w-48 xl:min-w-40 xl:max-w-80 xl:flex-1"
       >
         <template #prefix>
-          <Search class="size-4.5 text-cp-text-tertiary" />
+          <Search class="size-4.5 text-z-text-tertiary" />
         </template>
       </ZInput>
 
@@ -102,7 +102,7 @@ const groupOptions = computed(() => [
     </div>
 
     <div
-      class="grid w-full grid-cols-2 gap-2 xl:flex xl:w-auto xl:flex-wrap xl:shrink-0 xl:self-end xl:items-center xl:justify-end xl:ml-auto"
+      class="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 xl:ml-auto xl:w-auto xl:shrink-0 xl:self-end"
     >
       <ZPopover v-if="selectedCount > 0" placement="bottom-end" class="col-span-2 justify-self-end">
         <template #reference="{ open }">
@@ -115,7 +115,7 @@ const groupOptions = computed(() => [
           <div class="w-44 p-1.5">
             <ZMenuItem @click="(close(), emit('editSelected'))">
               <template #icon>
-                <Pencil class="size-3.5 text-cp-link" />
+                <Pencil class="size-3.5 text-z-link" />
               </template>
               {{ t('accounts.batchEdit.title') }}
             </ZMenuItem>
@@ -146,7 +146,7 @@ const groupOptions = computed(() => [
       >
         <ZButton v-if="hasImportTasks" class="whitespace-nowrap" @click="emit('importTasks')">
           <ListTodo class="size-4" />
-          {{ t('accounts.filters.importTasks') }} <span v-if="activeImportCount" class="font-mono text-cp-link">{{ activeImportCount }}</span>
+          {{ t('accounts.filters.importTasks') }} <span v-if="activeImportCount" class="font-mono text-z-link">{{ activeImportCount }}</span>
         </ZButton>
         <slot name="actions" />
         <ZButton

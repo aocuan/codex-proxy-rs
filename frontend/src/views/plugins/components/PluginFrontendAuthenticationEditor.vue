@@ -8,7 +8,7 @@ import type {
 } from '@/api'
 
 import { ZButton, ZFormItem, ZIconButton, ZInput, ZSegmented, ZSelect, ZSwitch } from '@codex-proxy/ui'
-import { Plus, RefreshCw, Trash2 } from '@lucide/vue'
+import { Plus, Trash2 } from '@lucide/vue'
 
 import { computed, shallowRef, watch } from 'vue'
 
@@ -231,7 +231,7 @@ defineExpose({ validationError })
 
 <template>
   <div class="grid gap-4">
-    <div class="flex items-center gap-2 rounded-cp-lg bg-cp-fill-alter p-4">
+    <div class="flex items-center gap-2 rounded-z-lg bg-z-fill-alter p-4">
       <ZSwitch
         :model-value="Boolean(binding)"
         :label="t('plugins.frontendAuth.enableClientAuthentication')"
@@ -245,7 +245,7 @@ defineExpose({ validationError })
         <p class="m-0">
           {{ t('plugins.frontendAuth.loginNotice') }}
         </p>
-        <p class="m-0 break-all font-mono text-cp-text-quaternary">
+        <p class="m-0 break-all font-mono text-z-text-quaternary">
           {{ contribution.id }}
         </p>
       </PluginHelpPopover>
@@ -278,7 +278,7 @@ defineExpose({ validationError })
       <div class="grid gap-2">
         <div class="flex min-w-0 items-end justify-between gap-3">
           <div class="flex min-w-0 items-center gap-1.5">
-            <p class="m-0 text-cp leading-none font-medium text-cp-text-secondary">
+            <p class="m-0 text-z leading-none font-medium text-z-text-secondary">
               {{ t('plugins.frontendAuth.identityMapping') }}
             </p>
             <PluginHelpPopover :label="t('plugins.frontendAuth.identityMappingDescription')">
@@ -291,9 +291,6 @@ defineExpose({ validationError })
             </PluginHelpPopover>
           </div>
           <div class="flex shrink-0 items-center gap-1">
-            <ZIconButton v-if="keysFailed" size="small" :aria-label="t('plugins.frontendAuth.reloadClientKey')" :disabled="disabled" :loading="loadingKeys" @click="loadClientKeys()">
-              <RefreshCw class="size-3.5" />
-            </ZIconButton>
             <ZButton
               size="small"
               :disabled="disabled || binding.identityBindings.length >= 256"
@@ -310,7 +307,7 @@ defineExpose({ validationError })
         <div
           v-for="(identity, index) in binding.identityBindings"
           :key="index"
-          class="grid min-w-0 gap-3 rounded-cp-lg bg-cp-fill-alter p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end"
+          class="grid min-w-0 gap-3 rounded-z-lg bg-z-fill-alter p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end"
         >
           <ZFormItem :label="t('plugins.frontendAuth.identityMark')" required>
             <ZInput
@@ -325,8 +322,8 @@ defineExpose({ validationError })
             <ZSelect
               :model-value="identity.clientKeyId"
               :options="keyOptions"
-              :disabled="disabled || loadingKeys"
-              :placeholder="loadingKeys ? t('common.status.loading') : keysFailed ? t('plugins.frontendAuth.failedToLoadTryAgain') : t('plugins.frontendAuth.selectClientApiKey')"
+              :disabled="disabled || loadingKeys || keysFailed"
+              :placeholder="loadingKeys ? t('common.status.loading') : t('plugins.frontendAuth.selectClientApiKey')"
               :empty-text="t('plugins.frontendAuth.noClientKeyYet')"
               class="w-full min-w-0"
               @update:model-value="updateIdentity(index, { clientKeyId: $event })"

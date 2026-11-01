@@ -92,6 +92,7 @@ pub struct DefaultExecutionService {
     frontend_authentication: Option<FrontendAuthenticationExtensionIndex>,
     session_affinity: Option<Arc<dyn ProviderSessionAffinityPort>>,
     client_retry: Option<Arc<dyn crate::engine::client_retry::ClientRetryStore>>,
+    account_error_protection: Option<Arc<dyn crate::provider_ports::ProviderCooldownPort>>,
     snapshot_refresh: Option<Arc<RuntimeSnapshotPublisher>>,
     active_requests: ActiveRequestRegistry,
 }
@@ -123,6 +124,7 @@ impl DefaultExecutionService {
             frontend_authentication: None,
             session_affinity: None,
             client_retry: None,
+            account_error_protection: None,
             snapshot_refresh: None,
             active_requests: Arc::default(),
         }
@@ -131,6 +133,15 @@ impl DefaultExecutionService {
     #[must_use]
     pub fn with_budget(mut self, budget: Arc<dyn ClientBudgetPort>) -> Self {
         self.budget = Some(budget);
+        self
+    }
+
+    #[must_use]
+    pub fn with_account_error_protection(
+        mut self,
+        store: Arc<dyn crate::provider_ports::ProviderCooldownPort>,
+    ) -> Self {
+        self.account_error_protection = Some(store);
         self
     }
 
@@ -373,7 +384,7 @@ impl DefaultExecutionService {
         let authentication = client.authentication.clone().ok_or_else(|| {
             GatewayError::new(
                 GatewayErrorKind::Internal,
-                "bound execution identity cannot enter the public start path",
+                "Bound execution identity cannot enter the public start path.",
             )
         })?;
         let authentication = match client.settings.clone() {
@@ -468,13 +479,13 @@ impl DefaultExecutionService {
         if authorization.cancellation.is_cancelled() {
             return Err(GatewayError::new(
                 GatewayErrorKind::Cancelled,
-                "parent request was cancelled",
+                "Parent request was cancelled.",
             ));
         }
         if authorization.deadline_at.is_elapsed() {
             return Err(GatewayError::new(
                 GatewayErrorKind::Timeout,
-                "request deadline elapsed",
+                "Request deadline elapsed.",
             ));
         }
         let account_group_ids = authorization
@@ -551,7 +562,7 @@ impl DefaultExecutionService {
                 if !authorization.account_scope.provider_kinds().contains(&provider) {
                     return Err(GatewayError::new(
                         GatewayErrorKind::PolicyDenied,
-                        "nested provider is outside the frozen account scope",
+                        "Nested provider is outside the frozen account scope.",
                     ));
                 }
                 routing_context.required_provider = Some(provider);
@@ -582,21 +593,21 @@ impl DefaultExecutionService {
                             .map_err(|_| {
                                 GatewayError::new(
                                     GatewayErrorKind::Internal,
-                                    "model routing policy failed",
+                                    "Model routing policy failed.",
                                 )
                             })? {
                             ModelRouteDecision::Unhandled => {}
                             ModelRouteDecision::Reject => {
                                 return Err(GatewayError::new(
                                     GatewayErrorKind::PolicyDenied,
-                                    "model routing policy rejected the request",
+                                    "Model routing policy rejected the request.",
                                 ));
                             }
                             ModelRouteDecision::Route { provider, model } => {
                                 if provider.is_none() && model.is_none() {
                                     return Err(GatewayError::new(
                                         GatewayErrorKind::Internal,
-                                        "model routing policy returned an empty target",
+                                        "Model routing policy returned an empty target.",
                                     ));
                                 }
                                 if let Some(provider) = provider {
@@ -611,7 +622,7 @@ impl DefaultExecutionService {
                                     {
                                         return Err(GatewayError::new(
                                             GatewayErrorKind::PolicyDenied,
-                                            "model routing policy exceeded the frozen provider scope",
+                                            "Model routing policy exceeded the frozen provider scope.",
                                         ));
                                     }
                                     target_context.required_provider = Some(provider);
@@ -651,26 +662,26 @@ impl DefaultExecutionService {
                             Err(error)
                                 if error.kind() == NativeContinuationStoreErrorKind::OwnershipMismatch =>
                             {
-                                return Err(GatewayError::new(GatewayErrorKind::PolicyDenied, "continuation does not belong to this client API key"));
+                                return Err(GatewayError::new(GatewayErrorKind::PolicyDenied, "Continuation does not belong to this client API key."));
                             }
                             Err(error) => {
                                 tracing::warn!(request_id = request_id.as_str(), %error, "Continuation affinity 记录无效，已拒绝续接");
-                                return Err(GatewayError::new(GatewayErrorKind::Internal, "continuation state is invalid"));
+                                return Err(GatewayError::new(GatewayErrorKind::Internal, "Continuation state is invalid."));
                             }
                         },
                         _ = timeout => None,
                     };
                     Some(match pin {
                         Some(pin) if !pin.matches_client(request.client.policy.key_id()) => {
-                            return Err(GatewayError::new(GatewayErrorKind::PolicyDenied, "continuation does not belong to this client API key"));
+                            return Err(GatewayError::new(GatewayErrorKind::PolicyDenied, "Continuation does not belong to this client API key."));
                         }
                         Some(pin) if !authorization.account_scope.allows(pin.account()) => {
-                            return Err(GatewayError::new(GatewayErrorKind::PolicyDenied, "continuation account is outside the client account scope"));
+                            return Err(GatewayError::new(GatewayErrorKind::PolicyDenied, "Continuation account is outside the client account scope."));
                         }
                         Some(pin)
                             if !plan.candidates().iter().any(|candidate| candidate.provider() == pin.provider()) =>
                         {
-                            return Err(GatewayError::new(GatewayErrorKind::NoAvailableProvider, "continuation provider is not available"));
+                            return Err(GatewayError::new(GatewayErrorKind::NoAvailableProvider, "Continuation provider is not available."));
                         }
                         Some(pin) => {
                             attach_continuation_session_state(&mut request.operation, &pin);
@@ -778,7 +789,7 @@ impl DefaultExecutionService {
             let permit = authorization.nested_permit.take().ok_or_else(|| {
                 GatewayError::new(
                     GatewayErrorKind::Internal,
-                    "nested execution admission is unavailable",
+                    "Nested execution admission is unavailable.",
                 )
             })?;
             (ExecutionAdmission::Nested(permit), None)
@@ -911,6 +922,9 @@ impl DefaultExecutionService {
             deadline_at: authorization.deadline_at,
         };
         let mut engine = GatewayEngine::new(self.observations.clone(), providers);
+        if let Some(store) = &self.account_error_protection {
+            engine = engine.with_account_error_protection(Arc::clone(store));
+        }
         // 插件内部调用不共享外部客户端的失败轮次，探测另走 transient engine
         if authorization.nested.is_none()
             && authorization.bound.is_none()
@@ -1000,19 +1014,19 @@ impl DefaultExecutionService {
             .ok_or_else(|| {
                 GatewayError::new(
                     GatewayErrorKind::PolicyDenied,
-                    "parent model request is not active",
+                    "Parent model request is not active.",
                 )
             })?;
         if authority.cancellation.is_cancelled() {
             return Err(GatewayError::new(
                 GatewayErrorKind::Cancelled,
-                "parent request was cancelled",
+                "Parent request was cancelled.",
             ));
         }
         if authority.deadline_at.is_elapsed() {
             return Err(GatewayError::new(
                 GatewayErrorKind::Timeout,
-                "parent request deadline elapsed",
+                "Parent request deadline elapsed.",
             ));
         }
         Ok(authority)
@@ -1036,7 +1050,7 @@ impl DefaultExecutionService {
         if parent.extension_scope.len() >= ExtensionCallScope::MAXIMUM_DEPTH {
             return Err(GatewayError::new(
                 GatewayErrorKind::PolicyDenied,
-                "nested model execution depth is exhausted",
+                "Nested model execution depth is exhausted.",
             ));
         }
         let extension_scope = parent
@@ -1045,7 +1059,7 @@ impl DefaultExecutionService {
             .ok_or_else(|| {
                 GatewayError::new(
                     GatewayErrorKind::PolicyDenied,
-                    "recursive plugin model execution is not allowed",
+                    "Recursive plugin model execution is not allowed.",
                 )
             })?;
         let (account_scope, required_provider) = restrict_model_execution_scope(
@@ -1104,7 +1118,7 @@ impl DefaultExecutionService {
             refresh.refresh().await.map_err(|_| {
                 GatewayError::new(
                     GatewayErrorKind::Internal,
-                    "current runtime snapshot is unavailable",
+                    "Gateway configuration is unavailable.",
                 )
             })?;
         }
@@ -1115,7 +1129,7 @@ impl DefaultExecutionService {
             .map_err(|_| {
                 GatewayError::new(
                     GatewayErrorKind::Internal,
-                    "current runtime snapshot is unavailable",
+                    "Gateway configuration is unavailable.",
                 )
             })?;
         let policy = snapshot
@@ -1124,11 +1138,14 @@ impl DefaultExecutionService {
             .ok_or_else(|| {
                 GatewayError::new(
                     GatewayErrorKind::Unauthorized,
-                    "client API key no longer exists",
+                    "Client API key no longer exists.",
                 )
             })?;
         policy.authorize().map_err(|_| {
-            GatewayError::new(GatewayErrorKind::PolicyDenied, "client API key is disabled")
+            GatewayError::new(
+                GatewayErrorKind::PolicyDenied,
+                "Client API key is disabled.",
+            )
         })?;
         Ok(AuthenticatedClient {
             policy: match &settings {
@@ -1159,13 +1176,13 @@ impl DefaultExecutionService {
         if cancellation.is_cancelled() {
             return Err(GatewayError::new(
                 GatewayErrorKind::Cancelled,
-                "bound plugin invocation was cancelled",
+                "Bound plugin invocation was cancelled.",
             ));
         }
         if extension_scope.len() >= ExtensionCallScope::MAXIMUM_DEPTH {
             return Err(GatewayError::new(
                 GatewayErrorKind::PolicyDenied,
-                "plugin model execution depth exceeded",
+                "Plugin model execution depth exceeded.",
             ));
         }
         let extension_scope = extension_scope
@@ -1173,13 +1190,13 @@ impl DefaultExecutionService {
             .ok_or_else(|| {
                 GatewayError::new(
                     GatewayErrorKind::PolicyDenied,
-                    "plugin model execution scope is recursive",
+                    "Plugin model execution scope is recursive.",
                 )
             })?;
         let now = SystemTime::now();
         let deadline_at =
             Deadline::from_timeout(now, client.execution_timeout()).ok_or_else(|| {
-                GatewayError::new(GatewayErrorKind::Internal, "system clock is invalid")
+                GatewayError::new(GatewayErrorKind::Internal, "System clock is invalid.")
             })?;
         let (account_scope, required_provider) = restrict_model_execution_scope(
             client.policy.account_scope().as_ref(),
@@ -1241,13 +1258,13 @@ impl DefaultExecutionService {
         if !parent.account_scope.provider_kinds().contains(&provider) {
             return Err(GatewayError::new(
                 GatewayErrorKind::PolicyDenied,
-                "affinity provider is outside the frozen authorization scope",
+                "Affinity provider is outside the frozen authorization scope.",
             ));
         }
         let affinity = self.session_affinity.as_ref().ok_or_else(|| {
             GatewayError::new(
                 GatewayErrorKind::PolicyDenied,
-                "provider session affinity is unavailable",
+                "Provider session affinity is unavailable.",
             )
         })?;
         let account = {
@@ -1258,15 +1275,15 @@ impl DefaultExecutionService {
                 result = load => result.map_err(|error| match error.kind() {
                     ProviderStoreErrorKind::Unavailable => GatewayError::new(
                         GatewayErrorKind::ProviderInfrastructureUnavailable,
-                        "provider session affinity is temporarily unavailable",
+                        "Provider session affinity is temporarily unavailable.",
                     ),
                     ProviderStoreErrorKind::InvalidData | ProviderStoreErrorKind::Conflict => {
-                        GatewayError::new(GatewayErrorKind::Internal, "provider session affinity is invalid")
+                        GatewayError::new(GatewayErrorKind::Internal, "Provider session affinity is invalid.")
                     }
                 })?,
                 _ = timeout => return Err(GatewayError::new(
                     GatewayErrorKind::ProviderInfrastructureUnavailable,
-                    "provider session affinity lookup timed out",
+                    "Provider session affinity lookup timed out.",
                 )),
             }
         };
@@ -1308,7 +1325,7 @@ impl DefaultExecutionService {
             if remaining.is_zero() {
                 return Err(GatewayError::new(
                     GatewayErrorKind::Timeout,
-                    "request deadline elapsed",
+                    "Request deadline elapsed.",
                 ));
             }
             // 在发送原子准入之前接管取消清理，覆盖 Redis 已取得租约但返回尚未被观察的窗口
@@ -1327,9 +1344,9 @@ impl DefaultExecutionService {
             let cancelled = cancellation.cancelled().fuse();
             pin_mut!(acquire, timeout, cancelled);
             let decision = select_biased! {
-                () = cancelled => return Err(GatewayError::new(GatewayErrorKind::Cancelled, "request admission was cancelled")),
-                result = acquire => result.map_err(|source| GatewayError::new(GatewayErrorKind::NoAvailableProvider, "request admission is temporarily unavailable").with_source(source))?,
-                _ = timeout => return Err(GatewayError::new(GatewayErrorKind::Timeout, "request deadline elapsed")),
+                () = cancelled => return Err(GatewayError::new(GatewayErrorKind::Cancelled, "Request admission was cancelled.")),
+                result = acquire => result.map_err(|source| GatewayError::new(GatewayErrorKind::NoAvailableProvider, "Request admission is temporarily unavailable.").with_source(source))?,
+                _ = timeout => return Err(GatewayError::new(GatewayErrorKind::Timeout, "Request deadline elapsed.")),
             };
             match decision {
                 ClientAdmissionDecision::Granted => {
@@ -1354,7 +1371,7 @@ impl DefaultExecutionService {
                     if reason == ClientAdmissionRejection::RateLimited || policy.max_waiting == 0 {
                         return Err(GatewayError::new(
                             GatewayErrorKind::RateLimited,
-                            "request exceeds client API key limits",
+                            "Request exceeds client API key limits.",
                         ));
                     }
                     if waiting.elapsed().is_zero()
@@ -1392,12 +1409,12 @@ impl DefaultExecutionService {
             .map_err(|_| {
                 GatewayError::new(
                     GatewayErrorKind::Internal,
-                    "runtime snapshot is unavailable",
+                    "Gateway configuration is unavailable.",
                 )
             })?;
         let public_model =
             PublicModelId::new(upstream_model.as_str().to_owned()).map_err(|_| {
-                GatewayError::new(GatewayErrorKind::Unsupported, "requested model is invalid")
+                GatewayError::new(GatewayErrorKind::Unsupported, "Requested model is invalid.")
             })?;
         let routing_context = RoutingContext {
             required_provider: Some(provider_kind),
@@ -1408,11 +1425,11 @@ impl DefaultExecutionService {
             .map_err(map_routing_error)?;
         let started_at = SystemTime::now();
         let deadline_at = started_at.checked_add(DIAGNOSTIC_TIMEOUT).ok_or_else(|| {
-            GatewayError::new(GatewayErrorKind::Internal, "system clock is invalid")
+            GatewayError::new(GatewayErrorKind::Internal, "System clock is invalid.")
         })?;
         let request_id = new_request_id()?;
         let actor = ClientApiKeyId::new("admin_connection_test")
-            .map_err(|_| GatewayError::new(GatewayErrorKind::Internal, "invalid admin actor"))?;
+            .map_err(|_| GatewayError::new(GatewayErrorKind::Internal, "Invalid admin actor."))?;
         let new_request = NewModelRequest {
             id: request_id,
             client_api_key_name_snapshot: None,
@@ -1612,14 +1629,7 @@ impl ExecutionService for DefaultExecutionService {
                     .query_client_model_catalog(scope, protocol, client_version)
                     .await?
                 else {
-                    for profile in client.snapshot.public_model_profiles_for_provider(kind) {
-                        if !client.snapshot.catalog_model_allowed_for_scope(
-                            kind,
-                            profile.model(),
-                            scope,
-                        ) {
-                            continue;
-                        }
+                    for profile in client.snapshot.profiles_for_provider_scope(kind, scope) {
                         if seen.insert(profile.model().clone()) {
                             result.push(PublicModelDescriptor::Adapted(profile));
                         }
@@ -1669,6 +1679,12 @@ impl ExecutionService for DefaultExecutionService {
                     if let Some(source) = by_id.get(target.as_str()) {
                         seen.insert(model.clone());
                         result.push(source.content.for_public_model(model));
+                    }
+                }
+                // 原生完整对象优先；只补入当前授权账号实际提供的独立适配画像
+                for profile in client.snapshot.contributed_profiles_for_scope(kind, scope) {
+                    if seen.insert(profile.model().clone()) {
+                        result.push(PublicModelDescriptor::Adapted(profile));
                     }
                 }
             }
@@ -1799,7 +1815,7 @@ impl ClientIdentityPort for DefaultExecutionService {
                     let cancelled = cancellation.cancelled().fuse();
                     pin_mut!(cancelled);
                     select_biased! {
-                        () = cancelled => Err(GatewayError::new(GatewayErrorKind::Cancelled, "client verification was cancelled")),
+                        () = cancelled => Err(GatewayError::new(GatewayErrorKind::Cancelled, "Client verification was cancelled.")),
                         result = verification => result.map_err(authentication_gateway_error),
                     }
                 }
@@ -1825,9 +1841,9 @@ impl NestedModelExecutionPort for DefaultExecutionService {
                 .fuse();
             pin_mut!(cancelled, timeout, catalog);
             let models = select_biased! {
-                () = cancelled => return Err(GatewayError::new(GatewayErrorKind::Cancelled, "model catalog call was cancelled")),
-                () = timeout => return Err(GatewayError::new(GatewayErrorKind::Timeout, "model catalog deadline elapsed")),
-                result = catalog => result.map_err(|_| GatewayError::new(GatewayErrorKind::Internal, "model catalog is unavailable"))?,
+                () = cancelled => return Err(GatewayError::new(GatewayErrorKind::Cancelled, "Model catalog call was cancelled.")),
+                () = timeout => return Err(GatewayError::new(GatewayErrorKind::Timeout, "Model catalog deadline elapsed.")),
+                result = catalog => result.map_err(|_| GatewayError::new(GatewayErrorKind::Internal, "Model catalog is unavailable."))?,
             };
             Ok(models
                 .into_iter()
@@ -1907,13 +1923,13 @@ fn restrict_model_execution_scope(
         if !parent_scope.allows(parent_account) {
             return Err(GatewayError::new(
                 GatewayErrorKind::PolicyDenied,
-                "parent attempt account is outside the frozen account scope",
+                "Parent attempt account is outside the frozen account scope.",
             ));
         }
         if account == Some(parent_account) {
             return Err(GatewayError::new(
                 GatewayErrorKind::PolicyDenied,
-                "nested execution cannot wait for the parent attempt account",
+                "Nested execution cannot wait for the parent attempt account.",
             ));
         }
         account_scope = account_scope.excluding_account(parent_account.clone());
@@ -1923,7 +1939,7 @@ fn restrict_model_execution_scope(
             if !account_scope.allows(account) {
                 return Err(GatewayError::new(
                     GatewayErrorKind::PolicyDenied,
-                    "model account is outside the frozen authorization scope",
+                    "Model account is outside the frozen authorization scope.",
                 ));
             }
             let account_provider = account_scope
@@ -1932,7 +1948,7 @@ fn restrict_model_execution_scope(
                 .ok_or_else(|| {
                     GatewayError::new(
                         GatewayErrorKind::PolicyDenied,
-                        "model account is unavailable in the frozen snapshot",
+                        "Model account is unavailable in the frozen snapshot.",
                     )
                 })?;
             if provider
@@ -1941,7 +1957,7 @@ fn restrict_model_execution_scope(
             {
                 return Err(GatewayError::new(
                     GatewayErrorKind::PolicyDenied,
-                    "model provider and account do not match",
+                    "Model provider and account do not match.",
                 ));
             }
             Some(account_provider)
@@ -1955,7 +1971,7 @@ fn restrict_model_execution_scope(
     {
         return Err(GatewayError::new(
             GatewayErrorKind::PolicyDenied,
-            "model provider is outside the frozen authorization scope",
+            "Model provider is outside the frozen authorization scope.",
         ));
     }
     Ok((Arc::new(account_scope), required_provider))

@@ -48,6 +48,16 @@ export function usePluginVersions({ catalog, instances, busyInstanceId, refresh,
   async function applyVersionSwitch(instance: PluginInstance, artifact: PluginArtifact) {
     busyInstanceId.value = instance.id
     try {
+      const plan = await getPluginVersionPlan({ id: instance.id, artifactSha256: artifact.metadata.sha256 }, { silent: true })
+      if (plan.instanceRevision !== instance.revision)
+        throw new Error(t('plugins.configuration.stale'))
+      if (plan.loadError)
+        throw new Error(plan.loadError)
+      if (instance.enabled && plan.compatibilityWarning) {
+        showVersionSwitch.value = false
+        onConfigurationRequired(instance, artifact, plan, plan.compatibilityWarning)
+        return
+      }
       await switchPluginVersion({
         id: instance.id,
         target: { artifactSha256: artifact.metadata.sha256, expectedRevision: instance.revision },

@@ -159,7 +159,7 @@ watch(open, (value) => {
     <ZForm v-if="panel === 'main'" class="grid gap-5">
       <ZFormItem v-if="isPlan" label="账号范围" required>
         <ZSelect v-model="selectionMode" :disabled="saving" :options="[{ label: '固定账号', value: 'fixed' }, { label: '自动跟随全部账号', value: 'all' }, { label: '自动跟随指定分组', value: 'groups' }]" aria-label="账号范围" />
-        <p v-if="automatic" class="mt-2 mb-0 text-cp-sm text-cp-text-secondary">
+        <p v-if="automatic" class="mt-2 mb-0 text-z-sm text-z-text-secondary">
           每轮自动选择已启用且获 Key 授权的账号，新增账号下轮加入，独立判题账号不参与答题
         </p>
       </ZFormItem>
@@ -170,13 +170,13 @@ watch(open, (value) => {
         <ZSelect v-model="parameters.accountIds" :options="accountOptions" :disabled="saving" multiple remote filterable :loading="loadingAccounts || checkingAccess" collapse-tags :max-collapse-tags="3" placeholder="选择要检测的账号" @query-change="catalog.searchAccounts">
           <template #option="{ option }">
             <span class="min-w-0 flex-1 truncate" :title="option.label">{{ option.label }}</span>
-            <span class="max-w-1/2 shrink-0 truncate text-cp-xs font-normal" :class="option.disabled ? 'text-cp-text-disabled' : 'text-cp-text-secondary'" :title="option.description">{{ option.description }}</span>
+            <span class="max-w-1/2 shrink-0 truncate text-z-xs font-normal" :class="option.disabled ? 'text-z-text-disabled' : 'text-z-text-secondary'" :title="option.description">{{ option.description }}</span>
           </template>
         </ZSelect>
-        <p v-if="ticketProbe" class="mt-2 mb-0 text-cp-sm text-cp-text-secondary">
+        <p v-if="ticketProbe" class="mt-2 mb-0 text-z-sm text-z-text-secondary">
           {{ t('accounts.evaluationActions.oauthOnly') }}
         </p>
-        <p v-if="accessMessage" class="mt-2 mb-0 text-cp-sm text-cp-warning-text wrap-anywhere" role="status">
+        <p v-if="accessMessage" class="mt-2 mb-0 text-z-sm text-z-warning-text wrap-anywhere" role="status">
           {{ accessMessage }}
         </p>
         <ZButton v-if="accessError" size="small" variant="text" @click="access.refresh">
@@ -190,10 +190,10 @@ watch(open, (value) => {
             编辑题目
           </ZButton>
         </div>
-        <p v-if="grader" class="mt-2 mb-0 text-cp-sm text-cp-text-secondary">
+        <p v-if="grader" class="mt-2 mb-0 text-z-sm text-z-text-secondary">
           {{ graderLabel(grader) }}
         </p>
-        <p v-if="ticketProbe" class="mt-2 mb-0 text-cp-sm text-cp-text-secondary">
+        <p v-if="ticketProbe" class="mt-2 mb-0 text-z-sm text-z-text-secondary">
           每账号最多两次 hi 请求，固定 low 推理强度，观察票据是否保持稳定，不代表能力题结论
         </p>
       </ZFormItem>
@@ -213,22 +213,22 @@ watch(open, (value) => {
           <ZFormItem label="优选目标分组" required>
             <ZSelect v-model="preferenceGroupId" :options="catalog.preferenceGroupOptions(preferenceGroupId)" :disabled="saving" :loading="loadingGroups" remote filterable placeholder="选择目标分组" @query-change="catalog.searchGroups" />
           </ZFormItem>
-          <p class="m-0 text-cp-sm text-cp-text-secondary">
+          <p class="m-0 text-z-sm text-z-text-secondary">
             票据稳定时加入目标分组，票据变化时移出，失败或未判定不调整，分组变化会影响关联 Key 的账号调度
           </p>
-          <p class="m-0 text-cp-sm text-cp-text-secondary">
+          <p class="m-0 text-z-sm text-z-text-secondary">
             检测范围和授权 Key 不能依赖目标分组，确保移出后仍可检测，票据信号不代表能力评测结论
           </p>
-          <p v-if="preferenceSourceConflict" class="m-0 text-cp-sm text-cp-warning-text" role="alert">
+          <p v-if="preferenceSourceConflict" class="m-0 text-z-sm text-z-warning-text" role="alert">
             检测范围不能包含优选目标分组，请选择独立分组
           </p>
         </template>
-        <p v-else-if="!ticketProbe" class="m-0 text-cp-sm text-cp-text-tertiary">
+        <p v-else-if="!ticketProbe" class="m-0 text-z-sm text-z-text-tertiary">
           账号优选目前支持快速测票
         </p>
       </div>
-      <div class="flex flex-wrap items-center justify-between gap-2 text-cp-sm">
-        <span :class="parameters.clientKeyId ? 'text-cp-text-secondary' : 'text-cp-warning-text'">
+      <div class="flex flex-wrap items-center justify-between gap-2 text-z-sm">
+        <span :class="parameters.clientKeyId ? 'text-z-text-secondary' : 'text-z-warning-text'">
           {{ parameters.clientKeyId ? `${ticketProbe ? '授权' : '计费'} Key：${catalog.keyOptions(parameters.clientKeyId).find(item => item.value === parameters.clientKeyId)?.label ?? parameters.clientKeyId}` : `尚未配置${ticketProbe ? '授权' : '计费'} Key` }}
         </span>
         <div class="flex gap-2">
@@ -240,10 +240,10 @@ watch(open, (value) => {
           </ZButton>
         </div>
       </div>
-      <p v-if="ticketProbe" class="m-0 text-cp-sm text-cp-text-secondary">
+      <p v-if="ticketProbe" class="m-0 text-z-sm text-z-text-secondary">
         {{ t('accounts.evaluationActions.probeExecutionHint') }}
       </p>
-      <p v-else class="m-0 text-cp-sm text-cp-text-secondary">
+      <p v-else class="m-0 text-z-sm text-z-text-secondary">
         {{ automatic ? `按每轮可用账号数调用，每账号 ${parameters.repetitions} 次，无可用账号时等待` : `${isPlan ? '每轮' : '本次'}调用 ${parameters.accountIds.length * parameters.repetitions} 次被测模型` }}{{ grader?.type === 'model' ? '，并增加独立模型判题调用' : grader?.type === 'typesafe' ? '，另由 TypeSafe 判题并计费' : '' }}{{ isPlan && !enabled ? ' · 计划保持暂停' : '' }}
       </p>
     </ZForm>

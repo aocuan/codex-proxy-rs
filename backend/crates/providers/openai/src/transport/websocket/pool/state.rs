@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use futures::{StreamExt, stream::FuturesUnordered};
 use sha2::{Digest, Sha256};
 use tokio::{sync::watch, time::Instant};
 use tokio_util::sync::CancellationToken;
@@ -23,6 +24,7 @@ pub struct CodexWebSocketPoolKey {
     account_id: String,
     conversation_id: String,
     connection_profile: String,
+    routing_affinity_id: Option<Uuid>,
     pub(super) downstream_connection_id: String,
     egress_key: String,
     pub(super) proxy_capacity_key: String,
@@ -40,6 +42,7 @@ impl CodexWebSocketPoolKey {
             account_id: account_id.into(),
             conversation_id: conversation_id.into(),
             connection_profile: String::new(),
+            routing_affinity_id: None,
             downstream_connection_id: String::new(),
             egress_key: String::new(),
             proxy_capacity_key: String::new(),
@@ -65,6 +68,11 @@ impl CodexWebSocketPoolKey {
         &self.account_id
     }
 
+    pub(crate) fn with_routing_affinity(mut self, id: Option<Uuid>) -> Self {
+        self.routing_affinity_id = id;
+        self
+    }
+
     pub(crate) fn with_egress_key(mut self, key: &str) -> Self {
         self.egress_key = key.to_owned();
         self
@@ -83,6 +91,10 @@ impl CodexWebSocketPoolKey {
     }
 
     pub(crate) fn stable_hash(&self) -> String {
+        let routing_affinity = self
+            .routing_affinity_id
+            .map(|id| id.to_string())
+            .unwrap_or_default();
         short_sha256([
             self.base_url.as_str(),
             self.account_id.as_str(),
@@ -90,6 +102,7 @@ impl CodexWebSocketPoolKey {
             self.connection_profile.as_str(),
             self.downstream_connection_id.as_str(),
             self.egress_key.as_str(),
+            routing_affinity.as_str(),
         ])
     }
 
@@ -98,6 +111,7 @@ impl CodexWebSocketPoolKey {
             && self.account_id == other.account_id
             && self.conversation_id == other.conversation_id
             && self.egress_key == other.egress_key
+            && self.routing_affinity_id == other.routing_affinity_id
     }
 }
 
@@ -107,6 +121,7 @@ const MAX_CONTINUATION_TOMBSTONES: usize = 4_096;
 #[derive(Default)]
 pub(super) struct WebSocketPoolState {
     pub(super) slots: HashMap<CodexWebSocketPoolKey, WebSocketPoolSlot>,
+    pub(super) downstream_connections: HashMap<String, gateway_core::lifecycle::CancellationToken>,
     continuation_tombstones: VecDeque<WebSocketContinuationTombstone>,
     pub(super) shutting_down: bool,
 }
@@ -169,6 +184,7 @@ impl WebSocketPoolState {
 
 #[derive(Clone)]
 pub(crate) struct CodexWebSocketConnectionMetadata {
+    pub(crate) routing_affinity: Option<crate::transport::routing_affinity::ChatGptRoutingAffinity>,
     pub(crate) turn_state: Option<String>,
     pub(crate) set_cookie_headers: Vec<String>,
     pub(crate) rate_limit_headers: Vec<(String, String)>,
@@ -237,18 +253,33 @@ pub(super) async fn close_pooled_connection(connection: PooledWebSocketConnectio
 }
 
 pub(super) async fn close_pooled_connections(connections: Vec<PooledWebSocketConnection>) {
-    for connection in connections {
-        close_pooled_connection(connection).await;
-    }
+    // 每条连接独立执行有界关闭，避免批量回收累计握手等待并拖延后续扫描
+    let mut closing = connections
+        .into_iter()
+        .map(close_pooled_connection)
+        .collect::<FuturesUnordered<_>>();
+    while closing.next().await.is_some() {}
 }
 
-/// idle 连接是否应从池中摘除：被后台 pump 标记死亡，或已超过 `max_age`
-pub(super) fn should_close_idle_connection(
+/// 取得连接和维护扫描共用的失效判断，保留原生续接丢失的具体原因
+pub(super) fn idle_connection_loss(
+    has_downstream_binding: bool,
     connection: &PooledWebSocketConnection,
+    idle_since: Instant,
     now: Instant,
-    max_age: Duration,
-) -> bool {
-    connection.websocket.is_closed() || now.duration_since(connection.created_at) >= max_age
+    config: &super::CodexWebSocketPoolConfig,
+) -> Option<WebSocketConnectionObservation> {
+    if connection.websocket.is_closed() {
+        return Some(connection.websocket.observation());
+    }
+    let reason = if now.duration_since(connection.created_at) >= config.max_age {
+        "max_age_expired"
+    } else if !has_downstream_binding && now.duration_since(idle_since) >= config.idle_timeout {
+        "idle_timeout_expired"
+    } else {
+        return None;
+    };
+    Some(connection.websocket.observation().with_exit_reason(reason))
 }
 
 fn short_sha256<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {

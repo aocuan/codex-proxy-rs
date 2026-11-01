@@ -30,7 +30,8 @@ use crate::model::{
         DashboardObservation, DashboardQuery, DiagnosticDimension, DiagnosticsObservation,
         Granularity, OpsErrorPage, OpsErrorQuery, RequestMetricPoint, TimeRange,
         UsageBillingProjection, UsageCalculatedBillingFact, UsageDetail, UsageFilter,
-        UsageInsightsObservation, UsagePage, UsageQuery, UsageSummaryObservation,
+        UsageInsightMetric, UsageInsightsObservation, UsagePage, UsageQuery,
+        UsageSummaryObservation,
     },
     provider_credentials::{
         AuthorizationCommit, CredentialDetails, CredentialImportCommit, CredentialImportResult,
@@ -130,7 +131,42 @@ pub trait AccountStore:
         runtime: AccountRuntimeSnapshot,
     ) -> AdminStoreResult<Option<AccountPageItem>>;
 
+    /// 批量读取指定账号与当前启用分组的交集，分组只用于授权筛选，不加载展示信息
+    /// 不加载凭据正文或触发 Provider 查询
+    async fn load_accounts_in_enabled_groups(
+        &self,
+        account_ids: &[gateway_core::account::ProviderAccountId],
+        group_ids: &[gateway_core::routing::AccountGroupId],
+    ) -> AdminStoreResult<Vec<crate::model::accounts::AccountRecord>> {
+        if group_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut accounts = Vec::with_capacity(account_ids.len());
+        for id in account_ids {
+            if let Some(item) = self
+                .load_account(id.as_str(), AccountRuntimeSnapshot::default())
+                .await?
+                && item
+                    .account
+                    .groups
+                    .iter()
+                    .any(|group| group.enabled && group_ids.contains(&group.id))
+            {
+                let mut account = item.account;
+                account.groups.clear();
+                accounts.push(account);
+            }
+        }
+        Ok(accounts)
+    }
+
     async fn account_exists(&self, account_id: &str) -> AdminStoreResult<bool>;
+
+    /// 只读取账号记录，不加载运行配置、分组或额度展示
+    async fn load_account_record(
+        &self,
+        account_id: &gateway_core::account::ProviderAccountId,
+    ) -> AdminStoreResult<Option<crate::model::accounts::AccountRecord>>;
 
     async fn load_account_usage(
         &self,
@@ -209,14 +245,6 @@ pub trait AccountStore:
         context: &MutationContext,
     ) -> AdminStoreResult<AccountUpdateResult>;
 
-    /// 在事务内按最新启用状态、账号上限和全局默认值判断，只降低并发上限
-    async fn lower_concurrency_limit(
-        &self,
-        account_id: &gateway_core::account::ProviderAccountId,
-        limit: gateway_core::account::AccountConcurrencyLimit,
-        context: &MutationContext,
-    ) -> AdminStoreResult<Option<AccountUpdateResult>>;
-
     async fn recover_account(
         &self,
         account_id: &gateway_core::account::ProviderAccountId,
@@ -259,16 +287,18 @@ pub trait AccountRuntimeStore: Send + Sync {
         account_ids: &[String],
     ) -> AdminStoreResult<AccountRuntimeSnapshot>;
 
-    /// 容量熔断自动冻结中的账号与其冻结截止时间；429 临时限流不包含在内
+    /// 只需账号可用状态时不读取在途租约，避免池规模放大容量查询
+    async fn account_rate_limits(
+        &self,
+        account_ids: &[String],
+    ) -> AdminStoreResult<AccountRuntimeSnapshot> {
+        self.account_runtime(account_ids).await
+    }
+
+    /// 账号错误保护中的账号与其冻结快照；临时限流不包含在内
     async fn active_freezes(
         &self,
     ) -> AdminStoreResult<BTreeMap<String, crate::model::accounts::AccountFreeze>>;
-
-    /// 读取容量失败窗口内观测到的在途并发峰值（自适应并发下调的证据）
-    async fn capacity_peaks(
-        &self,
-        account_ids: &[String],
-    ) -> AdminStoreResult<BTreeMap<String, u32>>;
 
     /// 仅当冻结快照仍匹配时解除或顺延；旧探测不得覆盖手动恢复或新一轮冻结
     async fn finish_freeze(
@@ -470,11 +500,22 @@ pub trait ObservabilityStore: Send + Sync {
     ) -> AdminStoreResult<Vec<RequestMetricPoint>>;
 
     /// 同一读取快照中的汇总、趋势和已投影情景费用
+    /// 不需要并发时关闭 include_concurrency，返回空并发序列并跳过明细计算
     async fn usage_insights_observation(
         &self,
         range: TimeRange,
         filter: UsageFilter,
         granularity: Granularity,
+        include_concurrency: bool,
+    ) -> AdminStoreResult<UsageInsightsObservation>;
+
+    /// 只读取所选指标及其可见汇总依赖，未选择的字段不供业务层消费
+    async fn usage_metric_observation(
+        &self,
+        range: TimeRange,
+        filter: UsageFilter,
+        granularity: Granularity,
+        metric: UsageInsightMetric,
     ) -> AdminStoreResult<UsageInsightsObservation>;
 
     async fn list_usage_records(&self, query: UsageQuery) -> AdminStoreResult<UsagePage>;

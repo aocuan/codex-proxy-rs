@@ -266,6 +266,7 @@ impl SelectorFixture {
         let outcome = self
             .store
             .compare_and_swap_quota(QuotaObservation {
+                expected_connection: None,
                 plan_type: None,
                 account_id: id.clone(),
                 expected_revision: CredentialRevision::new(1).expect("revision"),
@@ -372,6 +373,53 @@ async fn unauthorized_feedback_records_runtime_cooldown_without_persisting_accou
             .cooldown(&selected)
             .is_some_and(|cooldown| cooldown.until() > SystemTime::now())
     );
+}
+
+#[tokio::test]
+async fn error_protection_waits_for_probe_before_resuming_account_selection() {
+    use gateway_core::provider_ports::{
+        ProviderCooldown, ProviderCooldownKind, ProviderCooldownPort,
+    };
+
+    let fixture = SelectorFixture::new(&["protected", "available"]).await;
+    let protected = account_id("protected");
+    let revision = CredentialRevision::new(1).expect("revision");
+    fixture
+        .cooldowns
+        .put_if_later(ProviderCooldown::new_with_kind(
+            protected.clone(),
+            revision,
+            SystemTime::now() - Duration::from_secs(1),
+            ProviderCooldownKind::ErrorProtectionProbe,
+        ))
+        .await
+        .expect("freeze awaiting probe");
+
+    assert!(matches!(
+        fixture
+            .selector
+            .select(fixture.request_with_required(BTreeSet::new(), Some(protected.clone())))
+            .await,
+        Err(GrokSessionSelectorError::AccountCoolingDown { retry_after: None })
+    ));
+    let selected = fixture
+        .selector
+        .select(fixture.request(BTreeSet::new()))
+        .await
+        .expect("other account remains available");
+    assert_eq!(selected.account_id(), &account_id("available"));
+
+    fixture
+        .cooldowns
+        .clear(&protected, revision)
+        .await
+        .expect("probe recovery");
+    let recovered = fixture
+        .selector
+        .select(fixture.request_with_required(BTreeSet::new(), Some(protected.clone())))
+        .await
+        .expect("recovered account is eligible");
+    assert_eq!(recovered.account_id(), &protected);
 }
 
 #[tokio::test]
@@ -897,6 +945,58 @@ async fn explicit_catalog_non_membership_excludes_only_unsupported_account() {
         .expect("supported account");
 
     assert_eq!(session.account_id(), &account_id("zzz-supported"));
+}
+
+#[tokio::test]
+async fn catalog_rejects_unlisted_models_but_does_not_share_unknown_plan_entitlements() {
+    let fixture = SelectorFixture::new(&["catalog-account"]).await;
+    let id = account_id("catalog-account");
+    let account = fixture.store.account(&id).unwrap();
+    let seed = GrokCredentialCatalogSeed::new(["grok-4.5"], None).unwrap();
+    fixture
+        .cache
+        .replace(GrokPlanCatalog::new(
+            GrokCatalogScope::for_account(&account).unwrap(),
+            Utc::now(),
+            seed.clone(),
+        ))
+        .await
+        .unwrap();
+    let request = || {
+        fixture.request_for_model_with_policy(
+            "grok-unlisted",
+            BTreeSet::new(),
+            None,
+            RotationStrategy::Smart,
+        )
+    };
+    assert!(matches!(
+        fixture.selector.select(request()).await,
+        Err(GrokSessionSelectorError::NoEligibleSession)
+    ));
+    assert!(fixture.coordinator.requests.lock().unwrap().is_empty());
+    fixture
+        .store
+        .update_account(ProviderAccountUpdate {
+            account_id: id.clone(),
+            name: account.name().to_owned(),
+            email: account.email().map(str::to_owned),
+            plan_type: None,
+        })
+        .await
+        .unwrap();
+    let account = fixture.store.account(&id).unwrap();
+    fixture
+        .cache
+        .replace(GrokPlanCatalog::new(
+            GrokCatalogScope::for_account(&account).unwrap(),
+            Utc::now(),
+            seed,
+        ))
+        .await
+        .unwrap();
+    let session = fixture.selector.select(request()).await.unwrap();
+    assert_eq!(session.account_id(), &id);
 }
 
 #[tokio::test]

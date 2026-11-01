@@ -161,7 +161,6 @@ impl CodexProvider {
                 attempt: &context,
                 session_affinity: request.session_affinity.as_ref(),
                 model,
-                requires_oauth: false,
             })
             .await
             .map_err(map_selection_error)?;
@@ -321,6 +320,7 @@ impl CodexProvider {
                 provider_error(ProviderErrorKind::Protocol, UpstreamSendState::NotSent)
             })?,
         )
+        .with_credential_revision(lease.account().revision())
         .with_account_snapshot(Some(
             gateway_core::account::AccountHistorySnapshot::from_account(lease.account()),
         ))
@@ -396,6 +396,7 @@ pub(super) struct ColdResponse {
     pub(super) session_transport_key: Option<ProviderSessionAffinityKey>,
     pub(super) session_transport_key_hash: Option<String>,
     pub(super) session_transport_recovery: CodexSessionTransportRecovery,
+    pub(super) guardian_routing: guardian::GuardianRouting,
     pub(super) websocket_retry_count: u32,
     pub(super) stream_max_retries: u32,
     pub(super) session_capture: Option<OpenAiSessionCapture>,
@@ -425,6 +426,8 @@ pub(super) struct OpenAiSessionState {
     pub(super) turn_state: Option<String>,
     #[serde(default)]
     pub(super) client_turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reasoning_effort_override: Option<String>,
     pub(super) continuation_scope: OpenAiContinuationScope,
 }
 
@@ -442,6 +445,7 @@ pub(super) struct OpenAiSessionCapture {
     pub(super) conversation_id: Option<String>,
     pub(super) turn_state: Option<String>,
     pub(super) client_turn_id: Option<String>,
+    pub(super) reasoning_effort_override: Option<String>,
     pub(super) response_store: bool,
     pub(super) continuation_scope: Option<OpenAiContinuationScope>,
 }
@@ -488,6 +492,7 @@ fn encode_openai_session_capture(
         conversation_id: capture.conversation_id.clone(),
         turn_state: capture.turn_state.clone(),
         client_turn_id: capture.client_turn_id.clone(),
+        reasoning_effort_override: capture.reasoning_effort_override.clone(),
         continuation_scope,
     })
 }
@@ -624,7 +629,7 @@ pub(super) fn cold_json_response_stream(request: ColdJsonResponse) -> EventStrea
             response_origin: &request.response_origin,
             cyber_policy_scope: None,
             allows_account_state_mutation,
-            allows_capacity_feedback: !request.context.is_diagnostic_required_account(),
+            upstream_model: None,
         };
         let active_account = request.lease.account().clone();
         let cookie_header = build_cookie_header(request.lease.cookies())?;
@@ -778,6 +783,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
         session_transport_key,
         session_transport_key_hash,
         session_transport_recovery,
+        guardian_routing,
         websocket_retry_count,
         stream_max_retries,
         mut session_capture,
@@ -792,7 +798,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
             response_origin: &response_origin,
             cyber_policy_scope: cyber_policy_scope.as_ref(),
             allows_account_state_mutation,
-            allows_capacity_feedback: !context.is_diagnostic_required_account(),
+            upstream_model: Some(&upstream_model),
         };
         let mut active_account = lease.account().clone();
         let cookie_header = build_cookie_header(lease.cookies())?;
@@ -825,7 +831,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                 &authorization,
                 cookie_header.as_ref(),
                 account_selection,
-            ).with_trace(&trace),
+            ).with_trace(&trace).with_response_control(context.response_control()),
             active_account.id().as_str(),
             context.deadline(),
             &cancellation,
@@ -937,6 +943,15 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                         active_account = current;
                     }
                 }
+                // 迟到响应不能覆盖已更新的凭据，版本冲突属于正常跳过而非存储故障
+                Err(CredentialSelectionError::RevisionConflict(_)) => {
+                    tracing::debug!(
+                        request_id = %request_id,
+                        account_id = %active_account.id(),
+                        credential_revision = active_account.revision().get(),
+                        "Skipped OpenAI response cookies after credential revision changed"
+                    );
+                }
                 Err(error) => {
                     tracing::warn!(
                         request_id = %request_id,
@@ -949,6 +964,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
             }
         }
         let response_transport = response.transport;
+        let routing_affinity = response.routing_affinity;
         let websocket_connection_id = response.websocket_connection_id;
         let mut body = response.body;
         let mut failure_diagnostics = response.diagnostics.clone();
@@ -1130,6 +1146,13 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                 )
             });
             let timing_signals = decoder.take_timing_signals();
+            if let Some(affinity) = &routing_affinity {
+                for fact in events.iter().flat_map(ProviderEvent::canonical_facts) {
+                    if let GatewayEvent::Started(meta) = fact {
+                        guardian_routing.remember(context.client_api_key_ref(), active_account.id(), meta.response_id(), affinity);
+                    }
+                }
+            }
             let output_timing_changed = observation_state
                 .observe_timing_signals(timing_signals, context.timing_started_at());
             let upstream_timing_changed = observation_state

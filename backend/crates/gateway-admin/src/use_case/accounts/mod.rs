@@ -88,13 +88,6 @@ pub trait AccountsService: Send + Sync {
         command: UpdateAccount,
     ) -> Result<AccountUpdateResult, AdminError>;
 
-    async fn lower_concurrency_limit(
-        &self,
-        context: &MutationContext,
-        account_id: ProviderAccountId,
-        limit: gateway_core::account::AccountConcurrencyLimit,
-    ) -> Result<Option<AccountUpdateResult>, AdminError>;
-
     async fn batch_update(
         &self,
         context: &MutationContext,
@@ -123,14 +116,14 @@ pub trait AccountsService: Send + Sync {
         &self,
         _account_id: &ProviderAccountId,
     ) -> Result<AccountPersonalInfo, AdminError> {
-        Err(AdminError::invalid("当前 Provider 不支持个人信息"))
+        Err(AdminError::invalid("该服务商不支持个人信息查询"))
     }
 
     async fn profile_avatar(
         &self,
         _account_id: &ProviderAccountId,
     ) -> Result<ProviderProfileAvatar, AdminError> {
-        Err(AdminError::invalid("当前 Provider 不支持账号头像"))
+        Err(AdminError::invalid("该服务商不支持账号头像"))
     }
 
     async fn reset_credit_automation_status(
@@ -161,7 +154,7 @@ pub trait AccountsService: Send + Sync {
         _context: &MutationContext,
         _account_id: ProviderAccountId,
     ) -> Result<ProviderResetCredits, AdminError> {
-        Err(AdminError::invalid("当前 Provider 不支持重置额度"))
+        Err(AdminError::invalid("该服务商不支持额度重置"))
     }
 
     async fn consume_reset_credit(
@@ -169,7 +162,7 @@ pub trait AccountsService: Send + Sync {
         _context: &MutationContext,
         _command: ConsumeProviderResetCredit,
     ) -> Result<ProviderResetCreditResult, AdminError> {
-        Err(AdminError::invalid("当前 Provider 不支持重置额度"))
+        Err(AdminError::invalid("该服务商不支持额度重置"))
     }
 
     async fn models(
@@ -198,12 +191,17 @@ pub(crate) struct DefaultAccountsService {
     providers: ProviderAdminRegistry,
     snapshot: Arc<dyn SnapshotControl>,
     probe: Arc<dyn AccountProbe>,
+    upstream_info: Option<Arc<dyn crate::ports::peer::PeerUpstreamService>>,
     reset_credit_locks:
         Arc<futures::lock::Mutex<BTreeMap<ProviderAccountId, Arc<futures::lock::Mutex<()>>>>>,
 }
 
 impl DefaultAccountsService {
     #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "账号存储、发布、探测与互联分别通过独立端口注入"
+    )]
     pub(crate) fn new(
         accounts: Arc<dyn AccountStore>,
         account_runtime: Arc<dyn AccountRuntimeStore>,
@@ -212,6 +210,7 @@ impl DefaultAccountsService {
         providers: ProviderAdminRegistry,
         snapshot: Arc<dyn SnapshotControl>,
         probe: Arc<dyn AccountProbe>,
+        upstream_info: Option<Arc<dyn crate::ports::peer::PeerUpstreamService>>,
     ) -> Self {
         Self {
             accounts,
@@ -221,6 +220,7 @@ impl DefaultAccountsService {
             providers,
             snapshot,
             probe,
+            upstream_info,
             reset_credit_locks: Arc::new(futures::lock::Mutex::new(BTreeMap::new())),
         }
     }
@@ -238,10 +238,11 @@ impl DefaultAccountsService {
     }
 
     async fn read_quotas(
-        providers: &ProviderAdminRegistry,
+        &self,
         items: &[AccountPageItem],
         rolling_usage: &BTreeMap<String, AccountUsage>,
     ) -> Vec<ProviderQuota> {
+        let providers = &self.providers;
         let mut groups = BTreeMap::<_, Vec<usize>>::new();
         for (index, item) in items.iter().enumerate() {
             groups
@@ -271,7 +272,12 @@ impl DefaultAccountsService {
                     }
                 })
                 .collect::<Vec<_>>();
-            let results = provider.read_quotas(&requests).await;
+            let results = super::peer_link::upstream::read_quotas(
+                self.upstream_info.as_deref(),
+                provider.as_ref(),
+                &requests,
+            )
+            .await;
             if results.len() != indices.len() {
                 tracing::warn!(
                     provider = %kind,
@@ -322,7 +328,7 @@ impl DefaultAccountsService {
             .load_account(account_id.as_str(), runtime)
             .await
             .map_err(|error| map_store_error(error, "provider account"))?
-            .ok_or_else(|| AdminError::not_found("Provider 账号不存在"))
+            .ok_or_else(|| AdminError::not_found("服务商账号不存在"))
     }
 
     async fn provider_for_account(
@@ -388,32 +394,51 @@ impl DefaultAccountsService {
     async fn load_api_key_usage(
         &self,
         accounts: &[AccountPageItem],
+        quotas: &[ProviderQuota],
     ) -> Result<BTreeMap<String, AccountUsage>, AdminError> {
         let now = Utc::now();
-        // API Key 没有套餐周期；本地累计直接查询账号创建后仍保留的请求记录
+        let mut usage = BTreeMap::new();
+        // 互联账号复用已聚合的最长 Key 窗口，普通 API Key 保留累计口径
         let windows = accounts
             .iter()
-            .filter(|item| item.account.authentication_kind == "api_key")
-            .map(|item| AccountUsageWindowQuery {
-                account_id: item.account.id.clone(),
-                key: "account-lifetime".to_owned(),
-                range: TimeRange {
-                    start: item.account.created_at,
-                    end: now,
-                },
+            .zip(quotas)
+            .filter(|(item, _)| item.account.authentication_kind == "api_key")
+            .filter_map(|(item, quota)| {
+                if quota
+                    .upstream
+                    .as_ref()
+                    .is_some_and(|upstream| upstream.discovered)
+                {
+                    if let Some(local_usage) = quota
+                        .upstream_usage_window()
+                        .and_then(|window| window.local_usage.as_ref())
+                    {
+                        usage.insert(item.account.id.clone(), local_usage.clone());
+                    }
+                    return None;
+                }
+                Some(AccountUsageWindowQuery {
+                    account_id: item.account.id.clone(),
+                    key: "account-lifetime".to_owned(),
+                    range: TimeRange {
+                        start: item.account.created_at,
+                        end: now,
+                    },
+                })
             })
             .collect::<Vec<_>>();
         if windows.is_empty() {
-            return Ok(BTreeMap::new());
+            return Ok(usage);
         }
-        Ok(self
-            .accounts
-            .load_account_usage_by_windows(&windows)
-            .await
-            .map_err(|error| map_store_error(error, "API Key account usage"))?
-            .into_iter()
-            .map(|result| (result.account_id, result.usage))
-            .collect())
+        usage.extend(
+            self.accounts
+                .load_account_usage_by_windows(&windows)
+                .await
+                .map_err(|error| map_store_error(error, "API Key account usage"))?
+                .into_iter()
+                .map(|result| (result.account_id, result.usage)),
+        );
+        Ok(usage)
     }
 
     async fn load_directory_item(
@@ -435,13 +460,17 @@ impl DefaultAccountsService {
             .await
             .map_err(|error| map_store_error(error, "rolling account usage"))?;
         let rolling_usage = rolling_usage.into_iter().next();
-        let mut quota = match provider
-            .quota(ProviderQuotaRequest {
+        let mut quota = match super::peer_link::upstream::read_quota(
+            self.upstream_info.as_deref(),
+            provider.as_ref(),
+            account,
+            ProviderQuotaRequest {
                 account_id: account_id.clone(),
                 refresh: refresh_quota,
                 rolling_usage: rolling_usage.clone(),
-            })
-            .await
+            },
+        )
+        .await
         {
             Ok(quota) => quota,
             // 凭据更新后的账号投影不要求 Provider 提供额度；显式刷新仍须支持该操作
@@ -465,7 +494,7 @@ impl DefaultAccountsService {
         )
         .await?;
         let usage = self
-            .load_api_key_usage(std::slice::from_ref(&stored))
+            .load_api_key_usage(std::slice::from_ref(&stored), std::slice::from_ref(&quota))
             .await?
             .remove(&stored.account.id)
             .or_else(|| {
@@ -474,6 +503,7 @@ impl DefaultAccountsService {
                     .and_then(|(window, _)| window.local_usage.clone())
             });
         Ok(AccountDirectoryItem {
+            protection_rules: stored.protection_rules,
             capacity: stored.capacity,
             capabilities: provider
                 .account_capabilities(account_id, &stored.account.authentication_kind),
@@ -560,17 +590,17 @@ impl AccountsService for DefaultAccountsService {
             .into_iter()
             .map(|usage| (usage.account_id.clone(), usage))
             .collect::<BTreeMap<_, _>>();
-        let mut quotas = Self::read_quotas(providers, &page.items, &rolling_usage).await;
+        let mut quotas = self.read_quotas(&page.items, &rolling_usage).await;
         self.attach_quota_local_usage(&page.items, &mut quotas)
             .await?;
-        let mut api_key_usage = self.load_api_key_usage(&page.items).await?;
+        let mut api_key_usage = self.load_api_key_usage(&page.items, &quotas).await?;
         let items = page
             .items
             .into_iter()
             .zip(quotas)
             .map(|(mut item, quota)| {
                 let id = ProviderAccountId::new(item.account.id.clone())
-                    .map_err(|_| AdminError::invalid("Provider 账号 ID 不合法"))?;
+                    .map_err(|_| AdminError::invalid("服务商账号 ID 不合法"))?;
                 let capabilities = providers
                     .require(&item.account.provider_kind)
                     .map(|provider| {
@@ -583,6 +613,7 @@ impl AccountsService for DefaultAccountsService {
                         .and_then(|(window, _)| window.local_usage.clone())
                 });
                 Ok(AccountDirectoryItem {
+                    protection_rules: item.protection_rules,
                     capacity: crate::model::accounts::AccountCapacity {
                         used_slots: in_flight
                             .as_ref()
@@ -689,9 +720,12 @@ impl AccountsService for DefaultAccountsService {
             "provider credential refresh",
         )
         .await?;
-        provider
-            .account_facts_changed(std::slice::from_ref(&result.account_id))
-            .await;
+        super::notify_account_facts_changed(
+            self.upstream_info.as_deref(),
+            provider.as_ref(),
+            std::slice::from_ref(&result.account_id),
+        )
+        .await;
         publish_committed(self.snapshot.as_ref(), result.config_revision).await?;
         let account = self.load_directory_item(&result.account_id, false).await?;
         Ok(AccountRefreshResult {
@@ -731,9 +765,12 @@ impl AccountsService for DefaultAccountsService {
                 .map_err(|error| map_store_error(error, "enable provider account"))?
                 .config_revision
         };
-        provider
-            .account_facts_changed(std::slice::from_ref(&account_id))
-            .await;
+        super::notify_account_facts_changed(
+            self.upstream_info.as_deref(),
+            provider.as_ref(),
+            std::slice::from_ref(&account_id),
+        )
+        .await;
         publish_committed(self.snapshot.as_ref(), config_revision).await?;
         let account = self.load_directory_item(&account_id, false).await?;
         Ok(AccountRefreshResult {
@@ -748,7 +785,7 @@ impl AccountsService for DefaultAccountsService {
         command: UpdateAccount,
     ) -> Result<AccountUpdateResult, AdminError> {
         let account_id = ProviderAccountId::new(command.account_id.clone())
-            .map_err(|_| AdminError::invalid("Provider 账号 ID 不合法"))?;
+            .map_err(|_| AdminError::invalid("服务商账号 ID 不合法"))?;
         let (_, provider) = self.provider_for_account(&account_id).await?;
         let enabled = command.enabled;
         let result = self
@@ -757,33 +794,20 @@ impl AccountsService for DefaultAccountsService {
             .await
             .map_err(|error| map_store_error(error, "provider account"))?;
         if !enabled {
-            provider.account_unavailable(&account_id).await;
-        }
-        provider
-            .account_facts_changed(std::slice::from_ref(&account_id))
+            super::notify_account_unavailable(
+                self.upstream_info.as_deref(),
+                provider.as_ref(),
+                &account_id,
+            )
             .await;
-        publish_committed(self.snapshot.as_ref(), result.config_revision).await?;
-        Ok(result)
-    }
-
-    async fn lower_concurrency_limit(
-        &self,
-        context: &MutationContext,
-        account_id: ProviderAccountId,
-        limit: gateway_core::account::AccountConcurrencyLimit,
-    ) -> Result<Option<AccountUpdateResult>, AdminError> {
-        let (_, provider) = self.provider_for_account(&account_id).await?;
-        let result = self
-            .accounts
-            .lower_concurrency_limit(&account_id, limit, context)
-            .await
-            .map_err(|error| map_store_error(error, "provider account"))?;
-        if let Some(result) = &result {
-            provider
-                .account_facts_changed(std::slice::from_ref(&account_id))
-                .await;
-            publish_committed(self.snapshot.as_ref(), result.config_revision).await?;
         }
+        super::notify_account_facts_changed(
+            self.upstream_info.as_deref(),
+            provider.as_ref(),
+            std::slice::from_ref(&account_id),
+        )
+        .await;
+        publish_committed(self.snapshot.as_ref(), result.config_revision).await?;
         Ok(result)
     }
 
@@ -797,7 +821,7 @@ impl AccountsService for DefaultAccountsService {
             .iter()
             .map(|id| {
                 ProviderAccountId::new(id.clone())
-                    .map_err(|_| AdminError::invalid("Provider 账号 ID 不合法"))
+                    .map_err(|_| AdminError::invalid("服务商账号 ID 不合法"))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut providers = BTreeMap::<
@@ -824,10 +848,20 @@ impl AccountsService for DefaultAccountsService {
         for (provider, provider_ids) in providers.values() {
             if enabled == Some(false) {
                 for account_id in provider_ids {
-                    provider.account_unavailable(account_id).await;
+                    super::notify_account_unavailable(
+                        self.upstream_info.as_deref(),
+                        provider.as_ref(),
+                        account_id,
+                    )
+                    .await;
                 }
             }
-            provider.account_facts_changed(provider_ids).await;
+            super::notify_account_facts_changed(
+                self.upstream_info.as_deref(),
+                provider.as_ref(),
+                provider_ids,
+            )
+            .await;
         }
         publish_committed(self.snapshot.as_ref(), result.config_revision).await?;
         Ok(result)
@@ -857,14 +891,18 @@ impl AccountsService for DefaultAccountsService {
         account_id: &ProviderAccountId,
     ) -> Result<AccountQuotaForecastReport, AdminError> {
         let (stored, provider) = self.provider_for_account(account_id).await?;
-        let quota = provider
-            .quota(ProviderQuotaRequest {
+        let quota = super::peer_link::upstream::read_quota(
+            self.upstream_info.as_deref(),
+            provider.as_ref(),
+            &stored.account,
+            ProviderQuotaRequest {
                 account_id: account_id.clone(),
                 refresh: false,
                 rolling_usage: None,
-            })
-            .await
-            .map_err(|error| map_provider_error(error, "forecast quota snapshot"))?;
+            },
+        )
+        .await
+        .map_err(|error| map_provider_error(error, "forecast quota snapshot"))?;
         let now = Utc::now();
         let mut samples = Vec::new();
         let mut selected_keys = BTreeSet::new();
@@ -1169,15 +1207,7 @@ fn map_reset_credits_error_after_refresh(
 
 /// 账号目录中单个账号 quota 读取失败时使用的空额度投影
 fn empty_quota() -> ProviderQuota {
-    ProviderQuota {
-        credits: None,
-        plan_type: None,
-        observed_at: None,
-        refresh_token_expires_at: None,
-        windows: Vec::new(),
-        limit_reached: false,
-        provider_data: None,
-    }
+    ProviderQuota::default()
 }
 
 fn quota_usage_window(

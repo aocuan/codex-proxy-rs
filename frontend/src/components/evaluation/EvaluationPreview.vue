@@ -13,7 +13,7 @@ watch(() => props.html, () => {
 </script>
 
 <template>
-  <div ref="container" class="flex min-w-0 flex-col gap-2 bg-cp-bg-container" :class="isFullscreen ? 'h-screen p-3' : ''">
+  <div ref="container" class="flex min-w-0 flex-col gap-2 bg-z-bg-container" :class="isFullscreen ? 'h-screen p-3' : ''">
     <div class="flex shrink-0 items-center justify-end gap-2">
       <ZButton v-if="isSupported && (active || isFullscreen)" size="small" @click="toggle()">
         {{ isFullscreen ? '退出全屏' : '全屏预览' }}

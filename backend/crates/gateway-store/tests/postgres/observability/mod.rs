@@ -1,5 +1,6 @@
 //! 观测存储测试入口，以及查询范围、过滤与端口合同测试
 
+mod metric;
 mod projection;
 
 use std::{
@@ -157,6 +158,7 @@ async fn output_throughput_uses_official_response_duration_without_local_fallbac
                 range,
                 UsageRecordFilter::default(),
                 gateway_admin::model::observability::Granularity::Hour,
+                true,
             )
             .await
             .map(|snapshot| snapshot.overview)
@@ -495,37 +497,44 @@ async fn usage_list_and_diagnostics_preserve_account_snapshots_by_id() {
         diagnostics.items[0].account_plan_type.as_deref(),
         Some("team")
     );
-    database.close().await;
-}
-
-#[tokio::test]
-async fn usage_search_should_match_literal_prefix_instead_of_substring() {
-    let Some(database) = TestDatabase::create("usage_literal_prefix_search").await else {
-        return;
-    };
-    let now = Utc::now();
-    seed_observability_facts(&database.pool, now)
+    for (authentication_kind, plan_type) in [
+        (Some("api_key"), None),
+        (Some("oauth"), Some("team")),
+        (None, None),
+    ] {
+        sqlx::query(
+            "update model_requests set request_observation_json = jsonb_set(
+                request_observation_json, '{account}',
+                (request_observation_json->'account') || jsonb_build_object(
+                    'authenticationKind', $1::text, 'planTypeSnapshot', $2::text
+                )
+             ) where id = 'req_observe_uncommitted'",
+        )
+        .bind(authentication_kind)
+        .bind(plan_type)
+        .execute(&database.pool)
         .await
-        .expect("seed observability facts");
-    let range = ObservabilityRange::new(now - TimeDelta::hours(1), now + TimeDelta::hours(1))
-        .expect("observability range");
-
-    super::drain_analytics(&database.pool).await;
-    let page = observability_repository(&database.pool)
-        .list_usage_records(UsageRecordQuery {
-            status: Default::default(),
-            range,
-            filter: UsageRecordFilter {
-                search: Some("rimary".to_owned()),
-                ..UsageRecordFilter::default()
-            },
-            current_page: 1,
-            page_size: ObservabilityPageSize::new(10).expect("page size"),
-        })
-        .await
-        .expect("usage substring search");
-
-    assert_eq!(page.total, 0);
+        .expect("update request authentication snapshot");
+        super::drain_analytics(&database.pool).await;
+        let diagnostics = store
+            .usage_diagnostics(
+                range,
+                admin_observability::UsageFilter {
+                    provider_account_ref: Some("acct_team".to_owned()),
+                    ..Default::default()
+                },
+                admin_observability::DiagnosticDimension::Account,
+                100,
+            )
+            .await
+            .expect("deleted account authentication snapshot");
+        assert_eq!(diagnostics.items.len(), 1);
+        assert_eq!(
+            diagnostics.items[0].account_authentication_kind.as_deref(),
+            authentication_kind
+        );
+        assert_eq!(diagnostics.items[0].account_plan_type.as_deref(), plan_type);
+    }
     database.close().await;
 }
 
@@ -576,8 +585,8 @@ async fn usage_search_should_ignore_request_ids_and_preserve_exact_filters() {
 }
 
 #[tokio::test]
-async fn usage_search_should_match_account_email_and_name_prefixes() {
-    let Some(database) = TestDatabase::create("usage_account_prefix").await else {
+async fn usage_search_should_match_account_email_and_name_substrings() {
+    let Some(database) = TestDatabase::create("usage_account_contains").await else {
         return;
     };
     let now = Utc::now();
@@ -587,10 +596,18 @@ async fn usage_search_should_match_account_email_and_name_prefixes() {
     let range = ObservabilityRange::new(now - TimeDelta::hours(1), now + TimeDelta::hours(1))
         .expect("observability range");
 
-    for search in ["account@example.invalid", "account@", "primary", "pri"] {
+    for search in [
+        "account@example.invalid",
+        "account@",
+        "primary",
+        "pri",
+        "count@example.invalid",
+        "example.invalid",
+        "rimary",
+    ] {
         assert_usage_search_ids(&database.pool, range, search, &["req_observe_success"]).await;
     }
-    for search in ["count@example.invalid", "rimary", "missing@example.invalid"] {
+    for search in ["missing@example.invalid", "EXAMPLE.INVALID", "PRIMARY"] {
         assert_usage_search_ids(&database.pool, range, search, &[]).await;
     }
 
@@ -679,9 +696,13 @@ async fn usage_search_should_treat_account_snapshot_wildcards_as_literals() {
         "account_team%tag@example.invalid",
         "account_",
         "account_team%",
+        "team%tag",
+        "_team%",
         r"primary\",
         r"primary\ops_",
         r"primary\ops_100%",
+        r"\ops_",
+        "100%",
     ] {
         assert_usage_search_ids(&database.pool, range, search, &["req_observe_success"]).await;
     }
@@ -761,6 +782,9 @@ async fn usage_and_error_search_match_key_names_instead_of_credentials() {
         for (search, expected) in [
             ("production", 1),
             ("PRODUCTION_%", 1),
+            ("DUCTION", 1),
+            ("_%专", 1),
+            ("专用", 1),
             ("ProductionX", 0),
             (key, 0),
             (&key[..10], 0),
@@ -863,8 +887,8 @@ async fn usage_and_error_search_match_key_names_instead_of_credentials() {
 }
 
 #[tokio::test]
-async fn ops_search_should_treat_sql_wildcards_as_literals() {
-    let Some(database) = TestDatabase::create("ops_literal_wildcard_search").await else {
+async fn ops_search_should_match_literal_substrings_from_both_sources() {
+    let Some(database) = TestDatabase::create("ops_literal_contains_search").await else {
         return;
     };
     let now = Utc::now();
@@ -875,20 +899,38 @@ async fn ops_search_should_treat_sql_wildcards_as_literals() {
         .expect("observability range");
 
     super::drain_analytics(&database.pool).await;
-    let page = observability_repository(&database.pool)
-        .list_ops_errors(OpsErrorQuery {
-            range,
-            filter: OpsErrorFilter {
-                search: Some("req%".to_owned()),
-                ..OpsErrorFilter::default()
-            },
-            current_page: 1,
-            page_size: ObservabilityPageSize::new(10).expect("page size"),
-        })
-        .await
-        .expect("ops literal wildcard search");
-
-    assert_eq!(page.total, 0);
+    let repository = observability_repository(&database.pool);
+    for (search, expected) in [
+        ("observe_failed", 2),
+        ("_limit", 2),
+        ("observe_retry", 1),
+        ("OBSERVE", 0),
+        ("req%", 0),
+        ("rate%limit", 0),
+        ("rate__limit", 0),
+        (r"\", 0),
+    ] {
+        for current_page in 1..=3 {
+            let page = repository
+                .list_ops_errors(OpsErrorQuery {
+                    range,
+                    filter: OpsErrorFilter {
+                        search: Some(search.to_owned()),
+                        ..OpsErrorFilter::default()
+                    },
+                    current_page,
+                    page_size: ObservabilityPageSize::new(1).expect("page size"),
+                })
+                .await
+                .expect("ops literal substring search");
+            assert_eq!(page.total, expected, "search: {search}");
+            assert_eq!(
+                page.items.len(),
+                usize::from(u64::from(current_page) <= expected),
+                "search: {search}, page: {current_page}"
+            );
+        }
+    }
     database.close().await;
 }
 
@@ -1170,6 +1212,7 @@ async fn recovered_continuation_failure_should_be_visible_in_ops_but_hidden_from
             range,
             UsageRecordFilter::default(),
             gateway_admin::model::observability::Granularity::Hour,
+            true,
         )
         .await
         .map(|snapshot| snapshot.overview)
@@ -1495,28 +1538,12 @@ impl ProviderCooldownPort for StaticCooldowns {
         Box::pin(async { Ok(false) })
     }
 
-    fn record_capacity_failure<'a>(
-        &'a self,
-        _account_id: &'a ProviderAccountId,
-        _window: Duration,
-        _in_flight: u32,
-    ) -> BoxFuture<'a, Result<u32, ProviderStoreError>> {
-        Box::pin(async { Ok(0) })
-    }
-
     fn clear_after_success<'a>(
         &'a self,
         _account_id: &'a ProviderAccountId,
         _through_revision: gateway_core::account::CredentialRevision,
     ) -> BoxFuture<'a, Result<(), ProviderStoreError>> {
         Box::pin(async { Ok(()) })
-    }
-
-    fn capacity_peak_in_flight<'a>(
-        &'a self,
-        _account_id: &'a ProviderAccountId,
-    ) -> BoxFuture<'a, Result<Option<u32>, ProviderStoreError>> {
-        Box::pin(async { Ok(None) })
     }
 }
 
@@ -1552,6 +1579,7 @@ async fn calculated_usage_billing_facts_keep_only_completed_calculated_costs() {
             range,
             UsageRecordFilter::default(),
             admin_observability::Granularity::FifteenMinutes,
+            true,
         )
         .await
         .expect("projected costs");
@@ -1570,6 +1598,7 @@ async fn calculated_usage_billing_facts_keep_only_completed_calculated_costs() {
             admin_observability::TimeRange::new(range.start, range.end).unwrap(),
             admin_observability::UsageFilter::default(),
             admin_observability::Granularity::FifteenMinutes,
+            true,
         )
         .await
         .expect("admin projected costs");
@@ -1858,6 +1887,7 @@ async fn admin_observability_adapter_preserves_utc_queries_metrics_costs_and_det
             range,
             admin_observability::UsageFilter::default(),
             gateway_admin::model::observability::Granularity::Hour,
+            true,
         )
         .await
         .map(|snapshot| snapshot.overview)
@@ -2346,6 +2376,7 @@ async fn observability_queries_preserve_request_account_cost_and_diagnostic_fact
             range,
             UsageRecordFilter::default(),
             gateway_admin::model::observability::Granularity::Hour,
+            true,
         )
         .await
         .map(|snapshot| snapshot.overview)
@@ -2373,6 +2404,7 @@ async fn observability_queries_preserve_request_account_cost_and_diagnostic_fact
                 ..UsageRecordFilter::default()
             },
             gateway_admin::model::observability::Granularity::Hour,
+            true,
         )
         .await
         .map(|snapshot| snapshot.overview)
@@ -2708,6 +2740,7 @@ async fn calendar_trends_share_exact_day_boundaries_for_requests_costs_and_empty
                 range,
                 Default::default(),
                 admin_observability::Granularity::Day,
+                true,
             )
             .await
             .expect("calendar cost buckets");
@@ -3018,7 +3051,7 @@ async fn observability_store_executes_caller_selection_without_replacing_policy(
             .unwrap();
         super::drain_analytics(&database.pool).await;
         let facts = store
-            .usage_insights_observation(range, UsageFilter::default(), granularity)
+            .usage_insights_observation(range, UsageFilter::default(), granularity, true)
             .await
             .unwrap();
         let facts = facts

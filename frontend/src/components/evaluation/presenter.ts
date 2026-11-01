@@ -39,8 +39,8 @@ export function historyResult(item: Pick<EvaluationHistoryItem, 'kind' | 'turnSt
   if (status === 'queued' || status === 'running') {
     return {
       label: item.judgmentStatus ? '等待评审' : statusLabels[status],
-      color: 'bg-cp-primary',
-      text: 'text-cp-primary-text',
+      color: 'bg-z-primary',
+      text: 'text-z-primary-text',
     }
   }
   if (status === 'failed' || status === 'interrupted') {
@@ -50,22 +50,22 @@ export function historyResult(item: Pick<EvaluationHistoryItem, 'kind' | 'turnSt
         : item.kind === 'turnstate' && status === 'failed'
           ? '检测失败'
           : statusLabels[status],
-      color: 'bg-cp-warning',
-      text: 'text-cp-warning-text',
+      color: 'bg-z-warning',
+      text: 'text-z-warning-text',
     }
   }
   if (status !== 'succeeded')
-    return { label: statusLabels[status], color: 'bg-cp-fill-secondary', text: 'text-cp-text-tertiary' }
+    return { label: statusLabels[status], color: 'bg-z-fill-secondary', text: 'text-z-text-tertiary' }
   if (item.kind === 'turnstate') {
     if (item.turnState === 'accepted')
-      return { label: turnStateLabels.accepted, color: 'bg-cp-success', text: 'text-cp-success-text' }
+      return { label: turnStateLabels.accepted, color: 'bg-z-success', text: 'text-z-success-text' }
     if (item.turnState === 'refreshed')
-      return { label: turnStateLabels.refreshed, color: 'bg-cp-warning', text: 'text-cp-warning-text' }
-    return { label: turnStateLabels.unknown, color: 'bg-cp-fill-secondary', text: 'text-cp-text-tertiary' }
+      return { label: turnStateLabels.refreshed, color: 'bg-z-warning', text: 'text-z-warning-text' }
+    return { label: turnStateLabels.unknown, color: 'bg-z-fill-secondary', text: 'text-z-text-tertiary' }
   }
   if (item.verdict === 'correct')
-    return { label: '通过', color: 'bg-cp-success', text: 'text-cp-success-text' }
+    return { label: '通过', color: 'bg-z-success', text: 'text-z-success-text' }
   if (item.verdict === 'wrong')
-    return { label: '未通过', color: 'bg-cp-error', text: 'text-cp-error-text' }
-  return { label: '未判定', color: 'bg-cp-fill-secondary', text: 'text-cp-text-tertiary' }
+    return { label: '未通过', color: 'bg-z-error', text: 'text-z-error-text' }
+  return { label: '未判定', color: 'bg-z-fill-secondary', text: 'text-z-text-tertiary' }
 }

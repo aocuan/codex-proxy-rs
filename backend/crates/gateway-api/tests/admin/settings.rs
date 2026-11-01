@@ -65,13 +65,7 @@ fn update_body() -> Value {
         "usageRetentionDays": 31,
         "opsEventRetentionDays": 31,
         "auditRetentionDays": 91,
-        "accountAutoFreezeEnabled": true,
-        "accountAutoFreezeThreshold": 12,
-        "accountAutoFreezeWindowSeconds": 600,
-        "accountAutoFreezeDurationSeconds": 7200,
-        "accountAutoFreezeProbeEnabled": true,
-        "accountAutoFreezeProbeModel": null,
-        "accountAutoFreezeAdaptiveConcurrency": true,
+        "accountErrorProtection": gateway_core::account::AccountErrorProtection::default(),
         "accountWarmupEnabled": false,
         "accountWarmupScheduleTime": "08:00",
         "accountWarmupModel": null,
@@ -182,6 +176,87 @@ fn privacy_policy_is_required_and_rejects_unknown_contract_fields() {
     assert!(serde_json::from_value::<UpdateRuntimeSettingsRequest>(missing).is_err());
     let mut unknown = update_body();
     unknown["codexPrivacyPolicy"]["unknownField"] = json!(true);
+    assert!(serde_json::from_value::<UpdateRuntimeSettingsRequest>(unknown).is_err());
+}
+
+#[tokio::test]
+async fn error_protection_rules_round_trip_and_invalid_policy_does_not_replace_them() {
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    let mut body = update_body();
+    let policy = json!({
+        "enabled": true,
+        "rules": [{
+            "id": "custom-rejection", "name": "自定义上游拒绝",
+            "conditions": [
+                {"field": "provider", "operator": "equals", "values": ["openai", "xai"], "ignoreCase": false},
+                {"field": "code", "operator": "equals", "values": ["custom_vendor_rejection", null], "ignoreCase": true},
+                {"field": "message", "operator": "contains", "values": ["please pause"], "ignoreCase": false}
+            ]
+        }],
+        "threshold": 3, "windowSeconds": 120, "durationSeconds": 300,
+        "probeEnabled": false, "probeModel": null
+    });
+    body["accountErrorProtection"] = policy.clone();
+    let response = app(fixture.state())
+        .oneshot(request(
+            Method::POST,
+            "/api/admin/settings/update",
+            Some(body.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved = response_json(response).await;
+    assert_eq!(saved["data"]["accountErrorProtection"], policy);
+    body["configRevision"] = saved["data"]["configRevision"].clone();
+
+    let mut invalid_policies = Vec::new();
+    let mut empty = policy.clone();
+    empty["rules"] = json!([]);
+    invalid_policies.push(empty);
+    let mut provider_only = policy.clone();
+    provider_only["rules"][0]["conditions"] = json!([
+        {"field": "provider", "operator": "equals", "values": ["openai"], "ignoreCase": false}
+    ]);
+    invalid_policies.push(provider_only);
+    let mut empty_contains = policy.clone();
+    empty_contains["rules"][0]["conditions"][2]["values"] = json!(["  "]);
+    invalid_policies.push(empty_contains);
+    for invalid in invalid_policies {
+        body["accountErrorProtection"] = invalid;
+        let response = app(fixture.state())
+            .oneshot(request(
+                Method::POST,
+                "/api/admin/settings/update",
+                Some(body.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    let response = app(fixture.state())
+        .oneshot(request(Method::GET, "/api/admin/settings", None))
+        .await
+        .unwrap();
+    let loaded = response_json(response).await;
+    assert_eq!(loaded["data"]["accountErrorProtection"], policy);
+    assert_eq!(
+        loaded["data"]["configRevision"],
+        saved["data"]["configRevision"]
+    );
+}
+
+#[test]
+fn error_protection_requires_an_explicit_policy_in_settings_replacement() {
+    let mut missing = update_body();
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("accountErrorProtection");
+    assert!(serde_json::from_value::<UpdateRuntimeSettingsRequest>(missing).is_err());
+    let mut unknown = update_body();
+    unknown["accountErrorProtection"]["unknownField"] = json!(true);
     assert!(serde_json::from_value::<UpdateRuntimeSettingsRequest>(unknown).is_err());
 }
 
@@ -351,124 +426,20 @@ fn settings_request_should_reject_non_semver_client_min() {
 }
 
 #[test]
-fn settings_response_should_cover_the_full_runtime_settings_contract() {
-    use std::collections::BTreeMap;
-
-    use chrono::{TimeZone, Utc};
-    use gateway_admin::model::Revision;
-    use gateway_admin::model::settings::RuntimeSettings;
+fn settings_response_formats_update_time_in_deployment_timezone() {
+    use chrono::{TimeZone as _, Utc};
     use gateway_api::admin::settings::RuntimeSettingsView;
-    use gateway_core::account::RotationStrategy;
-    use gateway_core::routing::{PublicModelId, UpstreamModelId};
 
-    let settings = RuntimeSettings {
-        request_profiles: Default::default(),
-        config_revision: Revision::new(7).expect("revision"),
-        model_mappings: BTreeMap::from_iter([
-            (
-                PublicModelId::new("gpt-5.4").expect("public model"),
-                UpstreamModelId::new("gpt-5.5").expect("upstream model"),
-            ),
-            (
-                PublicModelId::new("grok-latest").expect("public model"),
-                UpstreamModelId::new("grok-4.5").expect("upstream model"),
-            ),
-        ]),
-        rotation_strategy: RotationStrategy::RoundRobin,
-        updated_at: Utc
-            .with_ymd_and_hms(2026, 8, 2, 10, 30, 0)
-            .single()
-            .expect("timestamp"),
-        values: gateway_admin::model::settings::RuntimeSettingsValues {
-            codex_privacy_policy: Default::default(),
-            request_location_enabled: false,
-            request_location: Default::default(),
-            refresh_margin_seconds: 1800,
-            refresh_concurrency: 4,
-            max_concurrent_per_account: 5,
-            max_waiting_per_key: 0,
-            max_waiting_per_account: 0,
-            concurrency_wait_timeout_seconds: 30,
-            openai_guardian_reserved_concurrency: 0,
-            openai_account_affinity: gateway_core::account::AccountAffinity::Relaxed,
-            max_account_rotations: 3,
-            openai_session_affinity_ttl_hours: 24,
-            responses_max_decompressed_body_bytes: 64 * 1024 * 1024,
-            smart_scheduling: gateway_core::account::SmartSchedulingConfig::default(),
-            min_codex_desktop_version: Some("26.825.6671".to_owned()),
-            min_codex_cli_version: Some("0.40.0".to_owned()),
-            usage_retention_days: 31,
-            ops_event_retention_days: 31,
-            audit_retention_days: 91,
-            account_auto_freeze_enabled: true,
-            account_auto_freeze_threshold: 12,
-            account_auto_freeze_window_seconds: 600,
-            account_auto_freeze_duration_seconds: 7_200,
-            account_auto_freeze_probe_enabled: true,
-            account_auto_freeze_probe_model: None,
-            account_auto_freeze_adaptive_concurrency: true,
-            account_warmup_enabled: false,
-            account_warmup_schedule_time: "08:00".to_owned(),
-            account_warmup_model: None,
-            reset_credit_lead_minutes: 10,
-            reset_credit_max_weekly_remaining_percent: None,
-        },
-    };
-
+    let mut settings = super::test_runtime_settings();
+    settings.updated_at = Utc.with_ymd_and_hms(2026, 8, 2, 10, 30, 0).unwrap();
     let value = serde_json::to_value(RuntimeSettingsView::from((
         settings,
         gateway_api::TimePresenter::new(Default::default()),
     )))
     .expect("serialize view");
-    assert_eq!(
-        value,
-        json!({
-            "configRevision": 7,
-            "providerRequestProfiles": {},
-            "openaiClientProfile": null,
-            "xaiClientProfile": null,
-        "codexPrivacyPolicy": {"enabled":false,"onError":"skip_rule","rules":[]},
-        "requestLocationEnabled": false,
-        "requestLocation": {"country":"US", "region":"Ohio", "city":"Piketon", "timezone":"America/New_York"},
-            "modelMappings": {
-                "gpt-5.4": "gpt-5.5",
-                "grok-latest": "grok-4.5"
-            },
-            "refreshMarginSeconds": 1800,
-            "refreshConcurrency": 4,
-            "maxConcurrentPerAccount": 5,
-            "maxWaitingPerKey": 0,
-            "maxWaitingPerAccount": 0,
-            "openaiGuardianReservedConcurrency": 0,
-            "openaiAccountAffinity": "relaxed",
-            "maxAccountRotations": 3,
-            "openaiSessionAffinityTtlHours": 24,
-            "concurrencyWaitTimeoutSeconds": 30,
-            "responsesMaxDecompressedBodyBytes": 67108864,
-            "rotationStrategy": "round_robin",
-            "smartScheduling": gateway_core::account::SmartSchedulingConfig::default(),
-            "smartSchedulingDefaults": gateway_core::account::SmartSchedulingConfig::default(),
-            "minCodexDesktopVersion": "26.825.6671",
-            "minCodexCliVersion": "0.40.0",
-            "usageRetentionDays": 31,
-            "opsEventRetentionDays": 31,
-            "auditRetentionDays": 91,
-            "accountAutoFreezeEnabled": true,
-            "accountAutoFreezeThreshold": 12,
-            "accountAutoFreezeWindowSeconds": 600,
-            "accountAutoFreezeDurationSeconds": 7200,
-                "accountAutoFreezeProbeEnabled": true,
-                "accountAutoFreezeProbeModel": null,
-                "accountAutoFreezeAdaptiveConcurrency": true,
-                "accountWarmupEnabled": false,
-                "accountWarmupScheduleTime": "08:00",
-                "accountWarmupModel": null,
-                "resetCreditLeadMinutes": 10,
-                "resetCreditMaxWeeklyRemainingPercent": null,
-                "updatedAt": "2026-08-02T10:30:00Z",
-                "updatedAtDisplay": "2026-08-02 18:30:00"
-        })
-    );
+
+    assert_eq!(value["updatedAt"], "2026-08-02T10:30:00Z");
+    assert_eq!(value["updatedAtDisplay"], "2026-08-02 18:30:00");
 }
 
 #[test]

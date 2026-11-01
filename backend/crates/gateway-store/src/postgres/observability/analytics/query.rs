@@ -335,25 +335,24 @@ impl<'a> AnalyticsSnapshot<'a> {
         filter: &UsageRecordFilter,
         granularity: ObservationGranularity,
         timezone: gateway_core::time::DeploymentTimeZone,
+        include_concurrency: bool,
     ) -> StoreResult<(
         UsageOverview,
         Vec<RequestMetricPoint>,
         Vec<admin_observability::UsageProjectedCostPoint>,
+        Vec<admin_observability::UsageConcurrencyPoint>,
     )> {
         let states = self
             .load(range, filter, None, Some(granularity), timezone, true)
             .await?;
         let trend = metric_points(range, granularity, timezone, &states, true)?;
-        let costs = states
-            .iter()
-            .map(|((bucket_start, _), state)| {
-                Ok(admin_observability::UsageProjectedCostPoint {
-                    bucket_start: *bucket_start,
-                    standard_amount: state.projected_cost("standard_usd")?,
-                    no_cache_amount: state.projected_cost("no_cache_usd")?,
-                })
-            })
-            .collect::<StoreResult<Vec<_>>>()?;
+        let costs = projected_cost_points(&states)?;
+        let concurrency = if include_concurrency {
+            self.concurrency(range, filter, granularity, timezone)
+                .await?
+        } else {
+            Vec::new()
+        };
         // 趋势已包含可合并的完整指标和情景费用，概览直接复用同一份状态
         // 精确分位数不可跨桶合并，明细回退时仍按完整区间单独计算概览
         let overview = if states.values().any(MetricState::has_exact_percentiles) {
@@ -362,7 +361,199 @@ impl<'a> AnalyticsSnapshot<'a> {
             self.overview_from_state(range, filter, merge_states(states.into_values())?)
                 .await?
         };
-        Ok((overview, trend, costs))
+        Ok((overview, trend, costs, concurrency))
+    }
+
+    pub async fn metric(
+        &mut self,
+        range: ObservabilityRange,
+        filter: &UsageRecordFilter,
+        granularity: ObservationGranularity,
+        timezone: gateway_core::time::DeploymentTimeZone,
+        metric: admin_observability::UsageInsightMetric,
+    ) -> StoreResult<admin_observability::UsageInsightsObservation> {
+        use admin_observability::UsageInsightMetric;
+        let distribution_names: &[&str] = match metric {
+            UsageInsightMetric::Latency => &["latency_ms"],
+            UsageInsightMetric::FirstToken => &["first_token_ms"],
+            UsageInsightMetric::Throughput => &["throughput"],
+            UsageInsightMetric::Load => &["admission_decision_ms", "account_selection_wait_ms"],
+            _ => &[],
+        };
+        let costs = matches!(
+            metric,
+            UsageInsightMetric::Cost | UsageInsightMetric::Savings | UsageInsightMetric::Cache
+        );
+        let counters: &[&str] = match metric {
+            UsageInsightMetric::Health => &[
+                "request_count",
+                "success_count",
+                "failure_count",
+                "cancelled_count",
+                "incomplete_count",
+                "caller_error_count",
+            ],
+            // 成本视图均显示费用、节省、溢价、单次成功费用与覆盖率汇总
+            UsageInsightMetric::Cost | UsageInsightMetric::Savings => &[
+                "request_count",
+                "success_count",
+                "provider_reported_count",
+                "calculated_count",
+                "unavailable_count",
+            ],
+            UsageInsightMetric::Cache => &[
+                "request_count",
+                "success_count",
+                "input_tokens",
+                "cached_input_tokens",
+                "cache_hit_request_count",
+                "cache_eligible_request_count",
+                "provider_reported_count",
+                "calculated_count",
+                "unavailable_count",
+            ],
+            _ => &["request_count"],
+        };
+        let selection = ReadSelection {
+            distributions: if distribution_names.is_empty() {
+                DistributionRead::None
+            } else {
+                DistributionRead::Full
+            },
+            costs,
+            keys: None,
+            counters: Some(counters),
+            distribution_names: Some(distribution_names),
+        };
+        let states = self
+            .load_selected(range, filter, None, Some(granularity), timezone, selection)
+            .await?;
+        let trend = metric_points(range, granularity, timezone, &states, costs)?;
+        let projected_costs = if costs {
+            projected_cost_points(&states)?
+        } else {
+            Vec::new()
+        };
+        // 明细筛选的精确分位数仍需按完整范围读取，不能合并各桶分位数
+        let total = if states.values().any(MetricState::has_exact_percentiles) {
+            merge_states(
+                self.load_selected(range, filter, None, None, timezone, selection)
+                    .await?
+                    .into_values(),
+            )?
+        } else {
+            merge_states(states.into_values())?
+        };
+        let concurrency = if metric == UsageInsightMetric::Load {
+            self.concurrency(range, filter, granularity, timezone)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let overview = UsageOverview {
+            range,
+            requests: total.request_metrics()?,
+            attempts: total.attempts()?,
+            providers: Vec::new(),
+            analytics: self.metadata(),
+        };
+        Ok(admin_observability::UsageInsightsObservation {
+            overview: admin_usage_overview(overview),
+            trend: trend.into_iter().map(admin_request_metric_point).collect(),
+            costs: projected_costs,
+            concurrency,
+        })
+    }
+
+    async fn concurrency(
+        &mut self,
+        range: ObservabilityRange,
+        filter: &UsageRecordFilter,
+        granularity: ObservationGranularity,
+        timezone: gateway_core::time::DeploymentTimeZone,
+    ) -> StoreResult<Vec<admin_observability::UsageConcurrencyPoint>> {
+        filter.validate()?;
+        self.require_visible(Some(range))?;
+        let boundaries = if granularity == ObservationGranularity::Day {
+            calendar_buckets(range, timezone)?
+        } else {
+            let seconds = granularity.seconds();
+            let mut bucket =
+                DateTime::from_timestamp(range.start.timestamp().div_euclid(seconds) * seconds, 0)
+                    .ok_or_else(|| invalid("invalid concurrency bucket"))?;
+            let step = TimeDelta::seconds(seconds);
+            let mut boundaries = Vec::new();
+            while bucket < range.end {
+                boundaries.push(bucket);
+                bucket = bucket
+                    .checked_add_signed(step)
+                    .ok_or_else(|| invalid("invalid next concurrency bucket"))?;
+            }
+            boundaries
+        };
+        // 按生命周期分开筛选，使终态请求复用 completed_at 索引，运行中请求沿用独立索引
+        let mut query = QueryBuilder::<Postgres>::new(
+            "with buckets as materialized (select greatest(bucket_start,",
+        );
+        query
+            .push_bind(range.start)
+            .push("::timestamptz) as effective_start,least(coalesce(lead(bucket_start) over(order by bucket_start),")
+            .push_bind(range.end)
+            .push("::timestamptz),")
+            .push_bind(range.end)
+            .push("::timestamptz) as bucket_end,bucket_start from unnest(")
+            .push_bind(boundaries)
+            .push("::timestamptz[]) input(bucket_start)), matching as (select mr.started_at,mr.completed_at from model_request_observations mr where mr.outcome <> 'running' and mr.completed_at > ")
+            .push_bind(range.start)
+            .push(" and mr.started_at < ")
+            .push_bind(range.end);
+        push_analytics_filter(&mut query, filter, "mr");
+        query
+            .push(" union all select mr.started_at,")
+            .push_bind(range.end)
+            .push("::timestamptz as completed_at from model_request_observations mr where mr.outcome = 'running' and mr.started_at < ")
+            .push_bind(range.end);
+        push_analytics_filter(&mut query, filter, "mr");
+        // 每个请求只产生两个事件，桶边界只切分时间轴，避免请求与所有桶逐一连接
+        // 同时刻先合并增减，再计算下一段并发，遵循左闭右开的执行区间
+        query
+            .push("), events as (select e.occurred_at,e.delta,null::timestamptz as bucket_start from matching m cross join lateral (values (greatest(m.started_at,")
+            .push_bind(range.start)
+            .push("::timestamptz),1::bigint),(least(m.completed_at,")
+            .push_bind(range.end)
+            .push("::timestamptz),-1::bigint)) e(occurred_at,delta) union all select effective_start,0::bigint,bucket_start from buckets union all select ")
+            .push_bind(range.end)
+            .push("::timestamptz,0::bigint,null::timestamptz),
+                event_points as (
+                    select occurred_at,sum(delta)::bigint as delta,max(bucket_start) as bucket_start
+                    from events group by occurred_at
+                ), timeline as (
+                    select occurred_at,sum(delta) over timeline_order::bigint as concurrency,
+                        max(bucket_start) over timeline_order as bucket_start,
+                        lead(occurred_at) over(order by occurred_at) as next_occurred_at
+                    from event_points
+                    window timeline_order as (order by occurred_at rows between unbounded preceding and current row)
+                )
+                select b.bucket_start,
+                    coalesce(sum(t.concurrency*extract(epoch from t.next_occurred_at-t.occurred_at))
+                        /nullif(extract(epoch from b.bucket_end-b.effective_start),0),0)::float8 as average_concurrency,
+                    coalesce(max(t.concurrency),0)::bigint as peak_concurrency
+                from buckets b left join timeline t on t.bucket_start=b.bucket_start and t.next_occurred_at>t.occurred_at
+                group by b.bucket_start,b.effective_start,b.bucket_end order by b.bucket_start");
+        let rows = query
+            .build()
+            .fetch_all(&mut *self.tx)
+            .await
+            .map_err(|error| postgres_unavailable("aggregate request concurrency", error))?;
+        rows.iter()
+            .map(|row| {
+                Ok(admin_observability::UsageConcurrencyPoint {
+                    bucket_start: get(row, "bucket_start")?,
+                    average_concurrency: get(row, "average_concurrency")?,
+                    peak_concurrency: unsigned(row, "peak_concurrency")?,
+                })
+            })
+            .collect()
     }
 
     pub async fn diagnostics(
@@ -443,6 +634,7 @@ impl<'a> AnalyticsSnapshot<'a> {
                 key: key.clone(),
                 name: key,
                 account_provider_kind: None,
+                account_authentication_kind: None,
                 account_plan_type: None,
                 request_count: metrics.request_count,
                 success_count: metrics.success_count,
@@ -478,9 +670,9 @@ impl<'a> AnalyticsSnapshot<'a> {
                 .map(|item| item.key.clone())
                 .collect::<Vec<_>>();
             let statement = if dimension == DiagnosticDimension::Account {
-                "select requested.id, historical.provider_kind, historical.provider_account_plan_type_snapshot as plan_type, coalesce(historical.provider_account_email_snapshot,historical.provider_account_name_snapshot,requested.id) as name from unnest($1::text[]) requested(id) left join lateral (select provider_kind,provider_account_plan_type_snapshot,provider_account_email_snapshot,provider_account_name_snapshot from model_request_observations mr where mr.provider_account_ref=requested.id order by mr.started_at desc,mr.id desc limit 1) historical on true"
+                "select requested.id, historical.provider_kind, historical.provider_account_authentication_kind_snapshot as authentication_kind, historical.provider_account_plan_type_snapshot as plan_type, coalesce(historical.provider_account_email_snapshot,historical.provider_account_name_snapshot,requested.id) as name from unnest($1::text[]) requested(id) left join lateral (select provider_kind,provider_account_authentication_kind_snapshot,provider_account_plan_type_snapshot,provider_account_email_snapshot,provider_account_name_snapshot from model_request_observations mr where mr.provider_account_ref=requested.id order by mr.started_at desc,mr.id desc limit 1) historical on true"
             } else {
-                "select requested.id, null::text as provider_kind, null::text as plan_type,coalesce(historical.client_api_key_name_snapshot,requested.id) as name from unnest($1::text[]) requested(id) left join lateral (select client_api_key_name_snapshot from model_request_observations mr where mr.client_api_key_ref=requested.id order by mr.started_at desc,mr.id desc limit 1) historical on true"
+                "select requested.id, null::text as provider_kind, null::text as authentication_kind, null::text as plan_type,coalesce(historical.client_api_key_name_snapshot,requested.id) as name from unnest($1::text[]) requested(id) left join lateral (select client_api_key_name_snapshot from model_request_observations mr where mr.client_api_key_ref=requested.id order by mr.started_at desc,mr.id desc limit 1) historical on true"
             };
             let labels = sqlx::query(statement)
                 .bind(ids)
@@ -492,6 +684,7 @@ impl<'a> AnalyticsSnapshot<'a> {
                 if let Some(item) = observations.iter_mut().find(|item| item.key == id) {
                     item.name = get(&row, "name")?;
                     item.account_provider_kind = get(&row, "provider_kind")?;
+                    item.account_authentication_kind = get(&row, "authentication_kind")?;
                     item.account_plan_type = get(&row, "plan_type")?;
                 }
             }
@@ -975,6 +1168,21 @@ pub(super) fn push_summary_buckets(
             .push_bind(buckets.to_vec())
             .push(")");
     }
+}
+
+fn projected_cost_points(
+    states: &BTreeMap<(DateTime<Utc>, String), MetricState>,
+) -> StoreResult<Vec<admin_observability::UsageProjectedCostPoint>> {
+    states
+        .iter()
+        .map(|((bucket_start, _), state)| {
+            Ok(admin_observability::UsageProjectedCostPoint {
+                bucket_start: *bucket_start,
+                standard_amount: state.projected_cost("standard_usd")?,
+                no_cache_amount: state.projected_cost("no_cache_usd")?,
+            })
+        })
+        .collect()
 }
 
 fn metric_points(

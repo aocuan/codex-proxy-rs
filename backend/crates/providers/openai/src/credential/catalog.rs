@@ -29,9 +29,13 @@ use crate::transport::{CodexBackendClient, CodexCatalogModel, CodexRequestContex
 
 const MAX_RESPONSE_ETAG_BYTES: usize = 256;
 const PLAN_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+// 调度证据覆盖默认 15 分钟刷新周期及抖动，长期未刷新时恢复上游验证
+const SCHEDULING_CATALOG_MAX_AGE: Duration = Duration::from_secs(30 * 60);
 const MAX_CATALOG_FETCH_ATTEMPTS: usize = 3;
 const MAX_PLAN_CATALOG_MODELS: usize = 2_048;
 const MAX_CLIENT_CATALOGS: usize = 32;
+// 保持原先 32 份、每份 1 MiB 的原生正文缓存预算，不把缓存容量变成上游目录合同
+const MAX_CLIENT_CATALOG_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const MODEL_CATALOG_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_CONCURRENT_API_CATALOGS: usize = 4;
 const CLIENT_CATALOG_ERROR_TTL: Duration = Duration::from_secs(5);
@@ -218,6 +222,20 @@ struct CachedClientCatalog {
     result: ClientCatalogResult,
 }
 
+impl CachedClientCatalog {
+    fn native_bytes(&self) -> usize {
+        self.result.as_ref().map_or(0, |models| {
+            models
+                .iter()
+                .map(|model| match &model.content {
+                    ProviderModelContent::Native(payload) => payload.body().len(),
+                    ProviderModelContent::Adapted(_) => 0,
+                })
+                .sum()
+        })
+    }
+}
+
 struct ClientCatalogEntry {
     key: ClientCatalogKey,
     created_at: Instant,
@@ -338,6 +356,7 @@ impl CodexCredentialCatalogService {
             }
         }
         drop(catalogs);
+        let api_catalog_available = !api_catalogs.is_empty();
         // 完整对象优先于普通 ID；同类目录按账号顺序选来源，并保留上游条目顺序
         let (native, adapted): (Vec<_>, Vec<_>) = api_catalogs
             .into_values()
@@ -375,7 +394,7 @@ impl CodexCredentialCatalogService {
                 Err(error) => last_error = error,
             }
         }
-        if api_models.is_empty() {
+        if !api_catalog_available {
             Err(last_error)
         } else {
             Ok(api_models)
@@ -459,6 +478,30 @@ impl CodexCredentialCatalogService {
                 }
             })
             .await;
+        // 完成中的 OnceCell 仍由并发读者持有；移出缓存只影响后续查询，不丢弃本次成功结果
+        let mut cache = self
+            .client_catalogs
+            .lock()
+            .map_err(|_| CodexCredentialCatalogError::Cache)?;
+        if result.native_bytes() > MAX_CLIENT_CATALOG_CACHE_BYTES {
+            cache.retain(|entry| !Arc::ptr_eq(&entry.value, &value));
+        } else {
+            let mut bytes: usize = cache
+                .iter()
+                .filter_map(|entry| entry.value.get())
+                .map(CachedClientCatalog::native_bytes)
+                .sum();
+            while bytes > MAX_CLIENT_CATALOG_CACHE_BYTES {
+                let Some(index) = cache.iter().position(|entry| entry.value.initialized()) else {
+                    break;
+                };
+                let entry = cache.remove(index);
+                bytes -= entry
+                    .value
+                    .get()
+                    .map_or(0, CachedClientCatalog::native_bytes);
+            }
+        }
         result.result.clone()
     }
 
@@ -494,6 +537,41 @@ impl CodexCredentialCatalogService {
         snapshot
             .account_models(account)
             .map(|models| models.map(<[String]>::to_vec))
+    }
+
+    /// 有效目录约束账号模型资格，缺失目录或未知套餐继续交由上游判断
+    pub(crate) fn scheduling_exclusions(
+        &self,
+        accounts: &[ProviderAccount],
+        model: &str,
+        now: SystemTime,
+    ) -> BTreeSet<ProviderAccountId> {
+        let Ok(cache) = self.cache.read() else {
+            return BTreeSet::new();
+        };
+        let Some(snapshot) = cache.snapshot.as_ref().filter(|snapshot| {
+            now.duration_since(snapshot.observed_at)
+                .is_ok_and(|age| age < SCHEDULING_CATALOG_MAX_AGE)
+        }) else {
+            return BTreeSet::new();
+        };
+        // OAuth 按套餐共享，API Key 按账号与凭据版本隔离，不能借用其他来源的模型资格
+        let excluded_scopes = snapshot
+            .scope_catalogs
+            .iter()
+            .filter(|(scope, catalog)| {
+                scope.as_str() != "plan:unknown" && !catalog.models.iter().any(|id| id == model)
+            })
+            .map(|(scope, _)| scope)
+            .collect::<BTreeSet<_>>();
+        accounts
+            .iter()
+            .filter(|account| {
+                CodexCatalogScope::for_account(account)
+                    .is_ok_and(|scope| excluded_scopes.contains(&scope))
+            })
+            .map(|account| account.id().clone())
+            .collect()
     }
 
     /// 优先读取套餐目录 cache；缺失时才用当前账号所属套餐的有限候选集实时填充

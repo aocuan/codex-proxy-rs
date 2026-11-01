@@ -75,10 +75,11 @@ impl HttpCallbacks<'_> {
         let timeout = call.timeout()?;
         let attempt = call.start_upstream(upstream_purpose)?;
         let response = client.open(request, proxy, network, timeout).await;
-        attempt.finish(
+        attempt.finish_http(
             response
                 .as_ref()
                 .map_or_else(|error| error.send_state, |_| UpstreamSendState::Sent),
+            response.as_ref().ok().map(|response| response.status),
         );
         let response = response.map_err(http_error)?;
         let mut body = response.body;

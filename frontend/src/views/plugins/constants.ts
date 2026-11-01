@@ -88,5 +88,6 @@ export const PLUGIN_STATUS_LABELS = computed<Record<PluginCatalogStatus, string>
   disabled: t('plugins.fields.deactivated'),
   pending: t('plugins.fields.waitingForItToTakeEffect'),
   failed: t('common.status.error'),
+  incompatible: t('plugins.status.incompatibleNotStarted'),
   unknown: t('plugins.status.unknown'),
 }))

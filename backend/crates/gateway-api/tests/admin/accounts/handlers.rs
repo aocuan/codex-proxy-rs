@@ -215,6 +215,135 @@ async fn evaluation_filter_limits_directory_results_and_keeps_health_summary_sep
 }
 
 #[tokio::test]
+async fn peer_refresh_uses_the_account_quota_endpoint_and_requires_admin() {
+    use gateway_core::account::{AccountStatusFacts, CredentialState, QuotaState};
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    *fixture.account.lock().unwrap() = Some(account_page_item(
+        AccountStatusFacts {
+            enabled: true,
+            credential_state: CredentialState::Ready,
+            access_token_expires_at: None,
+            quota: QuotaState::unknown(),
+            cooldown: None,
+            last_error_reason: None,
+            last_error_message: None,
+        },
+        chrono::Utc::now(),
+        "api_key",
+    ));
+    for (authenticated, id, expected) in [
+        (false, "acct_cooldown", StatusCode::UNAUTHORIZED),
+        (true, "invalid", StatusCode::BAD_REQUEST),
+        (true, "acct_cooldown", StatusCode::OK),
+    ] {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/admin/accounts/quota/refresh")
+            .header("x-request-id", "req_upstream_refresh")
+            .header(header::CONTENT_TYPE, "application/json");
+        if authenticated {
+            request = request.header(header::COOKIE, "cpr_session=valid-session");
+        }
+        let response = admin::router::<AdminTestState>()
+            .with_state(fixture.state())
+            .oneshot(
+                request
+                    .body(Body::from(serde_json::json!({"accountId":id}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        if expected == StatusCode::OK {
+            let body = to_bytes(response.into_body(), 8192).await.unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(value["data"]["account"]["id"], "acct_cooldown");
+        }
+    }
+}
+
+#[tokio::test]
+async fn account_model_reads_and_refreshes_preserve_provider_observation_time() {
+    use chrono::{DateTime, Utc};
+    use gateway_admin::model::provider_credentials::{ProviderModel, ProviderModels};
+    use gateway_core::{
+        account::{AccountStatusFacts, CredentialState, QuotaState},
+        routing::UpstreamModelId,
+    };
+    use serde_json::json;
+
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    let observed_at: DateTime<Utc> = "2026-09-12T08:00:00Z".parse().unwrap();
+    *fixture.account.lock().unwrap() = Some(account_page_item(
+        AccountStatusFacts {
+            enabled: true,
+            credential_state: CredentialState::Ready,
+            access_token_expires_at: None,
+            quota: QuotaState::unknown(),
+            cooldown: None,
+            last_error_reason: None,
+            last_error_message: None,
+        },
+        observed_at,
+        "api_key",
+    ));
+    let router = admin::accounts::router::<AdminTestState>().with_state(fixture.state());
+    for observed_at in [Some(observed_at), None] {
+        *fixture.provider_models.lock().unwrap() = Some(ProviderModels {
+            models: vec![ProviderModel {
+                id: UpstreamModelId::new("model-a").unwrap(),
+                name: "Model A".to_owned(),
+            }],
+            observed_at,
+        });
+        for (method, uri, body) in [
+            (
+                "GET",
+                "/api/admin/accounts/models?accountId=acct_cooldown",
+                "",
+            ),
+            (
+                "POST",
+                "/api/admin/accounts/models/refresh",
+                r#"{"accountId":"acct_cooldown"}"#,
+            ),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("x-request-id", "req_model_catalog")
+                        .header(header::COOKIE, "cpr_session=valid-session")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{method} {uri}");
+            let body = to_bytes(response.into_body(), 8192).await.unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(
+                value["data"]["models"],
+                json!([{ "id": "model-a", "label": "model-a" }])
+            );
+            assert_eq!(
+                value["data"]["observedAt"],
+                json!(observed_at.map(|_| "2026-09-12T16:00:00+08:00"))
+            );
+            assert_eq!(
+                value["data"]["observedAtDisplay"],
+                observed_at.map_or("—", |_| "2026-09-12 16:00:00")
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn account_proxy_binding_is_distinct_from_the_redacted_endpoint() {
     use chrono::Utc;
     use gateway_core::account::{AccountStatusFacts, CredentialState, OutboundProxy, QuotaState};
@@ -296,17 +425,17 @@ async fn account_cooldown_returns_an_instant_and_server_formatted_recovery() {
             ),
             (
                 Some(7200),
-                AccountCooldownKind::CapacityFreeze,
+                AccountCooldownKind::ErrorProtection,
                 Some("剩余 2 小时"),
             ),
             (
                 Some(7500),
-                AccountCooldownKind::CapacityFreezeProbe,
+                AccountCooldownKind::ErrorProtectionProbe,
                 Some("剩余 2 小时 5 分"),
             ),
             (
                 Some(-60),
-                AccountCooldownKind::CapacityFreezeProbe,
+                AccountCooldownKind::ErrorProtectionProbe,
                 Some("等待探测成功"),
             ),
             (Some(20), AccountCooldownKind::RateLimit, None),
@@ -326,7 +455,14 @@ async fn account_cooldown_returns_an_instant_and_server_formatted_recovery() {
                 last_error_reason: None,
                 last_error_message: None,
             };
-            *fixture.account.lock().unwrap() = Some(account_page_item(facts, now, "oauth"));
+            let mut item = account_page_item(facts, now, "oauth");
+            if kind.is_error_protection() {
+                item.protection_rules = vec![gateway_core::account::AccountProtectionMatch {
+                    id: "removed-rule".to_owned(),
+                    name: "触发时的规则名称".to_owned(),
+                }];
+            }
+            *fixture.account.lock().unwrap() = Some(item);
             let response = admin::accounts::router::<AdminTestState>()
                 .with_state(fixture.state())
                 .oneshot(
@@ -343,6 +479,17 @@ async fn account_cooldown_returns_an_instant_and_server_formatted_recovery() {
             let body = to_bytes(response.into_body(), 32768).await.unwrap();
             let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
             let quota = &value["data"]["items"][0]["quota"];
+            if kind.is_error_protection() {
+                assert_eq!(quota["rateLimitReason"], "error_protection");
+                assert_eq!(
+                    quota["protectionRules"],
+                    serde_json::json!([
+                        {"id":"removed-rule", "name":"触发时的规则名称"}
+                    ])
+                );
+            } else {
+                assert_eq!(quota["protectionRules"], serde_json::json!([]));
+            }
             match until {
                 Some(until) => {
                     assert_eq!(
@@ -414,6 +561,7 @@ async fn account_quota_refresh_time_uses_server_clock_and_deployment_timezone() 
             ),
         ] {
             *fixture.provider_quota.lock().unwrap() = Some(ProviderQuota {
+                upstream: None,
                 plan_type: None,
                 observed_at,
                 refresh_token_expires_at: None,
@@ -461,6 +609,7 @@ fn account_page_item(
     use gateway_core::account::resolve_account_status;
 
     AccountPageItem {
+        protection_rules: Vec::new(),
         account: AccountRecord {
             outbound_proxy_id: None,
             outbound_proxy_enabled: true,

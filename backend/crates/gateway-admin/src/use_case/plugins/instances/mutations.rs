@@ -98,15 +98,34 @@ impl PluginsService {
         if artifact.accepted_at.is_none() {
             return Err(AdminError::invalid("请先安装并确认完整信任该版本"));
         }
-        if input.enabled
-            && let Some(warning) = self
-                .package_status(&input.artifact_sha256)
-                .await?
-                .load_error
+        let confirmation = input.compatibility_confirmation.as_ref();
+        if let Some(confirmed) = confirmation
+            && (!input.enabled
+                || existing.as_ref().is_none_or(|instance| {
+                    instance.id != confirmed.instance_id
+                        || instance.revision.get() != confirmed.instance_revision
+                })
+                || input.artifact_sha256 != confirmed.artifact_sha256
+                || self.inspector.compatibility_host_fingerprint()? != confirmed.host_fingerprint)
         {
-            return Err(AdminError::invalid(format!(
-                "{warning}，无法启动，请安装兼容版本"
-            )));
+            return Err(AdminError::conflict(
+                "宿主、插件包或配置已变化，请重新确认启动风险",
+            ));
+        }
+        if input.enabled {
+            let status = self.package_status(&input.artifact_sha256).await?;
+            if let Some(reason) = status.load_error {
+                return Err(AdminError::invalid(format!(
+                    "{reason}，无法启动，请安装兼容版本"
+                )));
+            }
+            if let Some(reason) = status.warning
+                && confirmation.is_none()
+            {
+                return Err(AdminError::conflict(format!(
+                    "插件版本不兼容：{reason}；请先确认启动风险"
+                )));
+            }
         }
         let same_plugin = |digest: &str| {
             artifacts.iter().any(|item| {
@@ -223,10 +242,10 @@ impl PluginsService {
             return self
                 .configure_instance_with_state_transition(
                     snapshot,
-                    existing.clone(),
                     instance,
                     state,
                     &replacements,
+                    confirmation,
                     context,
                 )
                 .await;
@@ -235,7 +254,9 @@ impl PluginsService {
         snapshot.instances.push(instance.clone());
         snapshot.config_revision = candidate_revision;
         apply_replacements(&mut snapshot, &replacements);
-        let prepared = self.preparation.prepare(snapshot.clone()).await?;
+        let prepared = self
+            .prepare_instance_candidate(snapshot.clone(), confirmation)
+            .await?;
         let result = self
             .store
             .save_instance_replacing(
@@ -250,7 +271,7 @@ impl PluginsService {
             )
             .await
             .map_err(|e| map_store_error(e, "plugin"))?;
-        self.publish_instance(snapshot, prepared, &result, &replacements)
+        self.publish_instance(snapshot, prepared, &result, &replacements, confirmation)
             .await?;
         Ok(result)
     }

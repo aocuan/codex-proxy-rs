@@ -157,13 +157,13 @@ async function confirmDelete() {
       </template>
       <template #body>
         <div v-if="tab === 'history'">
-          <p v-if="historyError" class="px-5 text-cp-sm text-cp-error-text" role="alert">
+          <p v-if="historyError" class="px-5 text-z-sm text-z-error-text" role="alert">
             {{ historyError }}
           </p>
           <ZTable :columns="runColumns" :data="runs" :loading="loadingRuns" row-key="id" empty-text="还没有测评记录">
             <template #test="{ row }">
               <span class="block font-emphasis">{{ row.profile.definition?.name ?? kindLabels[row.parameters.kind] }}</span>
-              <span class="text-cp-xs text-cp-text-tertiary">{{ row.parameters.model }} · {{ row.planId ? '定时' : '手动' }}</span>
+              <span class="text-z-xs text-z-text-tertiary">{{ row.parameters.model }} · {{ row.planId ? '定时' : '手动' }}</span>
             </template>
             <template #status="{ row }">
               <ZTag :type="row.activeItems ? 'info' : 'default'">
@@ -176,7 +176,7 @@ async function confirmDelete() {
             <template #result="{ row }">
               <span v-if="row.profile.definition ? row.profile.definition.grader.type !== 'none' : row.parameters.kind === 'candy'">{{ row.correctItems }} 次通过</span>
               <span v-else>{{ row.parameters.kind === 'turnstate' ? '查看路由信号' : '查看作品' }}</span>
-              <span v-if="row.activeItems" class="mt-1 block text-cp-xs text-cp-text-tertiary">{{ row.activeItems }} 次未结束</span>
+              <span v-if="row.activeItems" class="mt-1 block text-z-xs text-z-text-tertiary">{{ row.activeItems }} 次未结束</span>
             </template>
             <template #actions="{ row }">
               <div class="flex gap-2">
@@ -190,7 +190,7 @@ async function confirmDelete() {
             </template>
           </ZTable>
           <div class="flex items-center justify-end gap-3 px-5 py-4">
-            <span class="text-cp-sm text-cp-text-secondary">第 {{ page }} 页</span>
+            <span class="text-z-sm text-z-text-secondary">第 {{ page }} 页</span>
             <ZButton size="small" :disabled="page <= 1 || loadingRuns" @click="evaluation.loadRuns(false, page - 1)">
               上一页
             </ZButton>
@@ -200,18 +200,18 @@ async function confirmDelete() {
           </div>
         </div>
         <div v-else>
-          <p v-if="plansError" class="px-5 text-cp-sm text-cp-error-text" role="alert">
+          <p v-if="plansError" class="px-5 text-z-sm text-z-error-text" role="alert">
             {{ plansError }}
           </p>
           <ZTable :columns="planColumns" :data="plans" :loading="loadingPlans" row-key="id" empty-text="还没有定时计划">
             <template #name="{ row }">
               {{ row.settings.name }}
-              <span class="mt-1 block text-cp-xs text-cp-text-tertiary">{{ row.settings.accountSelection?.mode === 'all' ? '自动跟随全部账号' : row.settings.accountSelection?.mode === 'groups' ? '自动跟随指定分组' : `${row.settings.parameters.accountIds.length} 个固定账号` }} · 每账号 {{ row.settings.parameters.repetitions }} 次</span>
-              <span v-if="row.settings.accountPreference" class="mt-1 block text-cp-xs text-cp-text-secondary">账号优选 · {{ catalog.groupName(row.settings.accountPreference.groupId) }}</span>
+              <span class="mt-1 block text-z-xs text-z-text-tertiary">{{ row.settings.accountSelection?.mode === 'all' ? '自动跟随全部账号' : row.settings.accountSelection?.mode === 'groups' ? '自动跟随指定分组' : `${row.settings.parameters.accountIds.length} 个固定账号` }} · 每账号 {{ row.settings.parameters.repetitions }} 次</span>
+              <span v-if="row.settings.accountPreference" class="mt-1 block text-z-xs text-z-text-secondary">账号优选 · {{ catalog.groupName(row.settings.accountPreference.groupId) }}</span>
             </template>
             <template #test="{ row }">
               {{ row.settings.parameters.definition?.name ?? kindLabels[row.settings.parameters.kind] }}
-              <span class="mt-1 block text-cp-xs text-cp-text-tertiary">{{ row.settings.parameters.model }}</span>
+              <span class="mt-1 block text-z-xs text-z-text-tertiary">{{ row.settings.parameters.model }}</span>
             </template>
             <template #schedule="{ row }">
               {{ row.settings.intervalMinutes ? `每隔 ${row.settings.intervalMinutes} 分钟` : '按原定时间' }}

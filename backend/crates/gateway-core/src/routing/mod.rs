@@ -11,7 +11,7 @@ pub use crate::account::scope::{
 };
 pub use crate::identity::ProviderKind;
 pub use catalog::{
-    ContributedModelAlias, ProviderCatalogGeneration, ProviderCatalogPort,
+    ContributedModel, ContributedModelAlias, ProviderCatalogGeneration, ProviderCatalogPort,
     ProviderCatalogUnavailable, ProviderModelCapabilities, ProviderModelContent,
     ProviderModelDescriptor, PublicModelDescriptor,
 };
@@ -162,6 +162,7 @@ pub struct ModelPresentation {
     description: Option<String>,
     default_reasoning_effort: Option<String>,
     supported_reasoning_efforts: Vec<String>,
+    reasoning_summary: bool,
     context_window_tokens: Option<u64>,
     max_context_window_tokens: Option<u64>,
     image_input: bool,
@@ -252,6 +253,12 @@ impl ModelPresentation {
         self
     }
 
+    #[must_use]
+    pub const fn with_reasoning_summary(mut self, reasoning_summary: bool) -> Self {
+        self.reasoning_summary = reasoning_summary;
+        self
+    }
+
     /// 目录声明的可覆盖上限；客户端本地 context window 覆盖会被它钳制
     #[must_use]
     pub const fn with_max_context_window_tokens(
@@ -323,6 +330,11 @@ impl ModelPresentation {
     #[must_use]
     pub fn supported_reasoning_efforts(&self) -> &[String] {
         &self.supported_reasoning_efforts
+    }
+
+    #[must_use]
+    pub const fn reasoning_summary(&self) -> bool {
+        self.reasoning_summary
     }
 
     #[must_use]
@@ -561,6 +573,8 @@ impl ProviderCandidate {
 /// 一次请求冻结的 Provider 尝试顺序
 #[derive(Debug, Clone)]
 pub struct RoutingPlan {
+    account_error_protection: Arc<crate::account::CompiledAccountErrorProtection>,
+    account_error_protection_revision: u64,
     request_body_limit: usize,
     pricing: Arc<crate::metering::PricingOverrides>,
     request_location: Option<crate::account::RequestLocation>,
@@ -574,6 +588,16 @@ pub struct RoutingPlan {
 }
 
 impl RoutingPlan {
+    #[must_use]
+    pub const fn account_error_protection_revision(&self) -> u64 {
+        self.account_error_protection_revision
+    }
+
+    #[must_use]
+    pub fn account_error_protection(&self) -> Arc<crate::account::CompiledAccountErrorProtection> {
+        Arc::clone(&self.account_error_protection)
+    }
+
     #[must_use]
     pub const fn request_body_limit(&self) -> usize {
         self.request_body_limit

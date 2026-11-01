@@ -20,11 +20,11 @@ use gateway_core::error::{StoreError, StoreErrorKind};
 use gateway_core::policy::ClientApiKeyId;
 use gateway_core::provider_ports::{
     ProviderCatalogCacheKey, ProviderCatalogCachePort, ProviderCooldown, ProviderCooldownPort,
-    ProviderCooldownScope, ProviderFreezePolicy, ProviderLeaseAcquisition, ProviderLeasePort,
-    ProviderLeaseRequest, ProviderRefreshPolicy, ProviderRuntimePolicyPort,
-    ProviderSchedulingLeaseRequest, ProviderSchedulingState, ProviderScopedCooldown,
-    ProviderSessionAffinityKey, ProviderSessionAffinityPort, ProviderSessionExclusionPort,
-    ProviderSessionExclusions, ProviderStoreError,
+    ProviderCooldownScope, ProviderLeaseAcquisition, ProviderLeasePort, ProviderLeaseRequest,
+    ProviderRefreshPolicy, ProviderRuntimePolicyPort, ProviderSchedulingLeaseRequest,
+    ProviderSchedulingState, ProviderScopedCooldown, ProviderSessionAffinityKey,
+    ProviderSessionAffinityPort, ProviderSessionExclusionPort, ProviderSessionExclusions,
+    ProviderStoreError,
 };
 use gateway_core::routing::ProviderKind;
 use provider_openai::credential::{
@@ -54,6 +54,7 @@ pub(crate) struct MemoryAccountStore {
     accounts: Mutex<BTreeMap<ProviderAccountId, StoredAccount>>,
     account_reads: AtomicUsize,
     quota_reads: AtomicUsize,
+    largest_quota_read: AtomicUsize,
     fail_provider_listing: AtomicBool,
     pending_account_reads: bool,
     credential_load_hook: Mutex<Option<Arc<CredentialLoadHook>>>,
@@ -148,6 +149,18 @@ impl MemoryAccountStore {
             .map(|stored| stored.account.clone())
     }
 
+    pub(crate) fn set_model_access(
+        &self,
+        id: &str,
+        access: gateway_core::account::AccountModelAccess,
+    ) {
+        let mut accounts = self.accounts.lock().unwrap();
+        let stored = accounts
+            .get_mut(&ProviderAccountId::new(id).unwrap())
+            .unwrap();
+        stored.account = stored.account.clone().with_model_access(access);
+    }
+
     pub(crate) fn set_scheduling(
         &self,
         id: &str,
@@ -177,6 +190,10 @@ impl MemoryAccountStore {
             .clone()
             .with_outbound_proxy(proxy)
             .with_request_location(location);
+    }
+
+    pub(crate) fn largest_quota_read(&self) -> usize {
+        self.largest_quota_read.load(Ordering::SeqCst)
     }
 
     pub(crate) fn quota_reads(&self) -> usize {
@@ -427,10 +444,31 @@ impl ProviderAccountStore for MemoryAccountStore {
         accounts: &[ProviderAccountId],
     ) -> Result<Vec<QuotaObservation>, StoreError> {
         self.quota_reads.fetch_add(1, Ordering::SeqCst);
+        self.largest_quota_read
+            .fetch_max(accounts.len(), Ordering::SeqCst);
         let stored = self.accounts.lock().expect("account store lock");
         Ok(accounts
             .iter()
             .filter_map(|account| stored.get(account)?.quota.clone())
+            .collect())
+    }
+
+    async fn get_quota_versions(
+        &self,
+        ids: &[ProviderAccountId],
+    ) -> Result<Vec<gateway_core::account::QuotaObservationVersion>, StoreError> {
+        let accounts = self.accounts.lock().unwrap();
+        Ok(ids
+            .iter()
+            .filter_map(|id| {
+                let stored = accounts.get(id)?;
+                let quota = stored.quota.as_ref()?;
+                Some(gateway_core::account::QuotaObservationVersion {
+                    account_id: id.clone(),
+                    credential_revision: stored.account.revision(),
+                    observed_at: quota.observed_at,
+                })
+            })
             .collect())
     }
 
@@ -442,7 +480,16 @@ impl ProviderAccountStore for MemoryAccountStore {
         let stored = accounts
             .get_mut(&observation.account_id)
             .ok_or_else(|| store_error(StoreErrorKind::InvalidData))?;
-        if stored.account.revision() != observation.expected_revision {
+        if stored.account.revision() != observation.expected_revision
+            || observation
+                .expected_connection
+                .as_ref()
+                .is_some_and(|connection| {
+                    !stored.account.enabled()
+                        || gateway_core::account::UpstreamConnection::for_account(&stored.account)
+                            != *connection
+                })
+        {
             return Ok(QuotaWriteOutcome::Conflict);
         }
         if stored
@@ -773,6 +820,7 @@ impl ProviderLeasePort for TestLeaseCoordinator {
 
 #[derive(Default)]
 pub(crate) struct MemorySessionAffinity {
+    operation_delay: Duration,
     initial_claim_barrier: Option<Arc<tokio::sync::Barrier>>,
     aliases: Mutex<BTreeMap<(String, String), gateway_core::provider_ports::ProviderSessionAlias>>,
     bindings:
@@ -783,6 +831,19 @@ pub(crate) struct MemorySessionAffinity {
 }
 
 impl MemorySessionAffinity {
+    pub(crate) fn with_operation_delay(operation_delay: Duration) -> Self {
+        Self {
+            operation_delay,
+            ..Self::default()
+        }
+    }
+
+    async fn delay_operation(&self) {
+        if !self.operation_delay.is_zero() {
+            tokio::time::sleep(self.operation_delay).await;
+        }
+    }
+
     pub(crate) fn with_initial_claim_barrier(participants: usize) -> Self {
         Self {
             initial_claim_barrier: Some(Arc::new(tokio::sync::Barrier::new(participants))),
@@ -853,6 +914,7 @@ impl ProviderSessionAffinityPort for MemorySessionAffinity {
         Result<Option<gateway_core::provider_ports::ProviderSessionBinding>, ProviderStoreError>,
     > {
         Box::pin(async move {
+            self.delay_operation().await;
             self.lookups
                 .lock()
                 .expect("lookups")
@@ -881,6 +943,7 @@ impl ProviderSessionAffinityPort for MemorySessionAffinity {
         Result<Option<gateway_core::provider_ports::ProviderSessionBinding>, ProviderStoreError>,
     > {
         Box::pin(async move {
+            self.delay_operation().await;
             // 让并发首请求都读到空绑定，再验证发送前的原子认领冲突
             if expected.is_none()
                 && let Some(barrier) = &self.initial_claim_barrier
@@ -919,6 +982,7 @@ impl ProviderSessionAffinityPort for MemorySessionAffinity {
         Result<Option<gateway_core::provider_ports::ProviderSessionAlias>, ProviderStoreError>,
     > {
         Box::pin(async move {
+            self.delay_operation().await;
             Ok(self
                 .aliases
                 .lock()
@@ -938,6 +1002,7 @@ impl ProviderSessionAffinityPort for MemorySessionAffinity {
         ttl: Duration,
     ) -> BoxFuture<'a, Result<bool, ProviderStoreError>> {
         Box::pin(async move {
+            self.delay_operation().await;
             let mut aliases = self.aliases.lock().unwrap();
             let current = aliases
                 .entry((
@@ -1103,36 +1168,6 @@ pub(crate) fn runtime_policy() -> Arc<dyn ProviderRuntimePolicyPort> {
     Arc::new(StaticRuntimePolicy)
 }
 
-/// 冻结策略可配置的运行时策略 fake；容量熔断触发测试用
-pub(crate) struct StaticFreezePolicy(ProviderFreezePolicy);
-
-impl StaticFreezePolicy {
-    /// 构造带固定冻结策略的端口句柄；命名沿用测试构造器语义
-    #[must_use]
-    pub(crate) fn policy_port(policy: ProviderFreezePolicy) -> Arc<dyn ProviderRuntimePolicyPort> {
-        Arc::new(Self(policy))
-    }
-}
-
-impl ProviderRuntimePolicyPort for StaticFreezePolicy {
-    fn load_refresh_policy(
-        &self,
-    ) -> BoxFuture<'_, Result<ProviderRefreshPolicy, ProviderStoreError>> {
-        Box::pin(async {
-            ProviderRefreshPolicy::try_new(
-                Duration::from_secs(60 * 60),
-                NonZeroU32::new(2).expect("positive concurrency"),
-            )
-        })
-    }
-
-    fn load_freeze_policy(
-        &self,
-    ) -> BoxFuture<'_, Result<ProviderFreezePolicy, ProviderStoreError>> {
-        Box::pin(async { Ok(self.0.clone()) })
-    }
-}
-
 pub(crate) fn secret(access_token: &str) -> CodexOAuthSecret {
     CodexOAuthSecret {
         access_token: SecretString::from(access_token.to_owned()),
@@ -1152,14 +1187,14 @@ pub(crate) fn account_policy() -> gateway_core::account::AccountSelectionPolicy 
 type CooldownReadHook =
     dyn Fn(ProviderAccountId) -> BoxFuture<'static, Result<(), ProviderStoreError>> + Send + Sync;
 
-/// 内存 `ProviderCooldownPort`：实现 `read`/`put_if_later` 与容量失败计数
-/// 证据（openai selector 429 冷却与容量熔断路径用），scope 变体测试不涉及，
-/// 返回占位
+/// 内存账号与模型冷却端口，保留版本和到期时间供选号行为测试
 #[derive(Clone, Default)]
 pub(crate) struct MemoryCooldownPort {
     pub(crate) cooldowns: Arc<Mutex<BTreeMap<ProviderAccountId, ProviderCooldown>>>,
-    capacity_failures: Arc<Mutex<BTreeMap<ProviderAccountId, (u32, u32)>>>,
+    pub(crate) scoped:
+        Arc<Mutex<BTreeMap<(ProviderAccountId, ProviderCooldownScope), ProviderScopedCooldown>>>,
     before_read: Option<Arc<CooldownReadHook>>,
+    before_scoped_read: Option<Arc<CooldownReadHook>>,
 }
 
 impl MemoryCooldownPort {
@@ -1173,14 +1208,9 @@ impl MemoryCooldownPort {
         self
     }
 
-    /// 测试断言用：窗口内累计失败次数与在途峰值
-    #[must_use]
-    pub(crate) fn capacity_evidence(&self, account_id: &ProviderAccountId) -> Option<(u32, u32)> {
-        self.capacity_failures
-            .lock()
-            .expect("capacity failures lock")
-            .get(account_id)
-            .copied()
+    pub(crate) fn with_scoped_read_hook(mut self, hook: Arc<CooldownReadHook>) -> Self {
+        self.before_scoped_read = Some(hook);
+        self
     }
 }
 
@@ -1230,17 +1260,39 @@ impl ProviderCooldownPort for MemoryCooldownPort {
 
     fn put_scoped_if_later(
         &self,
-        _cooldown: ProviderScopedCooldown,
+        cooldown: ProviderScopedCooldown,
     ) -> BoxFuture<'_, Result<bool, ProviderStoreError>> {
-        Box::pin(async { Ok(false) })
+        Box::pin(async move {
+            let mut scoped = self.scoped.lock().unwrap();
+            let key = (cooldown.account_id().clone(), cooldown.scope().clone());
+            let should_write = scoped.get(&key).is_none_or(|current| {
+                current.credential_revision() < cooldown.credential_revision()
+                    || (current.credential_revision() == cooldown.credential_revision()
+                        && current.until() < cooldown.until())
+            });
+            if should_write {
+                scoped.insert(key, cooldown);
+            }
+            Ok(should_write)
+        })
     }
 
     fn read_scoped<'a>(
         &'a self,
-        _account_id: &'a ProviderAccountId,
-        _scope: &'a ProviderCooldownScope,
+        account_id: &'a ProviderAccountId,
+        scope: &'a ProviderCooldownScope,
     ) -> BoxFuture<'a, Result<Option<ProviderScopedCooldown>, ProviderStoreError>> {
-        Box::pin(async { Ok(None) })
+        Box::pin(async move {
+            if let Some(hook) = &self.before_scoped_read {
+                hook(account_id.clone()).await?;
+            }
+            Ok(self
+                .scoped
+                .lock()
+                .unwrap()
+                .get(&(account_id.clone(), scope.clone()))
+                .cloned())
+        })
     }
 
     fn clear_scoped<'a>(
@@ -1259,24 +1311,6 @@ impl ProviderCooldownPort for MemoryCooldownPort {
         Box::pin(async { Ok(false) })
     }
 
-    fn record_capacity_failure<'a>(
-        &'a self,
-        account_id: &'a ProviderAccountId,
-        _window: Duration,
-        in_flight: u32,
-    ) -> BoxFuture<'a, Result<u32, ProviderStoreError>> {
-        Box::pin(async move {
-            let mut failures = self
-                .capacity_failures
-                .lock()
-                .expect("capacity failures lock");
-            let entry = failures.entry(account_id.clone()).or_insert((0, 0));
-            entry.0 = entry.0.saturating_add(1);
-            entry.1 = entry.1.max(in_flight);
-            Ok(entry.0)
-        })
-    }
-
     fn clear_after_success<'a>(
         &'a self,
         account_id: &'a ProviderAccountId,
@@ -1285,30 +1319,13 @@ impl ProviderCooldownPort for MemoryCooldownPort {
         Box::pin(async move {
             let mut cooldowns = self.cooldowns.lock().expect("cooldown lock");
             if cooldowns.get(account_id).is_some_and(|value| {
-                value.kind().is_capacity_freeze() || value.credential_revision() > _through_revision
+                value.kind().is_error_protection()
+                    || value.credential_revision() > _through_revision
             }) {
                 return Ok(());
             }
             cooldowns.remove(account_id);
-            self.capacity_failures
-                .lock()
-                .expect("capacity failures lock")
-                .remove(account_id);
             Ok(())
-        })
-    }
-
-    fn capacity_peak_in_flight<'a>(
-        &'a self,
-        account_id: &'a ProviderAccountId,
-    ) -> BoxFuture<'a, Result<Option<u32>, ProviderStoreError>> {
-        Box::pin(async move {
-            Ok(self
-                .capacity_failures
-                .lock()
-                .expect("capacity failures lock")
-                .get(account_id)
-                .map(|(_, peak)| *peak))
         })
     }
 }

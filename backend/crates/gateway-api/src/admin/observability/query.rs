@@ -2,6 +2,8 @@
 
 use super::*;
 
+pub use crate::time::parse_datetime;
+
 /// 观测列表默认页大小
 pub const DEFAULT_PAGE_SIZE: u16 = 50;
 /// 观测列表允许的最大页大小
@@ -51,6 +53,71 @@ pub struct UsageAnalyticsQuery {
     pub as_of: Option<i64>,
     pub start_time: Option<String>,
     pub end_time: Option<String>,
+}
+
+/// 卡片内的指标选择与时间、Provider 范围
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UsageMetricQuery<T> {
+    pub metric: T,
+    pub provider: Option<String>,
+    pub period: Option<String>,
+    pub as_of: Option<i64>,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+}
+
+impl<T> UsageMetricQuery<T> {
+    pub fn into_parts(self) -> (UsageAnalyticsQuery, T) {
+        (
+            UsageAnalyticsQuery {
+                provider: self.provider,
+                period: self.period,
+                as_of: self.as_of,
+                start_time: self.start_time,
+                end_time: self.end_time,
+            },
+            self.metric,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UsagePerformanceMetricKind {
+    Latency,
+    FirstToken,
+    Throughput,
+    Load,
+}
+
+impl From<UsagePerformanceMetricKind> for domain::UsageInsightMetric {
+    fn from(value: UsagePerformanceMetricKind) -> Self {
+        match value {
+            UsagePerformanceMetricKind::Latency => Self::Latency,
+            UsagePerformanceMetricKind::FirstToken => Self::FirstToken,
+            UsagePerformanceMetricKind::Throughput => Self::Throughput,
+            UsagePerformanceMetricKind::Load => Self::Load,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UsageCostMetricKind {
+    Cost,
+    Savings,
+    Cache,
+}
+
+impl From<UsageCostMetricKind> for domain::UsageInsightMetric {
+    fn from(value: UsageCostMetricKind) -> Self {
+        match value {
+            UsageCostMetricKind::Cost => Self::Cost,
+            UsageCostMetricKind::Savings => Self::Savings,
+            UsageCostMetricKind::Cache => Self::Cache,
+        }
+    }
 }
 
 impl UsageQuery {
@@ -189,16 +256,6 @@ impl DiagnosticDimension {
             Self::Status => "status",
         }
     }
-}
-
-/// 解析 RFC3339 时间；错误不回显原始值
-pub fn parse_datetime(value: Option<&str>) -> Result<Option<DateTime<Utc>>, WireValidationError> {
-    let Some(value) = trimmed(value) else {
-        return Ok(None);
-    };
-    DateTime::parse_from_rfc3339(value)
-        .map(|value| Some(value.with_timezone(&Utc)))
-        .map_err(|_| WireValidationError::new("timeRange"))
 }
 
 /// 解析 HTTP 状态码
