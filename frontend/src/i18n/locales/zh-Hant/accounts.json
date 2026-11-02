@@ -635,7 +635,7 @@
       "evaluateMax": "臨時測評（最多 20 個）",
       "notApplicable": "不適用",
       "oauthOnly": "快速探票僅支持 OpenAI OAuth 帳號，API Key 帳號自動排除",
-      "probeExecutionHint": "直接探測所填上游模型並沿用帳號代理，授權 Key 用於範圍校驗，消耗上游額度但不進入模型計費帳本"
+      "probeExecutionHint": "使用管理員權限，沿用帳號代理與系統用戶端身分，消耗上游額度但不進入模型計費帳本"
     },
     "upstream": {
       "account": "帳號 {number}",

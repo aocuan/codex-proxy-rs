@@ -635,7 +635,7 @@
       "evaluateMax": "Ad hoc evaluation (up to 20)",
       "notApplicable": "Not applicable",
       "oauthOnly": "API key accounts are automatically excluded from quick ticket probes, which require OpenAI OAuth accounts",
-      "probeExecutionHint": "Probes the specified upstream model through the account proxy, checks scope with the Client Key and consumes upstream quota outside the model billing ledger"
+      "probeExecutionHint": "Uses administrator access with the account proxy and global client identity, consuming upstream quota outside the model billing ledger"
     },
     "upstream": {
       "account": "Account {number}",
