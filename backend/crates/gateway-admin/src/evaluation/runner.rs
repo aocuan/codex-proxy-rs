@@ -133,7 +133,14 @@ impl EvaluationRunner {
             let account = ProviderAccountId::new(&claim.item.account_id).ok()?;
             let key = ClientApiKeyId::new(&claim.parameters.client_key_id).ok()?;
             let policy = snapshot.client_policy(&key)?;
-            if policy.authorize().is_err()
+            if super::monitoring::profile_revision(
+                &snapshot,
+                &claim.parameters.client_key_id,
+                self.providers.as_ref(),
+            )
+            .ok()
+                != completion.observation.request_profile_revision
+                || policy.authorize().is_err()
                 || !policy.account_scope().allows(&account)
                 || !super::accounts::independent_preference_key(policy, &rule.group_id)
             {
@@ -340,6 +347,20 @@ impl EvaluationRunner {
     ) -> Result<EvaluationCompletion, WorkerTaskError> {
         let started_at = Instant::now();
         let mut completion = empty_completion();
+        if let Some(reference) = &claim.profile.monitoring {
+            let plans = self.repository.list_plans().await.map_err(store_error)?;
+            if !plans.iter().any(|plan| {
+                plan.id == reference.id
+                    && plan.revision == reference.revision
+                    && plan.settings.enabled
+                    && plan.settings.monitoring.is_some()
+            }) {
+                completion.status = EvaluationItemStatus::Skipped;
+                completion.error_code = Some("evaluation.monitoring_changed".into());
+                completion.message = Some("正式监测方案已暂停或变化，未发送请求".into());
+                return Ok(completion);
+            }
+        }
         let account = ProviderAccountId::new(&claim.item.account_id)
             .map_err(|error| WorkerTaskError::safe("测票账号无效").with_source(error))?;
         let key = ClientApiKeyId::new(&claim.parameters.client_key_id)
@@ -374,6 +395,12 @@ impl EvaluationRunner {
             .map_err(|error| WorkerTaskError::safe("测票 Provider 不可用").with_source(error))?;
         let model = gateway_core::routing::UpstreamModelId::new(claim.parameters.model.as_str())
             .map_err(|error| WorkerTaskError::safe("测票模型无效").with_source(error))?;
+        let request_profile_revision = super::monitoring::profile_revision(
+            &snapshot,
+            &claim.parameters.client_key_id,
+            self.providers.as_ref(),
+        )
+        .map_err(|error| WorkerTaskError::safe("测票身份配置暂不可用").with_source(error))?;
         let configuration = snapshot
             .client_policy(&key)
             .and_then(|policy| policy.account_scope().request_profile(&kind))
@@ -385,7 +412,7 @@ impl EvaluationRunner {
         )
         .await;
         child.cancel();
-        let report = match result {
+        let mut report = match result {
             Ok(Ok(report)) => report,
             Ok(Err(_)) => TurnStateProbeResult::new(
                 Vec::new(),
@@ -396,6 +423,23 @@ impl EvaluationRunner {
                 Some("测票总耗时超过设置的超时，未继续发送".into()),
             ),
         };
+        if let Ok(current) = self.snapshot.acquire() {
+            if super::monitoring::profile_revision(
+                &current,
+                &claim.parameters.client_key_id,
+                self.providers.as_ref(),
+            )
+            .ok()
+            .as_ref()
+                != Some(&request_profile_revision)
+            {
+                report.outcome = TurnStateOutcome::Unknown;
+                report.error = Some("测票期间客户端身份配置已变化，结果仅保留为历史".into());
+            }
+        } else {
+            report.outcome = TurnStateOutcome::Unknown;
+            report.error = Some("测票结束时配置暂不可用，结果仅保留为历史".into());
+        }
         completion.status = if cancellation.is_cancelled() {
             EvaluationItemStatus::Cancelled
         } else if report.error.is_some() {
@@ -425,6 +469,7 @@ impl EvaluationRunner {
             return Err(WorkerTaskError::safe("测票输出保存时任务已失效"));
         }
         completion.observation = EvaluationObservation {
+            request_profile_revision: Some(request_profile_revision),
             turn_state: Some(report),
             provider: Some("openai".into()),
             account_id: Some(claim.item.account_id.clone()),

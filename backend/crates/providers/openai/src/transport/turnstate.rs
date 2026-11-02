@@ -4,11 +4,11 @@ use std::{collections::BTreeMap, time::Instant};
 
 use futures::StreamExt as _;
 use gateway_admin::{
-    model::evaluation::{TurnStateProbeResult, TurnStateStep},
+    model::evaluation::{TurnStateDiagnostic, TurnStateProbeResult, TurnStateStep},
     ports::provider::{ProviderAdminError, ProviderAdminErrorKind},
 };
 use gateway_core::{
-    account::{CredentialState, ProviderAccountId, ProviderAccountStore},
+    account::{CredentialState, ProviderAccountId, ProviderAccountStore, UpstreamConnection},
     lifecycle::CancellationToken,
     routing::UpstreamModelId,
 };
@@ -30,11 +30,37 @@ pub(crate) async fn probe(
     model: &UpstreamModelId,
     cancellation: CancellationToken,
 ) -> Result<TurnStateProbeResult, ProviderAdminError> {
+    let loaded = accounts
+        .load_current_credential(id)
+        .await
+        .map_err(|_| unavailable())?;
+    let connection = UpstreamConnection::for_account(&loaded.account);
+    let mut result =
+        probe_connected(accounts, profile, id, model, cancellation, &connection).await?;
+    result.connection_revision = Some(connection.revision.clone());
+    let current = accounts
+        .load_current_credential(id)
+        .await
+        .map_err(|_| unavailable())?;
+    if UpstreamConnection::for_account(&current.account) != connection {
+        result.outcome = gateway_admin::model::evaluation::TurnStateOutcome::Unknown;
+        result.error = Some("测票期间凭据或代理发生变化，结果仅保留为历史".into());
+    }
+    Ok(result)
+}
+
+async fn probe_connected(
+    accounts: &dyn ProviderAccountStore,
+    profile: &CodexWireProfile,
+    id: &ProviderAccountId,
+    model: &UpstreamModelId,
+    cancellation: CancellationToken,
+    connection: &UpstreamConnection,
+) -> Result<TurnStateProbeResult, ProviderAdminError> {
     let mut steps = Vec::new();
     let mut ticket = String::new();
     let mut cookies = BTreeMap::new();
     let session = uuid::Uuid::new_v4().to_string();
-    let mut revision = None;
     for _ in 0..2 {
         let loaded = accounts
             .load_current_credential(id)
@@ -54,13 +80,12 @@ pub(crate) async fn probe(
                 Some("账号不存在、已停用或不是可用的 OpenAI OAuth 账号".into()),
             ));
         }
-        if revision.is_some_and(|previous| previous != account.revision()) {
+        if UpstreamConnection::for_account(account) != *connection {
             return Ok(TurnStateProbeResult::new(
                 steps,
-                Some("两次请求之间凭据发生变化，请重新测票".into()),
+                Some("两次请求之间凭据或代理发生变化，请重新测票".into()),
             ));
         }
-        revision = Some(account.revision());
         if account.access_token_expires_at().is_some_and(|at| {
             at <= std::time::SystemTime::now() + std::time::Duration::from_secs(30)
         }) {
@@ -109,7 +134,7 @@ pub(crate) async fn probe(
             result = exchange(request, &mut cookies) => result,
         };
         match result {
-            Ok((status, got, completed)) => {
+            Ok((status, got, completed, diagnostic)) => {
                 steps.push(TurnStateStep {
                     status,
                     duration_ms: millis(start),
@@ -119,7 +144,7 @@ pub(crate) async fn probe(
                     completed,
                 });
                 if !completed {
-                    return Ok(TurnStateProbeResult::new(
+                    let mut report = TurnStateProbeResult::new(
                         steps,
                         Some(
                             if status == 200 {
@@ -129,7 +154,9 @@ pub(crate) async fn probe(
                             }
                             .into(),
                         ),
-                    ));
+                    );
+                    report.diagnostic = diagnostic;
+                    return Ok(report);
                 }
                 ticket = got;
                 if ticket.is_empty() && steps.len() == 1 {
@@ -145,7 +172,7 @@ pub(crate) async fn probe(
 async fn exchange(
     request: reqwest::RequestBuilder,
     cookies: &mut BTreeMap<String, String>,
-) -> Result<(u16, String, bool), &'static str> {
+) -> Result<(u16, String, bool, Option<TurnStateDiagnostic>), &'static str> {
     let response = request.send().await.map_err(|_| "测票连接失败或超时")?;
     let status = response.status().as_u16();
     let mut ticket = response
@@ -173,7 +200,21 @@ async fn exchange(
         }
     }
     if status != 200 {
-        return Ok((status, ticket, false));
+        let mut body = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(Ok(chunk)) = stream.next().await {
+            if body.len() + chunk.len() > 8192 {
+                break;
+            }
+            body.extend_from_slice(&chunk);
+        }
+        let value = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+        return Ok((
+            status,
+            ticket,
+            false,
+            Some(diagnostic(status, "request", &value)),
+        ));
     }
     let mut stream = response.bytes_stream();
     let mut decoder = SseEventDecoder::default();
@@ -202,18 +243,53 @@ async fn exchange(
                 ticket = state.to_owned();
             }
             if kind == "response.failed" || kind == "error" || kind == "response.incomplete" {
-                return Ok((status, ticket, false));
+                return Ok((
+                    status,
+                    ticket,
+                    false,
+                    Some(diagnostic(status, "stream", &value)),
+                ));
             }
             if kind == "response.completed" {
                 let completed = value
                     .pointer("/response/status")
                     .and_then(Value::as_str)
                     .is_none_or(|s| s == "completed");
-                return Ok((status, ticket, completed));
+                return Ok((status, ticket, completed, None));
             }
         }
     }
-    Ok((status, ticket, false))
+    Ok((status, ticket, false, None))
+}
+
+fn diagnostic(status: u16, stage: &str, value: &Value) -> TurnStateDiagnostic {
+    // 仅保存有界机器码，不持久化可能包含账号材料的上游正文
+    let code = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_str)
+            .filter(|value| {
+                value.len() <= 128
+                    && !value.is_empty()
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+            })
+            .map(str::to_owned)
+    };
+    let error = value
+        .get("error")
+        .or_else(|| value.pointer("/response/error"))
+        .unwrap_or(value);
+    TurnStateDiagnostic {
+        stage: stage.into(),
+        http_status: status,
+        error_code: code(
+            error
+                .get("code")
+                .or_else(|| value.pointer("/response/incomplete_details/reason")),
+        ),
+        error_type: code(error.get("type")),
+    }
 }
 
 fn route(cookies: &BTreeMap<String, String>) -> Vec<(String, String)> {

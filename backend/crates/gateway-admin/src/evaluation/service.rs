@@ -24,29 +24,80 @@ pub struct EvaluationService {
 }
 
 impl EvaluationService {
-    /// 测票结果由已保存事实派生，先解析整个账号范围再交给目录分页
+    pub async fn monitoring_snapshot(&self) -> Result<EvaluationMonitoringSnapshot, AdminError> {
+        let data = self
+            .repository
+            .monitoring_data()
+            .await
+            .map_err(|error| map_store_error(error, "evaluation.monitoring"))?;
+        super::monitoring::project(data, &self.snapshot, self.providers.as_ref())
+    }
+
     pub async fn filter_account_ids(
         &self,
         status: EvaluationAccountStatus,
     ) -> Result<Vec<String>, AdminError> {
-        let facts = self
-            .repository
-            .account_result_facts()
-            .await
-            .map_err(|error| map_store_error(error, "evaluation.account_results"))?;
-        Ok(facts
+        Ok(self
+            .monitoring_snapshot()
+            .await?
+            .accounts
             .into_iter()
-            .filter(|fact| {
-                let supported = super::accounts::supports_turnstate(
-                    &fact.account_id,
-                    &fact.provider_kind,
-                    &fact.authentication_kind,
-                    self.providers.as_ref(),
-                );
-                EvaluationAccountStatus::from_result(supported, fact.status, fact.outcome) == status
-            })
-            .map(|fact| fact.account_id)
+            .filter(|account| account.status == status)
+            .map(|account| account.account_id)
             .collect())
+    }
+
+    pub async fn recheck(
+        &self,
+        submission_id: Uuid,
+        account_ids: Vec<String>,
+        expected_plan: EvaluationPlanReference,
+        context: &MutationContext,
+    ) -> Result<EvaluationRun, AdminError> {
+        let data = self
+            .repository
+            .monitoring_data()
+            .await
+            .map_err(|error| map_store_error(error, "evaluation.monitoring"))?;
+        let plan = data
+            .plan
+            .ok_or_else(|| AdminError::invalid("请先在测评计划中选择正式监测方案"))?;
+        if plan.id != expected_plan.id || plan.revision != expected_plan.revision {
+            return Err(AdminError::invalid("正式监测方案已变化，请刷新后复测"));
+        }
+        if !plan.settings.enabled {
+            return Err(AdminError::invalid("正式监测方案已暂停，请先启用计划"));
+        }
+        let allowed = super::accounts::resolve(
+            &plan.settings,
+            &data.accounts,
+            &self.snapshot,
+            self.providers.as_ref(),
+        )?;
+        if account_ids.iter().any(|id| !allowed.contains(id)) {
+            return Err(AdminError::invalid(
+                "所选账号不在正式监测范围或当前不可检测",
+            ));
+        }
+        let mut parameters = plan.settings.parameters.clone();
+        parameters.account_ids = account_ids;
+        parameters.validate()?;
+        self.validate_parameter_access(&parameters)?;
+        let mut seed = EvaluationRunSeed::new(parameters, &self.version, Utc::now());
+        seed.profile.monitoring = Some(plan.monitoring_reference());
+        seed.profile.account_selection = plan.settings.account_selection.clone();
+        seed.profile.account_preference =
+            plan.settings
+                .account_preference
+                .as_ref()
+                .map(|rule| EvaluationPreferenceSnapshot {
+                    group_id: rule.group_id.clone(),
+                    plan_revision: plan.revision,
+                });
+        self.repository
+            .enqueue_manual(submission_id, seed, context)
+            .await
+            .map_err(|error| map_store_error(error, "evaluation.recheck"))
     }
 
     /// 仅预检当前 Key 的账号授权，执行时仍由 Core 重新鉴权和准入
@@ -366,6 +417,7 @@ impl EvaluationService {
         settings.timezone = self.timezone;
         let next_run_at = settings.next_run_after(Utc::now())?;
         if settings.enabled
+            && settings.monitoring.is_some()
             && let Some(preference) = &settings.account_preference
         {
             let snapshot = self

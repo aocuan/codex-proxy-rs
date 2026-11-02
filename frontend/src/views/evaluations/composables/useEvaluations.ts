@@ -107,7 +107,7 @@ export function useEvaluations() {
           await deleteEvaluationPlan(plan.id, plan.revision)
         }
         else {
-          const { name, parameters, intervalMinutes, cronExpression, accountSelection, accountPreference } = plan.settings
+          const { name, parameters, intervalMinutes, cronExpression, accountSelection, accountPreference, monitoring } = plan.settings
           await updateEvaluationPlan(plan.id, plan.revision, {
             name,
             parameters,
@@ -115,6 +115,7 @@ export function useEvaluations() {
             cronExpression,
             accountSelection,
             accountPreference,
+            monitoring,
             enabled: !plan.settings.enabled,
           })
         }

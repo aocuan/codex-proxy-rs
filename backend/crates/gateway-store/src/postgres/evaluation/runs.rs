@@ -31,11 +31,43 @@ pub(super) async fn enqueue_manual(
         .map_err(db_error)?
     {
         let existing: EvaluationRun = existing.into();
-        if existing.parameters != seed.parameters {
+        if existing.parameters != seed.parameters
+            || existing.profile.monitoring != seed.profile.monitoring
+        {
             return Err(conflict("同一提交标识不能用于不同测评参数"));
         }
         transaction.commit().await.map_err(db_error)?;
         return Ok(existing);
+    }
+    if let Some(reference) = &seed.profile.monitoring {
+        let plan: Option<Json<EvaluationPlanSettings>> = sqlx::query_scalar(
+            "select settings_json from evaluation_plans where id=$1 and revision=$2 for share",
+        )
+        .bind(&reference.id)
+        .bind(reference.revision)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(db_error)?;
+        if !plan.is_some_and(|plan| plan.enabled && plan.monitoring.is_some()) {
+            return Err(conflict("正式监测方案已变化，请刷新后复测"));
+        }
+        let existing: Option<String> = sqlx::query_scalar("select r.id from evaluation_runs r where r.profile_json->'monitoring'=$1::jsonb
+            and not exists (select 1 from unnest($2::text[]) wanted(id) where not exists
+              (select 1 from evaluation_items i where i.run_id=r.id and i.account_id=wanted.id and i.status in ('queued','running')))
+            order by r.created_at limit 1")
+            .bind(Json(reference)).bind(&seed.parameters.account_ids).fetch_optional(&mut *transaction).await.map_err(db_error)?;
+        if let Some(id) = existing {
+            let run = read_run(&mut transaction, &id)
+                .await?
+                .ok_or_else(|| invalid("监测任务不存在"))?;
+            transaction.commit().await.map_err(db_error)?;
+            return Ok(run);
+        }
+        let overlapping: bool = sqlx::query_scalar("select exists(select 1 from evaluation_items i join evaluation_runs r on r.id=i.run_id where r.profile_json->'monitoring'=$1::jsonb and i.account_id=any($2::text[]) and i.status in ('queued','running'))")
+            .bind(Json(reference)).bind(&seed.parameters.account_ids).fetch_one(&mut *transaction).await.map_err(db_error)?;
+        if overlapping {
+            return Err(conflict("部分所选账号已有监测任务进行中，请等待完成后复测"));
+        }
     }
     if !has_capacity(&mut transaction, seed.parameters.item_count()).await? {
         return Err(conflict("测评等待队列已满，请稍后再试"));
@@ -74,7 +106,11 @@ pub(super) async fn enqueue_scheduled(
         .validate_template()
         .map_err(|e| invalid("测评参数无效").with_source(e))?;
     if !command.seed.parameters.account_ids.is_empty() {
-        validate_seed(&command.seed)?;
+        command
+            .seed
+            .parameters
+            .validate_scheduled()
+            .map_err(|error| invalid("计划账号范围无效").with_source(error))?;
     }
     if command.next_run_at <= command.scheduled_at {
         return Err(invalid("计划游标必须向前推进"));
@@ -105,6 +141,7 @@ pub(super) async fn enqueue_scheduled(
         || settings
             .account_preference
             .as_ref()
+            .filter(|_| settings.monitoring.is_some())
             .map(|rule| (&rule.group_id, command.expected_revision))
             != command
                 .seed
@@ -128,7 +165,7 @@ pub(super) async fn enqueue_scheduled(
     let active: bool = sqlx::query_scalar(
         "select exists (
             select 1 from evaluation_runs r join evaluation_items i on i.run_id = r.id
-            where r.plan_id = $1 and (i.status in ('queued', 'running') or exists (select 1 from evaluation_judgments j where j.item_id = i.id and j.status in ('queued', 'running')))
+            where (r.plan_id = $1 or r.profile_json#>>'{monitoring,id}' = $1) and (i.status in ('queued', 'running') or exists (select 1 from evaluation_judgments j where j.item_id = i.id and j.status in ('queued', 'running')))
          )",
     )
     .bind(&command.plan_id)
@@ -139,7 +176,17 @@ pub(super) async fn enqueue_scheduled(
         command.skip_reason
     } else if active {
         Some("上一轮测评尚未结束".to_owned())
-    } else if !has_capacity(&mut transaction, command.seed.parameters.item_count()).await? {
+    } else if !has_capacity_for(
+        &mut transaction,
+        command.seed.parameters.item_count(),
+        if command.seed.parameters.kind == EvaluationKind::Turnstate {
+            1000
+        } else {
+            MAX_QUEUED_ITEMS
+        },
+    )
+    .await?
+    {
         Some("测评等待队列已满".to_owned())
     } else {
         None
@@ -273,6 +320,14 @@ pub(super) async fn has_capacity(
     transaction: &mut Transaction<'_, Postgres>,
     item_count: usize,
 ) -> AdminStoreResult<bool> {
+    has_capacity_for(transaction, item_count, MAX_QUEUED_ITEMS).await
+}
+
+async fn has_capacity_for(
+    transaction: &mut Transaction<'_, Postgres>,
+    item_count: usize,
+    maximum: i64,
+) -> AdminStoreResult<bool> {
     // 将生成和判题视作同一任务链，生成结束转入判题时不额外占用名额
     let pending: i64 = sqlx::query_scalar(
         "select
@@ -283,7 +338,7 @@ pub(super) async fn has_capacity(
     .await
     .map_err(db_error)?;
     let count = i64::try_from(item_count).map_err(|_| invalid("测评数量过大"))?;
-    Ok(pending + count <= MAX_QUEUED_ITEMS)
+    Ok(pending + count <= maximum)
 }
 
 async fn insert_run(

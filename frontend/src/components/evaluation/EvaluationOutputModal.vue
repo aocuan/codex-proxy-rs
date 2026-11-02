@@ -191,6 +191,9 @@ useIntervalFn(() => {
       <p class="m-0 text-z-text-secondary">
         两次短请求只检测路由票据是否稳定，票据变化需要能力题复核
       </p>
+      <p v-if="observation.turnState.diagnostic" class="m-0 text-z-error-text">
+        {{ observation.turnState.diagnostic.stage === 'request' ? '请求被拒绝' : '响应中断' }} · HTTP {{ observation.turnState.diagnostic.httpStatus }}<span v-if="observation.turnState.diagnostic.errorCode"> · {{ observation.turnState.diagnostic.errorCode }}</span>
+      </p>
       <div v-for="(step, index) in observation.turnState.steps" :key="index" class="rounded-cp bg-z-fill-quaternary p-3">
         第 {{ index + 1 }} 次 · HTTP {{ step.status }} · {{ durationText(step.durationMs) }} · 票据 {{ step.ticketLength }} 字符
         <span v-if="step.ticketFingerprint" class="ml-2 font-mono text-z-xs">{{ step.ticketFingerprint.slice(0, 8) }}</span>

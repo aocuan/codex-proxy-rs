@@ -31,23 +31,23 @@ pub(super) async fn apply(
             .or_else(|| Some("测票未得出明确结果".into()));
         return Ok(PreferenceApplication::Applied(result, None));
     };
-    let row: (String, Option<String>, bool) = sqlx::query_as(
-        "select i.account_id, r.plan_id, i.stop_requested or r.stop_requested
+    let row: (String, Option<String>, bool, Json<EvaluationObservation>, Json<EvaluationProfile>) = sqlx::query_as(
+        "select i.account_id, coalesce(r.profile_json#>>'{monitoring,id}',r.plan_id), i.stop_requested or r.stop_requested, i.observation_json, r.profile_json
          from evaluation_items i join evaluation_runs r on r.id = i.run_id where i.id = $1",
     )
     .bind(item_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(db_error)?;
-    let (account_id, plan_id, stopped) = row;
-    if stopped || plan_id.is_none() {
+    let (account_id, plan_id, stopped, Json(observation), Json(profile)) = row;
+    if stopped || plan_id.is_none() || profile.monitoring.is_none() {
         result.reason = Some("测评已停止或计划已删除".into());
         return Ok(PreferenceApplication::Applied(result, None));
     }
     let plan: Option<(i64, Json<EvaluationPlanSettings>)> = sqlx::query_as(
         "select revision, settings_json from evaluation_plans where id = $1 for update",
     )
-    .bind(plan_id)
+    .bind(&plan_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(db_error)?;
@@ -57,6 +57,7 @@ pub(super) async fn apply(
     };
     if revision != decision.rule.plan_revision
         || !settings.enabled
+        || settings.monitoring.is_none()
         || !settings
             .account_preference
             .as_ref()
@@ -81,7 +82,7 @@ pub(super) async fn apply(
         return Ok(PreferenceApplication::Stale(current));
     }
     let account: Option<bool> =
-        sqlx::query_scalar("select enabled from provider_accounts where id = $1 for update")
+        sqlx::query_scalar("select enabled and credential_state not in ('expired','banned','invalid') from provider_accounts where id = $1 for update")
             .bind(&account_id)
             .fetch_optional(&mut **tx)
             .await
@@ -104,6 +105,51 @@ pub(super) async fn apply(
             result.reason = Some("账号已移出检测范围".into());
             return Ok(PreferenceApplication::Applied(result, None));
         }
+    }
+    let connection = super::accounts::current_connection(tx, &account_id).await?;
+    if observation
+        .turn_state
+        .as_ref()
+        .and_then(|probe| probe.connection_revision.as_ref())
+        != connection.as_ref()
+        || connection.is_none()
+    {
+        result.reason = Some("检测后账号凭据或代理已变化，等待复测".into());
+        return Ok(PreferenceApplication::Applied(result, None));
+    }
+    let policy = settings
+        .monitoring
+        .as_ref()
+        .ok_or_else(|| invalid("正式监测方案不可用"))?;
+    let outcome = if desired {
+        TurnStateOutcome::Accepted
+    } else {
+        TurnStateOutcome::Refreshed
+    };
+    let required = policy.required_count(outcome);
+    let recent: Vec<(String, Json<EvaluationObservation>, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
+        "select i.status, i.observation_json, i.completed_at from evaluation_items i join evaluation_runs r on r.id=i.run_id
+         where i.account_id=$1 and r.profile_json#>>'{monitoring,id}'=$2 and r.profile_json#>>'{monitoring,version}'=$3
+           and i.status not in ('queued','running','skipped','cancelled')
+         order by coalesce(i.started_at,r.created_at) desc, r.id desc, i.id desc limit $4")
+        .bind(&account_id).bind(&plan_id).bind(profile.monitoring.as_ref().map(|reference| &reference.version))
+        .bind(i64::try_from(required).map_err(|_| invalid("连续次数无效"))?)
+        .fetch_all(&mut **tx).await.map_err(db_error)?;
+    let cutoff = chrono::Utc::now() - chrono::Duration::minutes(i64::from(policy.valid_minutes));
+    let confirmed = recent
+        .iter()
+        .take_while(|(status, Json(observed), at)| {
+            status == "succeeded"
+                && at.is_some_and(|at| at > cutoff)
+                && observed.request_profile_revision == observation.request_profile_revision
+                && observed.turn_state.as_ref().is_some_and(|probe| {
+                    probe.outcome == outcome && probe.connection_revision == connection
+                })
+        })
+        .count();
+    if confirmed < required {
+        result.reason = Some(format!("连续确认 {confirmed}/{required} 次，保留当前分组"));
+        return Ok(PreferenceApplication::Applied(result, None));
     }
     let changed = if desired {
         sqlx::query("insert into account_group_accounts (account_group_id, provider_account_id, created_at) values ($1, $2, now()) on conflict do nothing")

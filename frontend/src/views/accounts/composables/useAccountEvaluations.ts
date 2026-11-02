@@ -1,23 +1,25 @@
 import type { Ref } from 'vue'
-import type { Account, EvaluationHistoryItem, EvaluationItem, EvaluationRun } from '@/api'
-import { useDocumentVisibility, useIntervalFn } from '@vueuse/core'
+import type { Account, EvaluationHistoryItem, EvaluationItem, EvaluationMonitoringSnapshot, EvaluationRun } from '@/api'
 import { isEqual } from 'es-toolkit'
 import { computed, shallowRef, watch } from 'vue'
-import { getAccountEvaluationHistory, getEvaluationDetail } from '@/api'
+import { getEvaluationDetail } from '@/api'
 import { useRequestState } from '@/composables/useRequestState'
 
 export interface AccountEvaluationSnapshot {
   accountIds: string[]
   items: EvaluationHistoryItem[] | undefined
+  monitoring?: EvaluationMonitoringSnapshot
 }
 
 export function useAccountEvaluations(accounts: Ref<Account[]>, options: {
   enabled: Ref<boolean>
   prefetched: Ref<AccountEvaluationSnapshot | undefined>
+  loading: Ref<boolean>
+  error: Ref<string>
+  reload: () => Promise<unknown>
 }) {
-  const visibility = useDocumentVisibility()
-  const request = useRequestState()
   const resultRequest = useRequestState()
+  const lastMonitoring = shallowRef<EvaluationMonitoringSnapshot>()
   const history = shallowRef(new Map<string, EvaluationHistoryItem[]>())
   const ids = computed(() => accounts.value.map(account => account.id).sort().join(','))
   const open = shallowRef(false)
@@ -35,25 +37,6 @@ export function useAccountEvaluations(accounts: Ref<Account[]>, options: {
     }
     if (grouped.size !== history.value.size || [...grouped].some(([id, points]) => history.value.get(id) !== points))
       history.value = grouped
-  }
-
-  async function refresh() {
-    if (!options.enabled.value || !ids.value || visibility.value !== 'visible')
-      return
-    const accountIds = ids.value.split(',')
-    const id = request.start()
-    try {
-      const result = await getAccountEvaluationHistory(accountIds, { signal: request.signal, silent: true })
-      if (!request.isCurrent(id))
-        return
-      updateHistory(result, accountIds)
-    }
-    catch (error) {
-      request.fail(id, error)
-    }
-    finally {
-      request.finish(id)
-    }
   }
 
   async function inspect(point: EvaluationHistoryItem) {
@@ -75,38 +58,29 @@ export function useAccountEvaluations(accounts: Ref<Account[]>, options: {
     }
   }
 
-  watch([
-    ids,
-    visibility,
-    options.enabled,
-    options.prefetched,
-  ], ([accountIds, , enabled, prefetched], previous) => {
-    request.invalidate()
+  watch([ids, options.prefetched], ([accountIds, prefetched], previous) => {
     if (accountIds !== previous?.[0]) {
       resultRequest.invalidate()
       open.value = false
     }
-    if (!enabled)
-      return
-    if (prefetched !== previous?.[3] && prefetched?.items !== undefined
-      && [...prefetched.accountIds].sort().join(',') === accountIds) {
-      const id = request.start()
+    if (prefetched?.monitoring !== undefined)
+      lastMonitoring.value = prefetched.monitoring
+    if (prefetched?.items !== undefined && [...prefetched.accountIds].sort().join(',') === accountIds)
       updateHistory(prefetched.items, prefetched.accountIds)
-      request.finish(id)
-      return
-    }
-    if (accountIds && visibility.value === 'visible')
-      void refresh()
+    else if (!accountIds)
+      history.value = new Map()
   }, { immediate: true })
-  useIntervalFn(() => {
-    if (!request.loading.value)
-      void refresh()
-  }, 15000)
+  const monitoring = computed(() => lastMonitoring.value)
+  const states = computed(() => new Map(monitoring.value?.accounts.map(account => [account.accountId, account]) ?? []))
   return {
     history,
-    loading: request.loading,
-    error: request.error,
-    refresh,
+    monitoring,
+    states,
+    loading: options.loading,
+    error: computed(() => options.error.value || (options.enabled.value && options.prefetched.value?.items === undefined && options.prefetched.value
+      ? '监测暂不可用，保留上次结果'
+      : '')),
+    refresh: options.reload,
     inspect,
     open,
     item,

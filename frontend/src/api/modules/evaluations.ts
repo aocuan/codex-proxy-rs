@@ -83,6 +83,7 @@ export interface EvaluationParameters {
 }
 
 export interface EvaluationProfile {
+  monitoring?: { id: string, revision: number }
   accountPreference?: { groupId: string, planRevision: number }
   definition?: EvaluationDefinition
   prompt: string
@@ -115,6 +116,7 @@ export interface EvaluationObservation {
     reason: string | null
   }
   turnState?: {
+    diagnostic?: { stage: string, httpStatus: number, errorCode: string | null, errorType: string | null }
     outcome: 'accepted' | 'refreshed' | 'unknown'
     error: string | null
     steps: { status: number, durationMs: number, ticketLength: number, ticketFingerprint: string, routeChanged: boolean, completed: boolean }[]
@@ -207,7 +209,35 @@ export interface EvaluationOutput {
 
 export type EvaluationAccountSelection = { mode: 'fixed' } | { mode: 'all' } | { mode: 'groups', groupIds: string[] }
 
+export interface EvaluationMonitoringPolicy {
+  validMinutes: number
+  stableCount: number
+  changedCount: number
+  removeExpired: boolean
+}
+
+export interface EvaluationAccountMonitoring {
+  accountId: string
+  status: 'stable' | 'changed' | 'unknown' | 'failed' | 'pending' | 'no_record' | 'not_applicable' | 'stale'
+  monitored: boolean
+  freshness: 'fresh' | 'expired' | 'environment_changed' | 'unmeasured'
+  signal: 'accepted' | 'refreshed' | 'unknown' | null
+  signalAt: string | null
+  signalAtDisplay: string | null
+  expiresAtDisplay: string | null
+  latestAttempt: EvaluationHistoryItem | null
+  consecutive: number
+  required: number
+}
+
+export interface EvaluationMonitoringSnapshot {
+  observedAt: string
+  plan: EvaluationPlan | null
+  accounts: EvaluationAccountMonitoring[]
+}
+
 export interface EvaluationPlanSettings {
+  monitoring?: EvaluationMonitoringPolicy
   accountSelection?: EvaluationAccountSelection
   accountPreference?: { groupId: string }
   name: string
@@ -235,6 +265,7 @@ export interface EvaluationConfig {
   graderVersion: string
   limits: {
     accounts: number
+    scheduledAccounts: number
     repetitions: number
     timeoutSeconds: number
     queueItems: number
@@ -247,6 +278,10 @@ export interface EvaluationConfig {
 }
 
 const root = '/api/admin/evaluations'
+
+export function recheckAccounts(data: { submissionId: string, accountIds: string[], plan: { id: string, revision: number } }) {
+  return request<EvaluationRun>({ url: `${root}/accounts/recheck`, method: 'POST', data })
+}
 
 export function getEvaluationConfig(options: RequestOptions = {}) {
   return request<EvaluationConfig>({ url: `${root}/config`, ...options })

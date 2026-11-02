@@ -24,6 +24,10 @@ where
     Router::new()
         .route("/api/admin/evaluations/config", get(config::<S>))
         .route(
+            "/api/admin/evaluations/accounts/recheck",
+            post(recheck::<S>),
+        )
+        .route(
             "/api/admin/evaluations/accounts/access",
             post(account_access::<S>),
         )
@@ -183,7 +187,11 @@ pub(super) fn history_items_view(
     items
         .into_iter()
         .map(|item| HistoryItemView {
-            tested_at_display: time.datetime(&item.started_at.unwrap_or(item.created_at)),
+            tested_at_display: item
+                .started_at
+                .filter(|_| item.status != EvaluationItemStatus::Skipped)
+                .map(|at| time.datetime(&at))
+                .unwrap_or_else(|| "未执行".into()),
             item,
         })
         .collect()
@@ -230,11 +238,92 @@ async fn account_history<S: SessionState + Send + Sync>(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RecheckRequest {
+    submission_id: String,
+    account_ids: Vec<String>,
+    plan: EvaluationPlanReference,
+}
+
+async fn recheck<S: SessionState + Send + Sync>(
+    auth: AdminAuth,
+    State(state): State<S>,
+    AdminJson(request): AdminJson<RecheckRequest>,
+) -> Result<impl IntoResponse, AdminError> {
+    let services = state.admin_services();
+    let run = services
+        .evaluations()
+        .recheck(
+            Uuid::parse_str(&request.submission_id)
+                .map_err(|_| AdminError::bad_request("提交标识必须为 UUID"))?,
+            request.account_ids,
+            request.plan,
+            &auth.context().mutation_context(),
+        )
+        .await
+        .map_err(map_admin_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::ACCEPTED,
+        AdminEnvelope::ok(RunView::new(run, TimePresenter::new(services.timezone()))),
+    ))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MonitoringView {
+    observed_at: chrono::DateTime<chrono::Utc>,
+    plan: Option<PlanView>,
+    accounts: Vec<MonitoringAccountView>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MonitoringAccountView {
+    #[serde(flatten)]
+    account: EvaluationAccountMonitoring,
+    signal_at_display: Option<String>,
+    expires_at_display: Option<String>,
+    latest_attempt: Option<HistoryItemView>,
+}
+
+impl MonitoringView {
+    pub(super) fn new(
+        snapshot: EvaluationMonitoringSnapshot,
+        ids: &[String],
+        time: TimePresenter,
+    ) -> Self {
+        Self {
+            observed_at: snapshot.observed_at,
+            plan: snapshot.plan.map(|plan| PlanView::new(plan, time)),
+            accounts: snapshot
+                .accounts
+                .into_iter()
+                .filter(|account| ids.contains(&account.account_id))
+                .map(|account| {
+                    let latest_attempt = account
+                        .latest_attempt
+                        .clone()
+                        .and_then(|item| history_items_view(vec![item], time).pop());
+                    MonitoringAccountView {
+                        signal_at_display: account.signal_at.map(|at| time.datetime(&at)),
+                        expires_at_display: account.expires_at.map(|at| time.datetime(&at)),
+                        account,
+                        latest_attempt,
+                    }
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PlanRequest {
     #[serde(default)]
     account_selection: EvaluationAccountSelection,
     #[serde(default)]
     account_preference: Option<EvaluationAccountPreference>,
+    #[serde(default)]
+    monitoring: Option<EvaluationMonitoringPolicy>,
     name: String,
     parameters: EvaluationParameters,
     enabled: bool,
@@ -250,6 +339,7 @@ impl PlanRequest {
         timezone: gateway_core::time::DeploymentTimeZone,
     ) -> EvaluationPlanSettings {
         EvaluationPlanSettings {
+            monitoring: self.monitoring,
             account_selection: self.account_selection,
             account_preference: self.account_preference,
             name: self.name,
@@ -363,7 +453,8 @@ async fn config<S: SessionState + Send + Sync>(
             "timezone": state.admin_services().timezone().name(),
             "requestProfileVersion": REQUEST_PROFILE_VERSION,
             "graderVersion": DEFINITION_GRADER_VERSION,
-            "limits": { "accounts": MAX_ACCOUNTS_PER_RUN, "repetitions": MAX_REPETITIONS,
+            "limits": { "accounts": MAX_ACCOUNTS_PER_RUN,
+                "scheduledAccounts": MAX_SCHEDULED_PROBE_ACCOUNTS, "repetitions": MAX_REPETITIONS,
                 "timeoutSeconds": 600, "queueItems": MAX_QUEUED_ITEMS,
                 "parallelRequests": MAX_PARALLEL_REQUESTS, "responseBytes": MAX_RESPONSE_BYTES,
                 "artifactBytes": MAX_ARTIFACT_BYTES, "retentionDays": 30,

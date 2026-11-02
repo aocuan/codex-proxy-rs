@@ -6,8 +6,10 @@ import type { Account, AccountEvaluationStatus } from '@/api'
 import { useDocumentVisibility, useTimeoutPoll } from '@vueuse/core'
 import { computed, onMounted, shallowRef, watch } from 'vue'
 import { getAccounts } from '@/api'
+import { ApiError } from '@/api/request'
 import { usePagedQuery } from '@/composables/usePagedQuery'
 import { useTableSort } from '@/composables/useTableSort'
+import { errorMessage } from '@/utils/operation'
 import { accountColumns } from '../constants'
 
 export function useAccountsQuery(options: { includeEvaluationHistory: Ref<boolean> }) {
@@ -17,8 +19,9 @@ export function useAccountsQuery(options: { includeEvaluationHistory: Ref<boolea
   const evaluationStatusQuery = shallowRef<AccountEvaluationStatus | ''>('')
   const groupQuery = shallowRef('')
   const sort = useTableSort(accountColumns, 'accounts')
-  const refreshInterval = shallowRef('0')
+  const refreshInterval = shallowRef('15')
   const refreshing = shallowRef(false)
+  const refreshError = shallowRef('')
   const evaluationSnapshot = shallowRef<AccountEvaluationSnapshot>()
   const accountSummary = shallowRef({
     total: 0,
@@ -31,24 +34,34 @@ export function useAccountsQuery(options: { includeEvaluationHistory: Ref<boolea
 
   const query = usePagedQuery({
     initialPageSize: 20,
-    load: ({ page, pageSize }, requestOptions) =>
-      getAccounts({
-        page,
-        pageSize,
-        search: searchQuery.value,
-        provider: providerQuery.value || undefined,
-        status: statusQuery.value || undefined,
-        evaluationStatus: evaluationStatusQuery.value || undefined,
-        groupId: groupQuery.value || undefined,
-        sortBy: sort.value?.key,
-        sortDirection: sort.value?.direction,
-        includeEvaluationHistory: options.includeEvaluationHistory.value || undefined,
-      }, requestOptions),
+    load: async ({ page, pageSize }, requestOptions) => {
+      try {
+        return await getAccounts({
+          page,
+          pageSize,
+          search: searchQuery.value,
+          provider: providerQuery.value || undefined,
+          status: statusQuery.value || undefined,
+          evaluationStatus: evaluationStatusQuery.value || undefined,
+          groupId: groupQuery.value || undefined,
+          sortBy: sort.value?.key,
+          sortDirection: sort.value?.direction,
+          includeEvaluationHistory: options.includeEvaluationHistory.value || undefined,
+        }, requestOptions)
+      }
+      catch (cause) {
+        if (!requestOptions.signal?.aborted && !(cause instanceof ApiError && cause.kind === 'cancelled'))
+          refreshError.value = errorMessage(cause)
+        throw cause
+      }
+    },
     onSuccess: (result) => {
+      refreshError.value = ''
       accountSummary.value = result.summary
       evaluationSnapshot.value = {
         accountIds: result.items.filter(account => account.capabilities.turnStateProbe).map(account => account.id),
         items: result.evaluationHistory,
+        monitoring: result.monitoring,
       }
     },
   })
@@ -134,6 +147,7 @@ export function useAccountsQuery(options: { includeEvaluationHistory: Ref<boolea
     pageSize: query.pageSize,
     totalAccounts: query.total,
     loading: query.loading,
+    error: refreshError,
     refreshing,
     refreshInterval,
     refreshAccounts,

@@ -13,19 +13,31 @@ use gateway_core::{engine::execution::*, error::GatewayError, routing::PublicMod
 
 #[derive(Default)]
 pub struct TestEvaluationRepository {
-    pub account_results: Mutex<Option<AdminStoreResult<Vec<EvaluationAccountResultFact>>>>,
+    pub monitoring: Mutex<Option<AdminStoreResult<EvaluationMonitoringData>>>,
+    pub monitoring_queries: Mutex<usize>,
     pub history: Mutex<Option<AdminStoreResult<Vec<EvaluationHistoryItem>>>>,
     pub history_queries: Mutex<Vec<Vec<String>>>,
 }
 
 #[async_trait]
 impl EvaluationRepository for TestEvaluationRepository {
-    async fn account_result_facts(&self) -> AdminStoreResult<Vec<EvaluationAccountResultFact>> {
-        self.account_results
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("this fixture does not exercise evaluation account filtering")
+    async fn monitoring_data(&self) -> AdminStoreResult<EvaluationMonitoringData> {
+        *self.monitoring_queries.lock().unwrap() += 1;
+        self.monitoring.lock().unwrap().clone().unwrap_or_else(|| {
+            Ok(EvaluationMonitoringData {
+                observed_at: Utc::now(),
+                plan: None,
+                accounts: Vec::new(),
+                points: Vec::new(),
+            })
+        })
+    }
+
+    async fn expire_monitoring(
+        &self,
+        _: EvaluationMonitoringExpiration,
+    ) -> AdminStoreResult<Option<gateway_admin::model::Revision>> {
+        unreachable!("this fixture does not exercise monitoring expiration")
     }
 
     async fn account_states(&self) -> AdminStoreResult<Vec<EvaluationAccountState>> {

@@ -163,7 +163,7 @@ async function confirmDelete() {
           <ZTable :columns="runColumns" :data="runs" :loading="loadingRuns" row-key="id" empty-text="还没有测评记录">
             <template #test="{ row }">
               <span class="block font-emphasis">{{ row.profile.definition?.name ?? kindLabels[row.parameters.kind] }}</span>
-              <span class="text-z-xs text-z-text-tertiary">{{ row.parameters.model }} · {{ row.planId ? '定时' : '手动' }}</span>
+              <span class="text-z-xs text-z-text-tertiary">{{ row.parameters.model }} · {{ row.profile.monitoring ? row.planId ? '定时监测' : '立即复测' : '临时诊断' }}</span>
             </template>
             <template #status="{ row }">
               <ZTag :type="row.activeItems ? 'info' : 'default'">
@@ -205,7 +205,7 @@ async function confirmDelete() {
           </p>
           <ZTable :columns="planColumns" :data="plans" :loading="loadingPlans" row-key="id" empty-text="还没有定时计划">
             <template #name="{ row }">
-              {{ row.settings.name }}
+              {{ row.settings.name }}<span v-if="row.settings.monitoring" class="ml-2 text-z-xs text-z-primary-text">正式监测</span>
               <span class="mt-1 block text-z-xs text-z-text-tertiary">{{ row.settings.accountSelection?.mode === 'all' ? '自动跟随全部账号' : row.settings.accountSelection?.mode === 'groups' ? '自动跟随指定分组' : `${row.settings.parameters.accountIds.length} 个固定账号` }} · 每账号 {{ row.settings.parameters.repetitions }} 次</span>
               <span v-if="row.settings.accountPreference" class="mt-1 block text-z-xs text-z-text-secondary">账号优选 · {{ catalog.groupName(row.settings.accountPreference.groupId) }}</span>
             </template>
@@ -218,7 +218,7 @@ async function confirmDelete() {
             </template>
             <template #status="{ row }">
               <ZTag :type="row.settings.enabled ? 'success' : 'default'">
-                {{ !row.settings.enabled ? '已暂停' : row.availableAccounts === 0 ? '等待可用账号' : (row.availableAccounts ?? 0) > 20 ? '账号数超过 20，等待缩小范围' : '已启用' }}
+                {{ !row.settings.enabled ? '已暂停' : row.availableAccounts === 0 ? '等待可用账号' : config && (row.availableAccounts ?? 0) > (row.settings.parameters.kind === 'turnstate' ? config.limits.scheduledAccounts : config.limits.accounts) ? '账号数超过单轮上限，请缩小范围' : '已启用' }}
               </ZTag>
             </template>
             <template #actions="{ row }">

@@ -3,6 +3,7 @@
 mod accounts;
 mod collector;
 mod judge;
+mod monitoring;
 mod runner;
 mod service;
 mod task;

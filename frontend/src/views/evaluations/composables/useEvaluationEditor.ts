@@ -1,5 +1,5 @@
 import type { Ref } from 'vue'
-import type { EvaluationAccountSelection, EvaluationConfig, EvaluationParameters, EvaluationPlan, EvaluationPlanSettings, EvaluationRun, EvaluationSettings } from '@/api'
+import type { EvaluationAccountSelection, EvaluationConfig, EvaluationMonitoringPolicy, EvaluationParameters, EvaluationPlan, EvaluationPlanSettings, EvaluationRun, EvaluationSettings } from '@/api'
 import { ZNotification } from '@codex-proxy/ui'
 import { ref, shallowRef } from 'vue'
 import { createEvaluationPlan, submitEvaluation, updateEvaluationPlan } from '@/api'
@@ -14,6 +14,13 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
   const name = shallowRef('')
   const intervalMinutes = shallowRef('60')
   const enabled = shallowRef(true)
+  const monitoringEnabled = shallowRef(false)
+  const monitoringPolicy = ref<EvaluationMonitoringPolicy>({
+    validMinutes: 30,
+    stableCount: 2,
+    changedCount: 2,
+    removeExpired: false,
+  })
   const preferenceEnabled = shallowRef(false)
   const preferenceGroupId = shallowRef('')
   const accountSelection = ref<EvaluationAccountSelection>({ mode: 'fixed' })
@@ -44,6 +51,13 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
       : '60'
     enabled.value = plan?.settings.enabled ?? true
     accountSelection.value = structuredClone(plan?.settings.accountSelection ?? { mode: 'fixed' })
+    monitoringEnabled.value = !!plan?.settings.monitoring
+    monitoringPolicy.value = structuredClone(plan?.settings.monitoring ?? {
+      validMinutes: 30,
+      stableCount: 2,
+      changedCount: 2,
+      removeExpired: false,
+    })
     preferenceEnabled.value = !!plan?.settings.accountPreference
     preferenceGroupId.value = plan?.settings.accountPreference?.groupId ?? ''
     submission = undefined
@@ -109,6 +123,9 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
       let run: EvaluationRun | undefined
       if (isPlan.value) {
         const settings: EvaluationPlanSettings = {
+          monitoring: monitoringEnabled.value && params.kind === 'turnstate'
+            ? monitoringPolicy.value
+            : undefined,
           name: name.value.trim() || `${params.kind === 'turnstate'
             ? '快速测票'
             : params.definition!.name.slice(0, 24)} · ${minutes} 分钟`,
@@ -152,6 +169,8 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
     name,
     intervalMinutes,
     enabled,
+    monitoringEnabled,
+    monitoringPolicy,
     preferenceEnabled,
     preferenceGroupId,
     accountSelection,

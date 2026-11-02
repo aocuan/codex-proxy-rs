@@ -53,14 +53,35 @@ pub(super) async fn account_history(
     limit: u32,
     source_id: Option<&str>,
 ) -> AdminStoreResult<Vec<EvaluationHistoryItem>> {
-    // 默认选全局最近的测票条件，各账号必须匹配同一个来源，不回退到其他题目或模型
+    if source_id.is_none() {
+        let data = super::monitoring::load(pool).await?;
+        let version = data
+            .plan
+            .as_ref()
+            .map(|plan| plan.monitoring_reference().version);
+        let mut counts = std::collections::BTreeMap::<String, u32>::new();
+        return Ok(data
+            .points
+            .into_iter()
+            .filter(|point| Some(&point.plan_version) == version.as_ref())
+            .map(|point| point.history)
+            .filter(|point| {
+                if !account_ids.contains(&point.account_id) {
+                    return false;
+                }
+                let count = counts.entry(point.account_id.clone()).or_default();
+                *count += 1;
+                *count <= limit
+            })
+            .collect());
+    }
+    // 显式来源只供诊断历史读取，不能决定正式账号状态
     let mut query = QueryBuilder::<Postgres>::new("with series as (");
     query.push(SERIES).push(
         "), selected as (
             select source_id from series
-            where ("
-    ).push_bind(source_id).push("::text is null and kind = 'turnstate') or source_id = ")
-    .push_bind(source_id).push("
+            where source_id = "
+    ).push_bind(source_id).push("
             order by created_at desc, run_id desc limit 1
          )
          select h.* from unnest(").push_bind(account_ids).push("::text[]) as accounts(id)
@@ -85,41 +106,4 @@ pub(super) async fn account_history(
         .await
         .map_err(db_error)?;
     records.into_iter().map(rows::HistoryRow::decode).collect()
-}
-
-pub(super) async fn account_result_facts(
-    pool: &PgPool,
-) -> AdminStoreResult<Vec<EvaluationAccountResultFact>> {
-    let mut query = QueryBuilder::<Postgres>::new("with series as (");
-    query.push(SERIES).push(
-        "), selected as (
-            select source_id from series where kind = 'turnstate'
-            order by created_at desc, run_id desc limit 1
-         )
-         select a.id as account_id, a.provider_kind, a.authentication_kind,
-                current.status, current.outcome
-         from provider_accounts a
-         left join lateral (
-            select point.status, point.outcome from (
-                select i.id, i.status, i.observation_json #>> '{turnState,outcome}' as outcome,
-                       s.created_at, s.run_id
-                from evaluation_items i join series s on s.run_id = i.run_id
-                join selected on selected.source_id = s.source_id
-                where i.account_id = a.id
-                order by s.created_at desc, s.run_id desc, i.repetition desc limit 28
-            ) point
-            order by (point.status in ('queued','running')), point.created_at desc,
-                     point.run_id desc, point.id desc limit 1
-         ) current on true
-         order by a.id",
-    );
-    let records = query
-        .build_query_as::<rows::AccountResultRow>()
-        .fetch_all(pool)
-        .await
-        .map_err(db_error)?;
-    records
-        .into_iter()
-        .map(rows::AccountResultRow::decode)
-        .collect()
 }

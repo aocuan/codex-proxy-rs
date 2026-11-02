@@ -149,6 +149,10 @@ export const accountEvaluationFilterOptions = computed(() => ([
     value: 'unknown',
   },
   {
+    label: t('accounts.filters.evaluationStale'),
+    value: 'stale',
+  },
+  {
     label: t('accounts.filters.evaluationFailed'),
     value: 'failed',
   },

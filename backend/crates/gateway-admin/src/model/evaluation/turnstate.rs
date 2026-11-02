@@ -21,16 +21,7 @@ pub enum EvaluationAccountStatus {
     Pending,
     NoRecord,
     NotApplicable,
-}
-
-/// 最近测票条件下供账号范围解析使用的轻量事实
-#[derive(Debug, Clone)]
-pub struct EvaluationAccountResultFact {
-    pub account_id: String,
-    pub provider_kind: String,
-    pub authentication_kind: String,
-    pub status: Option<super::EvaluationItemStatus>,
-    pub outcome: Option<TurnStateOutcome>,
+    Stale,
 }
 
 impl EvaluationAccountStatus {
@@ -71,7 +62,20 @@ pub struct TurnStateStep {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TurnStateDiagnostic {
+    pub stage: String,
+    pub http_status: u16,
+    pub error_code: Option<String>,
+    pub error_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TurnStateProbeResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<TurnStateDiagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_revision: Option<String>,
     pub outcome: TurnStateOutcome,
     pub steps: Vec<TurnStateStep>,
     pub error: Option<String>,
@@ -99,6 +103,8 @@ impl TurnStateProbeResult {
             _ => TurnStateOutcome::Unknown,
         };
         Self {
+            diagnostic: None,
+            connection_revision: None,
             outcome,
             steps,
             error,

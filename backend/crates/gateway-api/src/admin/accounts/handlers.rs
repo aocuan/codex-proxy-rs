@@ -104,6 +104,8 @@ struct AccountListData {
     page: AccountPageData,
     #[serde(skip_serializing_if = "Option::is_none")]
     evaluation_history: Option<Vec<super::super::evaluations::HistoryItemView>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    monitoring: Option<super::super::evaluations::MonitoringView>,
 }
 
 async fn list_accounts<S>(
@@ -119,13 +121,26 @@ where
     let include_evaluation_history = query.include_evaluation_history;
     let evaluation_status = query.evaluation_status;
     let mut command = query.validate().map_err(map_wire_error)?;
-    if let Some(status) = evaluation_status {
+    let monitoring = if include_evaluation_history || evaluation_status.is_some() {
+        match services.evaluations().monitoring_snapshot().await {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) if evaluation_status.is_some() => return Err(map_service_error(error)),
+            Err(error) => {
+                tracing::debug!(%error, "账号监测快照暂不可用");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let (Some(status), Some(snapshot)) = (evaluation_status, &monitoring) {
         command.account_ids = Some(
-            services
-                .evaluations()
-                .filter_account_ids(status)
-                .await
-                .map_err(map_service_error)?,
+            snapshot
+                .accounts
+                .iter()
+                .filter(|account| account.status == status)
+                .map(|account| account.account_id.clone())
+                .collect(),
         );
     }
     let page = command.page;
@@ -136,31 +151,30 @@ where
         .await
         .map_err(map_service_error)?;
     let page = account_page_data(result, page, page_size, Utc::now(), time);
-    let evaluation_history = if include_evaluation_history {
-        let ids = page
-            .items
-            .iter()
-            .filter(|item| item.capabilities.turn_state_probe)
-            .map(|item| item.id.clone())
-            .collect::<Vec<_>>();
-        if ids.is_empty() {
-            Some(Vec::new())
-        } else {
-            // 历史预取失败不影响账号目录，页面仍可使用独立历史接口读取与重试
-            services
-                .evaluations()
-                .account_history(&ids, 28, None)
-                .await
-                .inspect_err(|error| tracing::debug!(%error, "账号测票历史预取不可用"))
-                .ok()
-                .map(|items| super::super::evaluations::history_items_view(items, time))
-        }
-    } else {
-        None
-    };
+    let ids = page
+        .items
+        .iter()
+        .map(|account| account.id.clone())
+        .collect::<Vec<_>>();
+    let evaluation_history = monitoring
+        .as_ref()
+        .filter(|_| include_evaluation_history)
+        .map(|snapshot| {
+            super::super::evaluations::history_items_view(
+                snapshot
+                    .history
+                    .iter()
+                    .filter(|point| ids.contains(&point.account_id))
+                    .cloned()
+                    .collect(),
+                time,
+            )
+        });
     let data = AccountListData {
         page,
         evaluation_history,
+        monitoring: monitoring
+            .map(|snapshot| super::super::evaluations::MonitoringView::new(snapshot, &ids, time)),
     };
     Ok(AdminResponse::new(StatusCode::OK, AdminEnvelope::ok(data)))
 }

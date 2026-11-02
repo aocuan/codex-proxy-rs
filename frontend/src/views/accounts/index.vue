@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import type { Account } from '@/api'
-
 import { useTableColumns, ZButton, ZCard, ZCheckbox, ZConfirmDialog, ZIconButton, ZMenuItem, ZPageHeader, ZPagination, ZPopover, ZTable, ZTableColumnSettings } from '@codex-proxy/ui'
 import { Check, ChevronDown, RefreshCw } from '@lucide/vue'
 import { useMediaQuery } from '@vueuse/core'
+
 import { computed, ref, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
+import { recheckAccounts } from '@/api'
 import AccountPlanBadge from '@/components/account/AccountPlanBadge.vue'
 import AccountGroupMarks from '@/components/AccountGroupMarks.vue'
 import EvaluationHistoryStrip from '@/components/evaluation/EvaluationHistoryStrip.vue'
@@ -14,6 +15,8 @@ import EvaluationOutputModal from '@/components/evaluation/EvaluationOutputModal
 import LastUsedAtCell from '@/components/LastUsedAtCell.vue'
 import ProviderIconGroup from '@/components/ProviderIconGroup.vue'
 import { useAccountGroupCatalog } from '@/composables/useAccountGroupCatalog'
+import { useAsyncAction } from '@/composables/useAsyncAction'
+import { generateRequestId } from '@/utils/operation'
 import AccountCreateModal from './components/account-create-modal/index.vue'
 import AccountImportTasks from './components/account-import-tasks/index.vue'
 import AccountQuotaPanel from './components/account-quota-panel/index.vue'
@@ -52,6 +55,10 @@ const router = useRouter()
 const selectedIds = ref<Set<string>>(new Set())
 const refreshOptions = computed(() => [
   {
+    label: t('accounts.evaluationActions.refreshEvery', { seconds: 15 }),
+    value: '15',
+  },
+  {
     label: t('accounts.evaluationActions.refreshEvery', { seconds: 30 }),
     value: '30',
   },
@@ -78,6 +85,7 @@ const {
   refreshAccounts,
   accounts,
   evaluationSnapshot,
+  error: accountQueryError,
   loadAccounts,
   refreshAccountsSilently,
   searchQuery,
@@ -94,8 +102,48 @@ const {
   handleSortChange,
 } = useAccountsQuery({ includeEvaluationHistory: evaluationVisible })
 const probeAccounts = computed(() => accounts.value.filter(account => account.capabilities.turnStateProbe))
-const accountEvaluations = useAccountEvaluations(probeAccounts, { enabled: evaluationVisible, prefetched: evaluationSnapshot })
+const accountEvaluations = useAccountEvaluations(probeAccounts, {
+  enabled: evaluationVisible,
+  prefetched: evaluationSnapshot,
+  loading,
+  error: accountQueryError,
+  reload: () => refreshAccounts(),
+})
 const { history: evaluationHistory, loading: loadingEvaluations, error: evaluationsError, open: showEvaluationOutput, item: evaluationItem, run: evaluationRun } = accountEvaluations
+const { monitoring, states: monitoringStates } = accountEvaluations
+const recheckAction = useAsyncAction()
+const rechecking = shallowRef<string[]>([])
+let recheckSubmission: { fingerprint: string, id: string } | undefined
+async function recheck(ids: string[]) {
+  const plan = monitoring.value?.plan
+  if (!plan || !plan.settings.enabled || !ids.length)
+    return
+  const fingerprint = JSON.stringify([
+    plan.id,
+    plan.revision,
+    ids.slice().sort(),
+  ])
+  if (recheckSubmission?.fingerprint !== fingerprint) {
+    recheckSubmission = {
+      fingerprint,
+      id: generateRequestId(),
+    }
+  }
+  const submissionId = recheckSubmission.id
+  await recheckAction.run(async () => {
+    rechecking.value = ids
+    try {
+      await recheckAccounts({
+        submissionId,
+        accountIds: ids,
+        plan: { id: plan.id, revision: plan.revision },
+      })
+      recheckSubmission = undefined
+      await refreshAccounts()
+    }
+    finally { rechecking.value = [] }
+  })
+}
 const evaluationAccountName = (id: string) => accounts.value.find(account => account.id === id)?.name || id
 
 const {
@@ -280,6 +328,9 @@ const {
           @edit-selected="openBatchEdit"
         >
           <template #actions>
+            <ZButton v-if="selectedIds.size" :loading="recheckAction.loading.value" :disabled="selectedIds.size > 20 || !monitoring?.plan?.settings.enabled" @click="recheck([...selectedIds])">
+              立即复测
+            </ZButton>
             <ZButton v-if="selectedIds.size" :disabled="selectedIds.size > 20" @click="router.push({ path: '/evaluations', query: { accounts: [...selectedIds].join(',') } })">
               {{ selectedIds.size > 20 ? t('accounts.evaluationActions.evaluateMax') : t('accounts.evaluationActions.evaluateSelected') }}
             </ZButton>
@@ -335,6 +386,19 @@ const {
             />
           </template>
         </AccountFilters>
+        <div v-if="evaluationVisible" class="mt-2 flex flex-wrap items-center gap-2 text-z-xs text-z-text-secondary">
+          <span v-if="monitoring?.plan">正式监测：{{ monitoring.plan.settings.name }} · {{ monitoring.plan.settings.parameters.model }}{{ monitoring.plan.settings.enabled ? '' : ' · 已暂停' }}</span>
+          <span v-else>尚未选择正式监测方案</span>
+          <ZButton size="small" variant="text" @click="router.push('/evaluations')">
+            设置监测方案
+          </ZButton>
+        </div>
+        <div v-if="evaluationsError" class="mt-2 flex items-center gap-2 text-z-xs text-z-error-text" role="alert">
+          <span>数据刷新失败，显示上次快照</span>
+          <ZButton size="small" variant="text" :disabled="refreshing" @click="refreshAccounts()">
+            重试刷新
+          </ZButton>
+        </div>
       </template>
 
       <template #body>
@@ -384,7 +448,7 @@ const {
 
             <template #identity="{ row }">
               <AccountIdentityCell :account="row" show-notes />
-              <EvaluationHistoryStrip v-if="inlineEvaluation && row.capabilities.turnStateProbe" class="mt-2" :items="evaluationHistory.get(row.id) ?? []" :loading="loadingEvaluations && !evaluationHistory.has(row.id)" :error="evaluationsError" @inspect="accountEvaluations.inspect" @retry="accountEvaluations.refresh" />
+              <EvaluationHistoryStrip v-if="inlineEvaluation && row.capabilities.turnStateProbe" class="mt-2" :items="evaluationHistory.get(row.id) ?? []" :monitoring="monitoringStates.get(row.id)" :loading="loadingEvaluations && !evaluationHistory.has(row.id)" error="" @inspect="accountEvaluations.inspect" @retry="accountEvaluations.refresh" />
             </template>
 
             <template #provider="{ row }">
@@ -409,7 +473,7 @@ const {
             </template>
 
             <template #evaluation="{ row }">
-              <EvaluationHistoryStrip v-if="row.capabilities.turnStateProbe" :items="evaluationHistory.get(row.id) ?? []" :loading="loadingEvaluations && !evaluationHistory.has(row.id)" :error="evaluationsError" @inspect="accountEvaluations.inspect" @retry="accountEvaluations.refresh" />
+              <EvaluationHistoryStrip v-if="row.capabilities.turnStateProbe" :items="evaluationHistory.get(row.id) ?? []" :monitoring="monitoringStates.get(row.id)" :loading="loadingEvaluations && !evaluationHistory.has(row.id)" error="" @inspect="accountEvaluations.inspect" @retry="accountEvaluations.refresh" />
               <span v-else class="text-z-text-tertiary" :title="t('accounts.evaluationActions.oauthOnly')">{{ t('accounts.evaluationActions.notApplicable') }}</span>
             </template>
             <template #planType="{ row }">
@@ -435,12 +499,15 @@ const {
             <template #actions="{ row }">
               <AccountTableActions
                 :account="row"
+                :monitoring-allowed="!!monitoring?.plan?.settings.enabled && !!monitoringStates.get(row.id)?.monitored"
+                :rechecking="rechecking.includes(row.id)"
                 :deleting="deletingAccount"
                 :downloading-catalog="downloadingCatalogAccountIds.has(row.id)"
                 :recovering="recoveringAccountIds.has(row.id)"
                 :refreshing="refreshingAccountIds.has(row.id)"
                 :testing="testingConnectionIds.has(row.id)"
                 :toggling-scheduling="togglingSchedulingAccountIds.has(row.id)"
+                @recheck="recheck([$event])"
                 @edit="openAccountEdit"
                 @delete="requestDeleteAccount"
                 @download-model-catalog="handleDownloadModelCatalog"

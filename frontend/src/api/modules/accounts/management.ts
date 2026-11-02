@@ -1,5 +1,5 @@
 import type { RequestOptions } from '../../request'
-import type { EvaluationHistoryItem } from '../evaluations'
+import type { EvaluationHistoryItem, EvaluationMonitoringSnapshot } from '../evaluations'
 import type { Account, AccountEvaluationStatus, AccountIdParam, AccountModelAccess, AccountRefreshResponse } from './types'
 import request from '../../request'
 
@@ -24,6 +24,7 @@ export interface AccountListResponse {
   page: AccountPageMeta
   summary: AccountSummary
   evaluationHistory?: EvaluationHistoryItem[]
+  monitoring?: EvaluationMonitoringSnapshot
 }
 
 export interface AccountUpdateResponse {

@@ -1053,22 +1053,24 @@ config 返回 `{ name, plaintextKey }`，仅读取服务端会话绑定的当前
 - `provider`: `openai` 或 `xai`，省略或空值表示不过滤
 - `groupId`: 分组 ID、`ungrouped`，或省略以不过滤
 - `status`: `normal`、`quota_exhausted`、`rate_limited`、`disabled`、`error`
-- `evaluationStatus`: `stable`、`changed`、`unknown`、`failed`、`pending`、`no_record`、`not_applicable`，省略以不过滤
+- `evaluationStatus`: `stable`、`changed`、`unknown`、`failed`、`pending`、`no_record`、`not_applicable`、`stale`，省略以不过滤
 - `sortBy`: `email`、`status`、`planType`、`usage`、`lastUsedAt`、`expiresAt`
 - `sortDirection`: `asc`、`desc`
 
-`evaluationStatus` 按最近的快速测票条件筛选，范围为整个账号池，与搜索、账号状态、Provider 和分组取交集后分页，
-返回的 `page.total` 为匹配总数，健康状态汇总仍是全局账号池统计。筛选不会发起新的测票请求
+`evaluationStatus` 使用正式监测方案，与搜索、账号状态、Provider 和分组取交集后分页，
+`page.total` 为匹配总数，健康状态汇总仍是全局账号池统计。筛选不会发起新的测票请求
 
-筛选结果与历史图表采用同一来源和最近 28 条记录：存在已结束记录时取最近一次已结束结果，
-新一轮等待或执行中保留上次结果。`stable` 表示成功且票据稳定，`changed` 表示成功且票据变化；
-`failed` 包含失败或执行中断，`unknown` 包含成功但未判定、取消和跳过，`pending` 表示窗口内只有等待或执行中的记录，
-`no_record` 表示当前条件暂无记录。Provider 不支持快速测票的账号只匹配 `not_applicable`，
-不依据其旧测票记录归类。界面的“降智／不降智”仅为测票优选口径，不代表能力评测结论
+`stable`、`changed` 表示当前环境中仍有效的稳定、变化信号；最近尝试失败时归入 `failed`，成功但未判定时归入 `unknown`，
+同时保留上次有效信号。取消或跳过不覆盖已有有效结果；首次等待或执行归入 `pending`。
+`stale` 表示结果过期或账号环境、方案版本已变化，`no_record` 表示没有正式结果或不在监测范围。
+不支持快速测票的账号仅匹配 `not_applicable`，不会依据其旧记录归类。测票口径不代表能力评测结论
 
-`includeEvaluationHistory=true` 可在列表响应中预取 `evaluationHistory`，格式与独立历史接口一致，
-采用最近的快速测票条件，每账号最多 28 条，单页最多 100 个账号，仅包含支持快速探票的账号
-空数组表示当前条件暂无记录，预取不可用时省略字段，账号列表仍正常返回，客户端可通过独立历史接口读取和重试
+`includeEvaluationHistory=true` 返回本页 `evaluationHistory` 与 `monitoring`，二者和筛选采用同一快照。
+`monitoring` 包含 `observedAt`、可空的正式 `plan` 和本页 `accounts`：每项包含 `accountId`、`status`、`monitored`、
+`freshness`（`fresh`、`expired`、`environment_changed`、`unmeasured`）、最近有效 `signal`、
+`signalAtDisplay`、`expiresAtDisplay`、`latestAttempt`、`consecutive` 和 `required`。
+未配置正式方案时 `plan=null`，历史为空；预取不可用时省略监测字段，目录仍可返回，客户端重试整个列表。
+指定 `evaluationStatus` 时监测不可用会返回错误，不把读取失败解释为空名单
 
 账号的只读 `capabilities.turnStateProbe` 由 Provider 根据认证类型声明，表示是否支持快速探票
 OpenAI OAuth 账号支持此操作，API Key 账号不支持，仍可参加普通能力测评
@@ -3139,6 +3141,7 @@ GET/HEAD 不接受正文。响应状态码为 200–599，内容类型元数据�
 | `GET /api/admin/evaluations/accounts/history/sources` | 无 | 已有记录的快速测票和带自动判分规则的状态来源 |
 | `GET /api/admin/evaluations/accounts/history` | 逗号分隔的 `accountIds`（1–100 个）；每账号 `limit` 默认 28、范围 1–28；可选 `sourceId` | 各账号所选同条件来源的最近记录 |
 | `GET /api/admin/evaluations/runs` | `limit` 默认 20、范围 1–100，`offset` 默认 0 | 按创建时间倒序的批次数组 |
+| `POST /api/admin/evaluations/accounts/recheck` | `{submissionId, accountIds, plan: {id, revision}}` | HTTP 202，沿正式方案复测所选账号，或返回已有待执行批次 |
 | `POST /api/admin/evaluations/runs/create` | `submissionId`、`parameters` | HTTP 202，已持久化批次 |
 | `GET /api/admin/evaluations/runs/detail` | `id` | `{run, items}` |
 | `POST /api/admin/evaluations/runs/stop` | `{id}` | 更新后的 `{run, items}` |
@@ -3251,13 +3254,13 @@ HTML 评审仅检查源码，未接入渲染截图或视觉模型
 状态来源包含稳定的 `id`、`name`、`kind`、`profileVersion`、`graderVersion`、`graderType`、`model` 和
 `reasoningEffort`，仅列出仍有明细记录的快速测票与带自动判分规则的题目，不包含纯作品。
 来源按题目内容版本、评分版本、模型与请求推理强度区分，改名和新增同条件批次不改变来源 ID。
-`sourceId` 为 32 位小写十六进制字符串，缺省选择全局最近一组快速测票条件；
-所有账号匹配同一来源，没有匹配记录或来源已清理时返回空数组，不回退到其他模型或题目
+`sourceId` 为 32 位小写十六进制字符串，提供时读取指定诊断条件，缺省读取正式方案当前内容版本的历史；
+没有正式方案、没有匹配记录或来源已清理时返回空数组，不回退到最近的临时诊断
 
 账号历史每条包含 `name`、`profileVersion`、`graderType`、`judgmentStatus`、请求与判分状态、
 `turnState`、`durationMs` 和 `testedAtDisplay`。`turnState` 为 `accepted`、`refreshed`、`unknown` 或 null，
 独立于能力题 `verdict`。执行或判题失败、未判定不能解释为正常或答错；
-检测进行中可继续展示同一来源最近一次已完成结果，必须同时标明进行状态与上次检测时间
+检测进行中显示正式方案最近一次有效信号及其时间，同时标明本次执行状态；`testedAtDisplay` 对未执行或跳过项返回“未执行”
 
 停止后等待生成项跳过、等待判题项取消，在途项取消，停止不撤销已经发生的用量。重启后未确认结束的运行项标为中断并保留证据，
 不会自动重放；等待项继续检查当前资格后执行。输出最多 1 MiB，作品最多 256 KiB，作品始终作为 JSON 字符串返回，
@@ -3282,6 +3285,8 @@ Key 仍用于账号范围授权；测票属于原生账号诊断，不经过模�
 - `outcome`：`accepted` 为票据保持稳定，`refreshed` 为回带后换发新票，`unknown` 为证据不足
 - `steps`：每次 HTTP 状态、耗时、完成标记、票据长度及 SHA-256 指纹、路由 Cookie 是否变化
 - `error`：探测失败原因，失败不投影为票据变化
+- `diagnostic`：可选的失败阶段、HTTP 状态、上游机器错误码和类型，不包含上游原始正文或凭据
+- `connectionRevision`：账号连接身份的不可逆摘要，用于识别凭据或代理变化
 
 首次无票时停止，不发送无意义的第二次请求。路由 Cookie 变化、响应未完成或请求失败时未判定。
 原始票据及 Cookie 仅在本次会话内存中存在。测票不产生能力题通过率，条目 `verdict` 保持 `ungraded`；
@@ -3298,24 +3303,32 @@ Cron 为 5 段，时区由 `host.timezone` 决定，不接受调用方指定。
 保存后返回 `revision`、`settings.timezone`、`nextRunAt` 和 `nextRunAtDisplay`；
 修改、启停与删除须携带当前 revision，过期返回 409，重新加载后再编辑
 
-快速测票计划可选设置 `accountPreference: {groupId}` 启用账号优选，目标分组须存在且启用，
-同一目标分组只能有一个启用的优选计划。测票明确为 `accepted` 时加入目标分组，明确为 `refreshed` 时移出；
-失败、取消、超时及 `unknown` 均不调整分组，其他分组不受影响。票据状态是用户选择的分组规则，
-不能证明模型能力或账号健康。新规则仅作用于其启用后创建的计划批次，不回放历史
+快速测票计划设置 `monitoring: {validMinutes, stableCount, changedCount, removeExpired}` 后成为正式账号监测方案。
+同一时刻仅有一个正式方案，选择新方案会在同一事务中取消旧方案的监测标记并递增旧计划 revision。
+有效期范围 1–10080 分钟，连续次数范围 1–10；页面初始值为 30 分钟、连续稳定 2 次、连续变化 2 次，到期回收默认关闭。
+启用优选时有效期须长于连续确认所需的执行间隔。名称和启停不会改写已有观测，修改检测内容或规则会进入新版本
 
-检测范围不能依赖目标分组：指定跟随分组时不得选择目标分组，授权 Key 也不能绑定目标分组；
-可使用未绑定分组的 Key 或绑定独立检测分组的 Key。分组变化影响绑定该分组的 Key 的账号调度。
-计划暂停、删除或修改后，在途旧结果不再执行优选。目标分组或账号停用、检测范围或 Key 授权变化时保留现状
+`runs/create` 创建临时诊断，只保存诊断历史。`accounts/recheck` 要求正式方案当前 ID 和 revision、已启用的计划及
+1–20 个在范围内的可用账号，沿该方案冻结参数，不接受另填模型。所选账号已在同一批次中等待或执行时返回原批次；
+部分重叠时返回 409，避免重复请求。同一提交标识保持幂等，方案已变化时需刷新后重试
 
-优选批次条目的 `observation.accountPreference` 返回 `groupId`、`status` 和可空的 `reason`：
-`joined`、`removed`、`unchanged` 分别表示加入、移出或原本已是目标状态，`skipped` 表示未调整。
-分组变更和测评终态一同持久化，账号与目标分组各记录一条同请求标识的系统审计，保留动作与配置版本
+正式方案可选设置 `accountPreference: {groupId}`，目标分组须存在且启用。
+达到连续稳定次数后加入，达到连续变化次数后移出；失败、取消、超时及未判定不立即改组。
+取消和跳过不消耗确认次数，失败或未判定会中断连续确认。`removeExpired=true` 时，已过期或环境变化的
+受监测账号会退出目标组；到期检查后已有新观测的账号保留到下一轮重新核对
+
+检测范围不能依赖目标分组，授权 Key 也不能绑定目标分组；可使用未绑定分组的 Key 或绑定独立检测分组的 Key。
+分组变化影响关联 Key 的调度。计划暂停、删除、切换或修订后旧结果不再改组，其他分组不受影响。
+条目 `observation.accountPreference` 返回 `groupId`、`status` 和可空 `reason`，包括连续确认不足的原因；
+`joined`、`removed`、`unchanged`、`skipped` 分别表示加入、移出、未变化和保留原状。改组与终态一同提交并配对审计
+
+已有计划须明确选择为正式监测方案，既有诊断历史保留，但不会自动作为正式状态或回放优选动作
 
 `accountSelection` 缺省为 `{"mode":"fixed"}`，使用 `parameters.accountIds`。
 自动跟随使用 `{"mode":"all"}` 或 `{"mode":"groups","groupIds":["grp_…"]}`，此时 `accountIds` 必须为空。
 每轮选择当前已启用、属于选定范围且获计费 Key 授权的账号，排除独立判题账号，冻结本轮名单；新增账号从下轮参与。
 计划返回 `availableAccounts`（列表查询时计算），没有可用账号时保持启用并推进游标，不创建空批次。
-单轮仍限 20 个账号，超过上限时等待缩小范围，不截取名单或增加并发。
+手动测评和立即复测每次最多 20 个账号；自动测票计划支持最多 1000 个账号，逐项入队且仍最多两个并发请求。超限时推进游标但不执行，计划页显示范围提示，缩小范围后恢复。
 
 账号删除、停用或移出本轮冻结的自动跟随分组后，约 1–2 秒内跳过其排队任务并取消在途请求；
 判题账号不可用时停止相应判题，已保存的回答与历史费用保留。重新启用只允许未来任务，不恢复已经停止的条目。

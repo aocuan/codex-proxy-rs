@@ -50,8 +50,8 @@ export function historyResult(item: Pick<EvaluationHistoryItem, 'kind' | 'turnSt
         : item.kind === 'turnstate' && status === 'failed'
           ? '检测失败'
           : statusLabels[status],
-      color: 'bg-z-warning',
-      text: 'text-z-warning-text',
+      color: 'bg-z-error',
+      text: 'text-z-error-text',
     }
   }
   if (status !== 'succeeded')

@@ -4,6 +4,7 @@ mod accounts;
 mod history;
 mod items;
 mod judgments;
+mod monitoring;
 mod plans;
 mod preference;
 mod retention;
@@ -36,8 +37,15 @@ impl PgEvaluationRepository {
 
 #[async_trait]
 impl EvaluationRepository for PgEvaluationRepository {
-    async fn account_result_facts(&self) -> AdminStoreResult<Vec<EvaluationAccountResultFact>> {
-        history::account_result_facts(&self.pool).await
+    async fn monitoring_data(&self) -> AdminStoreResult<EvaluationMonitoringData> {
+        monitoring::load(&self.pool).await
+    }
+
+    async fn expire_monitoring(
+        &self,
+        command: EvaluationMonitoringExpiration,
+    ) -> AdminStoreResult<Option<gateway_admin::model::Revision>> {
+        monitoring::expire(&self.pool, command).await
     }
 
     async fn account_states(&self) -> AdminStoreResult<Vec<EvaluationAccountState>> {

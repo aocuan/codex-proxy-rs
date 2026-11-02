@@ -73,6 +73,7 @@ pub(super) fn resolve(
     if settings
         .account_preference
         .as_ref()
+        .filter(|_| settings.monitoring.is_some())
         .is_some_and(|rule| !independent_preference_key(policy, &rule.group_id))
     {
         return Ok(Vec::new());

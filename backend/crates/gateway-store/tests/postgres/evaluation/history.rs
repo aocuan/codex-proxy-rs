@@ -123,7 +123,8 @@ async fn sources_exclude_ungraded_artifacts_and_bind_history_to_one_experiment()
 }
 
 #[tokio::test]
-async fn default_history_uses_quick_probe_conditions_and_keeps_outcomes_separate_from_verdicts() {
+async fn diagnostic_history_requires_an_explicit_source_and_keeps_outcomes_separate_from_verdicts()
+{
     let Some(db) = TestDatabase::create("evaluation_history_turnstate").await else {
         return;
     };
@@ -156,6 +157,8 @@ async fn default_history_uses_quick_probe_conditions_and_keeps_outcomes_separate
         );
         let mut finished = completion(EvaluationItemStatus::Succeeded);
         finished.observation.turn_state = Some(TurnStateProbeResult {
+            diagnostic: None,
+            connection_revision: None,
             outcome,
             steps: vec![],
             error: None,
@@ -174,7 +177,7 @@ async fn default_history_uses_quick_probe_conditions_and_keeps_outcomes_separate
     assert_eq!(source.grader_type, "none");
     let accounts = ["acct_a".to_owned(), "acct_b".to_owned()];
     let history = repository
-        .account_history(&accounts, 28, None)
+        .account_history(&accounts, 28, Some(&source.id))
         .await
         .unwrap();
     assert_eq!(history.len(), 2);
@@ -206,8 +209,7 @@ async fn default_history_uses_quick_probe_conditions_and_keeps_outcomes_separate
         .account_history(&accounts, 28, None)
         .await
         .unwrap();
-    assert_eq!(latest.len(), 1);
-    assert_eq!(latest[0].model.as_str(), "other-model");
+    assert!(latest.is_empty(), "临时诊断不能成为默认账号监测来源");
     assert_eq!(
         repository
             .account_history(&accounts, 28, Some(&source.id))

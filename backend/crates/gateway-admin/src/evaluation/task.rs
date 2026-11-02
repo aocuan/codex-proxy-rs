@@ -107,13 +107,22 @@ impl EvaluationTask {
             .account_states()
             .await
             .map_err(store_error)?;
-        for mut plan in self
+        let plans = self
             .runner
             .repository
             .list_plans()
             .await
-            .map_err(store_error)?
-        {
+            .map_err(store_error)?;
+        let expire = plans.iter().any(|plan| {
+            plan.settings.enabled
+                && plan.settings.account_preference.is_some()
+                && plan
+                    .settings
+                    .monitoring
+                    .as_ref()
+                    .is_some_and(|policy| policy.remove_expired)
+        });
+        for mut plan in plans {
             if plan.settings.account_selection.is_fixed() {
                 let previous = plan.settings.parameters.account_ids.len();
                 let kind = plan.settings.parameters.kind;
@@ -209,18 +218,31 @@ impl EvaluationTask {
             .map_err(|error| WorkerTaskError::safe("无法解析计划账号范围").with_source(error))?;
             let mut parameters = plan.settings.parameters.clone();
             parameters.account_ids = account_ids;
-            // 超出当前单轮上限时保持计划，不截取名单造成部分账号长期漏测
-            if parameters.account_ids.len() > MAX_ACCOUNTS_PER_RUN {
+            let maximum = if parameters.kind == EvaluationKind::Turnstate {
+                MAX_SCHEDULED_PROBE_ACCOUNTS
+            } else {
+                MAX_ACCOUNTS_PER_RUN
+            };
+            if parameters.account_ids.len() > maximum {
+                tracing::warn!(plan_id=%plan.id, available=parameters.account_ids.len(), maximum, "计划账号范围超过单轮上限，本轮不执行");
+                // 计划页仍展示完整可用数与超限提示，不截断账号导致固定一部分永远漏测
                 parameters.account_ids.clear();
             }
             let mut seed = EvaluationRunSeed::new(parameters, &self.version, now);
             seed.profile.account_selection = plan.settings.account_selection.clone();
-            seed.profile.account_preference =
-                plan.settings.account_preference.as_ref().map(|rule| {
-                    EvaluationPreferenceSnapshot {
-                        group_id: rule.group_id.clone(),
-                        plan_revision: plan.revision,
-                    }
+            seed.profile.monitoring = plan
+                .settings
+                .monitoring
+                .as_ref()
+                .map(|_| plan.monitoring_reference());
+            seed.profile.account_preference = plan
+                .settings
+                .account_preference
+                .as_ref()
+                .filter(|_| plan.settings.monitoring.is_some())
+                .map(|rule| EvaluationPreferenceSnapshot {
+                    group_id: rule.group_id.clone(),
+                    plan_revision: plan.revision,
                 });
             self.runner
                 .repository
@@ -234,6 +256,93 @@ impl EvaluationTask {
                 })
                 .await
                 .map_err(store_error)?;
+        }
+        if expire {
+            self.expire_monitoring().await?;
+        }
+        Ok(())
+    }
+
+    async fn expire_monitoring(&self) -> Result<(), WorkerTaskError> {
+        if self.runner.publisher.is_none() {
+            return Err(WorkerTaskError::safe("账号优选的配置发布服务不可用"));
+        }
+        let data = self
+            .runner
+            .repository
+            .monitoring_data()
+            .await
+            .map_err(store_error)?;
+        let Some(plan) = &data.plan else {
+            return Ok(());
+        };
+        let Some(rule) = &plan.settings.account_preference else {
+            return Ok(());
+        };
+        let reference = plan.monitoring_reference();
+        let mut last_signals = std::collections::BTreeMap::<String, String>::new();
+        for point in &data.points {
+            if point.history.status == EvaluationItemStatus::Succeeded
+                && matches!(
+                    point.history.turn_state,
+                    Some(TurnStateOutcome::Accepted | TurnStateOutcome::Refreshed)
+                )
+            {
+                last_signals
+                    .entry(point.history.account_id.clone())
+                    .or_insert_with(|| point.history.id.clone());
+            }
+        }
+        let members = data
+            .accounts
+            .iter()
+            .filter(|account| account.group_ids.contains(&rule.group_id))
+            .map(|account| account.id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let revision = self
+            .snapshot
+            .acquire()
+            .map_err(|error| WorkerTaskError::safe("监测配置暂不可用").with_source(error))?
+            .revision();
+        let view = super::monitoring::project(data, &self.snapshot, self.runner.providers.as_ref())
+            .map_err(|error| WorkerTaskError::safe("监测到期检查失败").with_source(error))?;
+        let ids = view
+            .accounts
+            .into_iter()
+            .filter(|account| {
+                account.monitored
+                    && members.contains(&account.account_id)
+                    && matches!(
+                        account.freshness,
+                        EvaluationFreshness::Expired | EvaluationFreshness::EnvironmentChanged
+                    )
+            })
+            .map(|account| account.account_id)
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let committed = self
+            .runner
+            .repository
+            .expire_monitoring(EvaluationMonitoringExpiration {
+                plan: reference,
+                accounts: ids
+                    .into_iter()
+                    .map(|account_id| EvaluationExpirationTarget {
+                        last_signal_id: last_signals.remove(&account_id),
+                        account_id,
+                    })
+                    .collect(),
+                expected_revision: crate::model::Revision::new(revision.get())
+                    .map_err(|error| WorkerTaskError::safe("配置版本无效").with_source(error))?,
+            })
+            .await
+            .map_err(store_error)?;
+        if let (Some(revision), Some(publisher)) = (committed, &self.runner.publisher) {
+            let revision = gateway_core::routing::ConfigRevision::new(revision.get())
+                .map_err(|error| WorkerTaskError::safe("配置版本无效").with_source(error))?;
+            publisher.publish_committed(revision).await;
         }
         Ok(())
     }

@@ -5,7 +5,7 @@ export type AccountStatus
   = 'normal' | 'quota_exhausted' | 'rate_limited' | 'disabled' | 'error'
 
 export type AccountEvaluationStatus
-  = 'stable' | 'changed' | 'unknown' | 'failed' | 'pending' | 'no_record' | 'not_applicable'
+  = 'stable' | 'changed' | 'unknown' | 'failed' | 'pending' | 'no_record' | 'not_applicable' | 'stale'
 
 export type AccountErrorReason
   = 'account_unverified'

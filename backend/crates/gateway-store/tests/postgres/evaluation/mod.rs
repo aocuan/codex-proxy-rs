@@ -2,6 +2,7 @@
 
 mod history;
 mod judgments;
+mod monitoring;
 mod settings;
 mod transactions;
 mod worker;

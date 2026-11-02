@@ -4,23 +4,78 @@ use super::{db_error, lock_queue};
 use gateway_admin::{model::evaluation::EvaluationAccountState, ports::store::AdminStoreResult};
 use sqlx::PgPool;
 
+#[derive(sqlx::FromRow)]
+struct AccountStateRow {
+    id: String,
+    enabled: bool,
+    group_ids: Vec<String>,
+    provider_kind: String,
+    authentication_kind: String,
+    credential_revision: i64,
+    proxy_url: Option<String>,
+}
+
 pub(super) async fn list(pool: &PgPool) -> AdminStoreResult<Vec<EvaluationAccountState>> {
-    let rows: Vec<(String, bool, Vec<String>, String, String)> = sqlx::query_as(
-        "select a.id, a.enabled, array(select g.account_group_id from account_group_accounts g where g.provider_account_id = a.id order by g.account_group_id), a.provider_kind, a.authentication_kind
-         from provider_accounts a order by a.id")
-        .fetch_all(pool).await.map_err(db_error)?;
-    Ok(rows
-        .into_iter()
-        .map(
-            |(id, enabled, group_ids, provider_kind, authentication_kind)| EvaluationAccountState {
+    let mut connection = pool.acquire().await.map_err(db_error)?;
+    list_on(&mut connection).await
+}
+
+pub(super) async fn list_on(
+    connection: &mut sqlx::PgConnection,
+) -> AdminStoreResult<Vec<EvaluationAccountState>> {
+    let rows = sqlx::query_as::<_, AccountStateRow>(
+        "select a.id, a.enabled, array(select g.account_group_id from account_group_accounts g where g.provider_account_id = a.id order by g.account_group_id) as group_ids, a.provider_kind, a.authentication_kind, a.credential_revision,
+         case when coalesce(p.enabled, true) then a.outbound_proxy_url else null end as proxy_url
+         from provider_accounts a left join outbound_proxies p on p.id=a.outbound_proxy_id order by a.id")
+        .fetch_all(connection).await.map_err(db_error)?;
+    rows.into_iter()
+        .map(|row| {
+            let AccountStateRow {
                 id,
-                provider_kind,
-                authentication_kind,
                 enabled,
                 group_ids,
-            },
-        )
-        .collect())
+                provider_kind,
+                authentication_kind,
+                credential_revision: revision,
+                proxy_url: proxy,
+            } = row;
+            Ok(EvaluationAccountState {
+                connection_revision: connection_revision(&id, revision, proxy.as_deref())?,
+                id,
+                enabled,
+                group_ids,
+                provider_kind,
+                authentication_kind,
+            })
+        })
+        .collect()
+}
+
+fn connection_revision(id: &str, revision: i64, proxy: Option<&str>) -> AdminStoreResult<String> {
+    use gateway_core::account::{
+        CredentialRevision, OutboundProxy, ProviderAccountId, UpstreamConnection,
+    };
+    let account_id = ProviderAccountId::new(id).map_err(|_| super::invalid("账号 ID 无效"))?;
+    let revision = CredentialRevision::new(
+        u64::try_from(revision).map_err(|_| super::invalid("凭据版本无效"))?,
+    )
+    .map_err(|_| super::invalid("凭据版本无效"))?;
+    let proxy = proxy
+        .map(OutboundProxy::parse)
+        .transpose()
+        .map_err(|_| super::invalid("账号代理无效"))?;
+    Ok(UpstreamConnection::new(account_id, revision, proxy.as_ref()).revision)
+}
+
+pub(super) async fn current_connection(
+    connection: &mut sqlx::PgConnection,
+    id: &str,
+) -> AdminStoreResult<Option<String>> {
+    let value: Option<(i64, Option<String>)> = sqlx::query_as("select a.credential_revision, case when coalesce(p.enabled,true) then a.outbound_proxy_url else null end from provider_accounts a left join outbound_proxies p on p.id=a.outbound_proxy_id where a.id=$1")
+        .bind(id).fetch_optional(connection).await.map_err(db_error)?;
+    value
+        .map(|(revision, proxy)| connection_revision(id, revision, proxy.as_deref()))
+        .transpose()
 }
 
 pub(super) async fn reconcile(pool: &PgPool) -> AdminStoreResult<()> {

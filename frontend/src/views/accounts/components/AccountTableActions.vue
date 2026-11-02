@@ -10,6 +10,8 @@ import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
   account: Account
+  monitoringAllowed: boolean
+  rechecking: boolean
   deleting: boolean
   downloadingCatalog: boolean
   recovering: boolean
@@ -19,6 +21,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
+  recheck: [accountId: string]
   edit: [account: Account]
   delete: [account: Account]
   recover: [accountId: string]
@@ -62,6 +65,9 @@ const credentialEligible = computed(() => props.account.authenticationKind === '
 
       <template #default="{ close }">
         <div class="w-40 p-1.5">
+          <ZMenuItem v-if="account.capabilities.turnStateProbe" :disabled="!monitoringAllowed || rechecking" :loading="rechecking" @click.stop="(close(), emit('recheck', account.id))">
+            立即复测
+          </ZMenuItem>
           <ZMenuItem
             :loading="testing"
             :disabled="testing"

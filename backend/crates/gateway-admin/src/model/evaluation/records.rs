@@ -74,13 +74,28 @@ pub struct EvaluationAccountState {
     pub authentication_kind: String,
     pub enabled: bool,
     pub group_ids: Vec<String>,
+    pub connection_revision: String,
 }
 
 impl EvaluationParameters {
     /// 提交与执行前都校验范围；权限、预算及账号可用性仍以 Core 当次准入为准
     pub fn validate(&self) -> Result<(), AdminError> {
-        if self.account_ids.is_empty() || self.account_ids.len() > MAX_ACCOUNTS_PER_RUN {
-            return Err(AdminError::invalid("每次选择 1 到 20 个账号"));
+        self.validate_accounts(MAX_ACCOUNTS_PER_RUN)
+    }
+
+    pub fn validate_scheduled(&self) -> Result<(), AdminError> {
+        self.validate_accounts(if self.kind == EvaluationKind::Turnstate {
+            super::MAX_SCHEDULED_PROBE_ACCOUNTS
+        } else {
+            MAX_ACCOUNTS_PER_RUN
+        })
+    }
+
+    fn validate_accounts(&self, maximum: usize) -> Result<(), AdminError> {
+        if self.account_ids.is_empty() || self.account_ids.len() > maximum {
+            return Err(AdminError::invalid(format!(
+                "每次选择 1 到 {maximum} 个账号"
+            )));
         }
         let mut unique = BTreeSet::new();
         for account_id in &self.account_ids {
@@ -134,6 +149,8 @@ impl EvaluationParameters {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvaluationProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitoring: Option<super::EvaluationPlanReference>,
     #[serde(default, skip_serializing_if = "EvaluationAccountSelection::is_fixed")]
     pub account_selection: EvaluationAccountSelection,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -151,6 +168,7 @@ impl EvaluationProfile {
     #[must_use]
     pub fn current(kind: EvaluationKind, gateway_version: &str) -> Self {
         Self {
+            monitoring: None,
             account_selection: Default::default(),
             account_preference: None,
             definition: None,
@@ -168,6 +186,7 @@ impl EvaluationProfile {
             return Self::current(parameters.kind, gateway_version);
         };
         Self {
+            monitoring: None,
             account_selection: Default::default(),
             account_preference: None,
             definition: Some(definition.clone()),
@@ -404,6 +423,8 @@ pub struct EvaluationFinish {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct EvaluationObservation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_profile_revision: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_state: Option<super::TurnStateProbeResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -428,6 +449,7 @@ pub struct EvaluationObservation {
 impl From<crate::model::observability::UsageRecord> for EvaluationObservation {
     fn from(record: crate::model::observability::UsageRecord) -> Self {
         Self {
+            request_profile_revision: None,
             request_history_available: true,
             turn_state: None,
             account_preference: None,
@@ -453,6 +475,8 @@ impl From<crate::model::observability::UsageRecord> for EvaluationObservation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvaluationPlanSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitoring: Option<super::EvaluationMonitoringPolicy>,
     #[serde(default)]
     pub account_selection: EvaluationAccountSelection,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -470,6 +494,24 @@ pub struct EvaluationPlanSettings {
 impl EvaluationPlanSettings {
     pub fn validate_parameters(&self) -> Result<(), AdminError> {
         self.account_selection.validate()?;
+        if let Some(policy) = &self.monitoring {
+            policy.validate()?;
+            if self.account_preference.is_some()
+                && self.interval_minutes.is_some_and(|interval| {
+                    policy.valid_minutes
+                        <= interval.saturating_mul(u32::from(
+                            policy.stable_count.max(policy.changed_count) - 1,
+                        ))
+                })
+            {
+                return Err(AdminError::invalid(
+                    "结果有效期须长于连续确认所需的检测间隔",
+                ));
+            }
+            if self.parameters.kind != EvaluationKind::Turnstate {
+                return Err(AdminError::invalid("账号监测方案仅支持快速测票"));
+            }
+        }
         if let Some(preference) = &self.account_preference {
             gateway_core::account::scope::AccountGroupId::new(preference.group_id.clone())
                 .map_err(|_| AdminError::invalid("优选分组 ID 无效"))?;

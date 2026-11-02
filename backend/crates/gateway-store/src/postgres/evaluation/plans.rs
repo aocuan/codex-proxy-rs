@@ -37,7 +37,24 @@ pub(super) async fn save(
     }
     let mut transaction = pool.begin().await.map_err(db_error)?;
     lock_queue(&mut transaction).await?;
+    if command.settings.monitoring.is_some() {
+        let previous: Vec<String> = sqlx::query_scalar("select id from evaluation_plans where id <> $1 and settings_json->'monitoring' is not null and settings_json->'monitoring' <> 'null'::jsonb for update")
+            .bind(&command.id).fetch_all(&mut *transaction).await.map_err(db_error)?;
+        for id in previous {
+            sqlx::query("update evaluation_plans set settings_json=settings_json - 'monitoring', revision=revision+1, updated_at=now() where id=$1")
+                .bind(&id).execute(&mut *transaction).await.map_err(db_error)?;
+            append_audit(
+                &mut transaction,
+                context,
+                MutationAuditOperation::EvaluationPlanUpdate,
+                &id,
+                &["monitoring"],
+            )
+            .await?;
+        }
+    }
     if command.settings.enabled
+        && command.settings.monitoring.is_some()
         && let Some(preference) = &command.settings.account_preference
     {
         let enabled: Option<bool> =
@@ -52,6 +69,7 @@ pub(super) async fn save(
         let occupied: bool = sqlx::query_scalar(
             "select exists(select 1 from evaluation_plans where id <> $1
              and settings_json @> '{\"enabled\":true}'::jsonb
+             and settings_json->'monitoring' is not null and settings_json->'monitoring' <> 'null'::jsonb
              and settings_json->'accountPreference'->>'groupId' = $2)",
         )
         .bind(&command.id)

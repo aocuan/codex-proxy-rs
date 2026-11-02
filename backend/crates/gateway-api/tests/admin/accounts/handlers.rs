@@ -35,6 +35,74 @@ fn account_list_request(uri: &str) -> Request<Body> {
         .unwrap()
 }
 
+fn monitoring_fixture(
+    fixture: &AdminTestFixture,
+    points: Vec<gateway_admin::model::evaluation::EvaluationHistoryItem>,
+) -> gateway_admin::model::evaluation::EvaluationMonitoringData {
+    use gateway_admin::model::evaluation::*;
+    fixture.published_snapshot.publish(
+        gateway_core::routing::RuntimeSnapshot::new(
+            gateway_core::routing::ConfigRevision::new(1).unwrap(),
+            gateway_core::settings::SettingsValues::new(1, "smart", Default::default(), None, None),
+            vec![],
+            vec![],
+            vec![],
+        )
+        .unwrap(),
+    );
+    let settings = EvaluationPlanSettings {
+        monitoring: Some(Default::default()),
+        account_selection: EvaluationAccountSelection::All,
+        account_preference: None,
+        name: "正式监测".into(),
+        parameters: EvaluationParameters {
+            kind: EvaluationKind::Turnstate,
+            definition: None,
+            client_key_id: "key_fixture".into(),
+            account_ids: vec![],
+            model: gateway_core::routing::PublicModelId::new("gpt-6.1-sol").unwrap(),
+            reasoning_effort: Some("low".into()),
+            repetitions: 1,
+            timeout_seconds: 60,
+        },
+        enabled: true,
+        interval_minutes: Some(10),
+        cron_expression: String::new(),
+        timezone: Default::default(),
+    };
+    let plan = EvaluationPlan {
+        id: "eval_plan_fixture".into(),
+        revision: 1,
+        settings,
+        available_accounts: Some(1),
+        next_run_at: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    let version = plan.monitoring_reference().version;
+    EvaluationMonitoringData {
+        observed_at: chrono::Utc::now(),
+        plan: Some(plan),
+        accounts: vec![EvaluationAccountState {
+            id: "acct_cooldown".into(),
+            enabled: true,
+            group_ids: vec![],
+            provider_kind: "openai".into(),
+            authentication_kind: "oauth".into(),
+            connection_revision: "fixture".into(),
+        }],
+        points: points
+            .into_iter()
+            .map(|history| EvaluationMonitoringPoint {
+                plan_version: version.clone(),
+                history,
+                connection_revision: None,
+                request_profile_revision: None,
+            })
+            .collect(),
+    }
+}
+
 #[tokio::test]
 async fn account_list_prefetch_uses_current_page_and_server_time() {
     let fixture = AdminTestFixture::new().await;
@@ -50,7 +118,8 @@ async fn account_list_prefetch_uses_current_page_and_server_time() {
         "completedAt": null,
     }))
     .unwrap();
-    *fixture.evaluations.history.lock().unwrap() = Some(Ok(vec![point]));
+    *fixture.evaluations.monitoring.lock().unwrap() =
+        Some(Ok(monitoring_fixture(&fixture, vec![point])));
     let response = admin::accounts::router::<AdminTestState>()
         .with_state(fixture.state())
         .oneshot(account_list_request(
@@ -66,10 +135,7 @@ async fn account_list_prefetch_uses_current_page_and_server_time() {
     assert_eq!(point["accountId"], "acct_cooldown");
     assert_eq!(point["status"], "running");
     assert_eq!(point["testedAtDisplay"], "2026-10-01 08:00:05");
-    assert_eq!(
-        *fixture.evaluations.history_queries.lock().unwrap(),
-        vec![vec!["acct_cooldown".to_owned()]]
-    );
+    assert_eq!(*fixture.evaluations.monitoring_queries.lock().unwrap(), 1);
 }
 
 #[tokio::test]
@@ -102,7 +168,7 @@ async fn account_list_remains_available_when_history_prefetch_fails() {
     let fixture = AdminTestFixture::new().await;
     fixture.auth.insert_session("valid-session");
     *fixture.account.lock().unwrap() = Some(history_prefetch_account());
-    *fixture.evaluations.history.lock().unwrap() = Some(Err(AdminStoreError::new(
+    *fixture.evaluations.monitoring.lock().unwrap() = Some(Err(AdminStoreError::new(
         AdminStoreErrorKind::Unavailable,
         "evaluation",
         "history unavailable",
@@ -126,7 +192,8 @@ async fn account_list_distinguishes_empty_history_from_unavailable_prefetch() {
     let fixture = AdminTestFixture::new().await;
     fixture.auth.insert_session("valid-session");
     *fixture.account.lock().unwrap() = Some(history_prefetch_account());
-    *fixture.evaluations.history.lock().unwrap() = Some(Ok(Vec::new()));
+    *fixture.evaluations.monitoring.lock().unwrap() =
+        Some(Ok(monitoring_fixture(&fixture, Vec::new())));
     let response = admin::accounts::router::<AdminTestState>()
         .with_state(fixture.state())
         .oneshot(account_list_request(
@@ -174,23 +241,15 @@ async fn api_key_accounts_remain_in_the_directory_without_ticket_history_queries
 }
 
 #[tokio::test]
-async fn evaluation_filter_limits_directory_results_and_keeps_health_summary_separate() {
-    use gateway_admin::model::evaluation::{
-        EvaluationAccountResultFact, EvaluationItemStatus, TurnStateOutcome,
-    };
+async fn unconfigured_monitoring_does_not_invent_signals_or_change_health_summary() {
     let fixture = AdminTestFixture::new().await;
     fixture.auth.insert_session("valid-session");
     *fixture.account.lock().unwrap() = Some(history_prefetch_account());
-    *fixture.evaluations.account_results.lock().unwrap() =
-        Some(Ok(vec![EvaluationAccountResultFact {
-            account_id: "acct_cooldown".into(),
-            provider_kind: "openai".into(),
-            authentication_kind: "oauth".into(),
-            status: Some(EvaluationItemStatus::Succeeded),
-            outcome: Some(TurnStateOutcome::Accepted),
-        }]));
+    let mut data = monitoring_fixture(&fixture, Vec::new());
+    data.plan = None;
+    *fixture.evaluations.monitoring.lock().unwrap() = Some(Ok(data));
     let app = admin::accounts::router::<AdminTestState>().with_state(fixture.state());
-    for (value, expected) in [("stable", 1), ("changed", 0), ("no_record", 0)] {
+    for (value, expected) in [("stable", 0), ("changed", 0), ("no_record", 1)] {
         let response = app
             .clone()
             .oneshot(account_list_request(&format!(

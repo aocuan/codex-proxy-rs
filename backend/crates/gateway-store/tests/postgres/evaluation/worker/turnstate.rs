@@ -22,6 +22,293 @@ fn unsupported_provider() -> ProviderAdminError {
 }
 
 #[tokio::test]
+async fn formal_rechecks_confirm_twice_while_diagnostics_never_drive_membership() {
+    let Some(db) = TestDatabase::create("formal_recheck_preference").await else {
+        return;
+    };
+    let (repository, execution, _, _) = setup(&db, Reply::Answer).await;
+    sqlx::query("update provider_accounts set authentication_kind='oauth' where id='acct_right'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let target = format!("grp_{}", "b".repeat(32));
+    sqlx::query("insert into account_groups (id,name,color,created_at,updated_at) values ($1,'preferred','#FFFFFFFF',now(),now())")
+        .bind(&target).execute(&db.pool).await.unwrap();
+    let provider = Arc::new(ProbeProvider {
+        kind: ProviderKind::new("openai").unwrap(),
+        pending: false,
+        calls: Arc::default(),
+        cleaned: Arc::default(),
+        preference_fixture: None,
+        gate: None,
+    });
+    let providers = ProviderAdminRegistry::new([provider as Arc<dyn ProviderAdmin>]).unwrap();
+    let snapshot = gateway_core::runtime::RuntimeSnapshotHandle::new(preference_snapshot(1, true));
+    let publisher = Arc::new(PreferencePublisher {
+        handle: snapshot.clone(),
+        revisions: Mutex::new(Vec::new()),
+        deny_at: None,
+    });
+    let service = EvaluationService::new(
+        repository.clone(),
+        "test".into(),
+        Default::default(),
+        snapshot.clone(),
+    )
+    .with_turnstate(providers.clone());
+    let task = EvaluationTask::new(
+        repository.clone(),
+        execution,
+        Arc::new(admin_observability_store(&db.pool)),
+        "test".into(),
+        Default::default(),
+        snapshot,
+    )
+    .with_turnstate(providers)
+    .with_snapshot_control(publisher);
+    let mut params = parameters(&["acct_right"], 1);
+    params.kind = EvaluationKind::Turnstate;
+    params.reasoning_effort = Some("low".into());
+    let plan = service
+        .save_plan(
+            None,
+            None,
+            EvaluationPlanSettings {
+                monitoring: Some(Default::default()),
+                account_preference: Some(EvaluationAccountPreference {
+                    group_id: target.clone(),
+                }),
+                account_selection: EvaluationAccountSelection::Fixed,
+                name: "正式监测".into(),
+                parameters: params.clone(),
+                enabled: true,
+                interval_minutes: Some(10),
+                cron_expression: String::new(),
+                timezone: Default::default(),
+            },
+            &context(),
+        )
+        .await
+        .unwrap();
+    let first = service
+        .recheck(
+            uuid::Uuid::new_v4(),
+            vec!["acct_right".into()],
+            plan.monitoring_reference(),
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .recheck(
+                uuid::Uuid::new_v4(),
+                vec!["acct_right".into()],
+                plan.monitoring_reference(),
+                &context()
+            )
+            .await
+            .unwrap()
+            .id,
+        first.id
+    );
+    let (cancel, handle) = start(task);
+    let first = wait_finished(&repository, &first.id).await;
+    assert_eq!(
+        first.items[0]
+            .observation
+            .account_preference
+            .as_ref()
+            .unwrap()
+            .status,
+        EvaluationPreferenceStatus::Skipped
+    );
+    params.model = PublicModelId::new("diagnostic-model").unwrap();
+    let diagnostic = service
+        .submit(uuid::Uuid::new_v4(), params, &context())
+        .await
+        .unwrap();
+    let diagnostic = wait_finished(&repository, &diagnostic.id).await;
+    assert!(diagnostic.items[0].observation.account_preference.is_none());
+    let members: i64 =
+        sqlx::query_scalar("select count(*) from account_group_accounts where account_group_id=$1")
+            .bind(&target)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(members, 0);
+    let second = service
+        .recheck(
+            uuid::Uuid::new_v4(),
+            vec!["acct_right".into()],
+            plan.monitoring_reference(),
+            &context(),
+        )
+        .await
+        .unwrap();
+    let second = wait_finished(&repository, &second.id).await;
+    assert_eq!(
+        second.items[0]
+            .observation
+            .account_preference
+            .as_ref()
+            .unwrap()
+            .status,
+        EvaluationPreferenceStatus::Joined
+    );
+    let view = service.monitoring_snapshot().await.unwrap();
+    let account = view
+        .accounts
+        .iter()
+        .find(|account| account.account_id == "acct_right")
+        .unwrap();
+    assert_eq!(account.status, EvaluationAccountStatus::Stable);
+    assert_eq!(account.consecutive, 2);
+    assert_eq!(view.history.len(), 2);
+    // 图表窗口可以被跳过记录填满，但有效信号和连续确认不能随之丢失
+    sqlx::query("insert into evaluation_runs (id,parameters_json,profile_json,actor_json,created_at,submission_id)
+        select 'eval_skipped_'||n, r.parameters_json,r.profile_json,r.actor_json,now(),gen_random_uuid() from evaluation_runs r cross join generate_series(1,30) n where r.id=$1")
+        .bind(&second.run.id).execute(&db.pool).await.unwrap();
+    sqlx::query("insert into evaluation_items (id,run_id,account_id,repetition,status,completed_at,message)
+        select 'item_skipped_'||n,'eval_skipped_'||n,'acct_right',1,'skipped',now(),'上一轮尚未结束' from generate_series(1,30) n")
+        .execute(&db.pool).await.unwrap();
+    let view = service.monitoring_snapshot().await.unwrap();
+    let account = view
+        .accounts
+        .iter()
+        .find(|account| account.account_id == "acct_right")
+        .unwrap();
+    assert_eq!(account.status, EvaluationAccountStatus::Stable);
+    assert_eq!(account.consecutive, 2);
+    assert_eq!(
+        account.latest_attempt.as_ref().unwrap().status,
+        EvaluationItemStatus::Skipped
+    );
+    assert_eq!(view.history.len(), 28);
+    assert!(
+        view.history
+            .iter()
+            .all(|point| point.status == EvaluationItemStatus::Skipped)
+    );
+    sqlx::query("update provider_accounts set outbound_proxy_url='http://127.0.0.1:8888' where id='acct_right'").execute(&db.pool).await.unwrap();
+    assert_eq!(
+        service
+            .monitoring_snapshot()
+            .await
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|account| account.account_id == "acct_right")
+            .unwrap()
+            .status,
+        EvaluationAccountStatus::Stale
+    );
+    cancel.cancel();
+    handle.await.unwrap().unwrap();
+    db.close().await;
+}
+
+#[tokio::test]
+async fn scheduled_monitoring_queues_all_accounts_beyond_the_manual_twenty_account_limit() {
+    use gateway_core::account::scope::{
+        ClientRoutingScope, FrozenAccountScope, RuntimeAccount, RuntimeAccountDirectory,
+    };
+    let Some(db) = TestDatabase::create("formal_large_pool").await else {
+        return;
+    };
+    let (repository, execution, _, _) = setup(&db, Reply::Answer).await;
+    let ids = (0..31)
+        .map(|index| format!("acct_pool_{index:02}"))
+        .collect::<Vec<_>>();
+    sqlx::query("insert into provider_accounts (id,provider_kind,name,authentication_kind,provider_credentials_json,has_refresh_token,credential_observed_at,created_at,updated_at) select id,'openai',id,'oauth','{}'::jsonb,false,now(),now(),now() from unnest($1::text[]) id")
+        .bind(&ids).execute(&db.pool).await.unwrap();
+    let provider = ProviderKind::new("openai").unwrap();
+    let directory = Arc::new(RuntimeAccountDirectory::new(
+        ids.iter()
+            .map(|id| {
+                (
+                    ProviderAccountId::new(id).unwrap(),
+                    RuntimeAccount::new(provider.clone(), Default::default()),
+                )
+            })
+            .collect(),
+    ));
+    let policy = gateway_core::policy::ClientPolicy::new(
+        gateway_core::policy::ClientApiKeyId::new("key_evaluation").unwrap(),
+        gateway_core::policy::PlaintextClientApiKey::new("test-only").unwrap(),
+        Arc::new(FrozenAccountScope::new(
+            directory,
+            ClientRoutingScope::all_accounts(),
+        )),
+        true,
+        Default::default(),
+    );
+    let snapshot = gateway_core::runtime::RuntimeSnapshotHandle::new(
+        gateway_core::routing::RuntimeSnapshot::new(
+            gateway_core::routing::ConfigRevision::new(1).unwrap(),
+            gateway_core::settings::SettingsValues::new(1, "smart", Default::default(), None, None),
+            vec![provider.clone()],
+            vec![],
+            vec![policy],
+        )
+        .unwrap(),
+    );
+    let providers = ProviderAdminRegistry::new([Arc::new(ProbeProvider {
+        kind: provider,
+        pending: false,
+        calls: Arc::default(),
+        cleaned: Arc::default(),
+        preference_fixture: None,
+        gate: None,
+    }) as Arc<dyn ProviderAdmin>])
+    .unwrap();
+    let task = EvaluationTask::new(
+        repository.clone(),
+        execution,
+        Arc::new(admin_observability_store(&db.pool)),
+        "test".into(),
+        Default::default(),
+        snapshot,
+    )
+    .with_turnstate(providers);
+    let mut params = parameters(&[], 1);
+    params.kind = EvaluationKind::Turnstate;
+    params.reasoning_effort = Some("low".into());
+    let now = Utc::now();
+    repository
+        .save_plan(
+            SaveEvaluationPlan {
+                id: "eval_plan_large".into(),
+                expected_revision: None,
+                settings: EvaluationPlanSettings {
+                    monitoring: Some(Default::default()),
+                    account_preference: None,
+                    account_selection: EvaluationAccountSelection::All,
+                    name: "完整账号池".into(),
+                    parameters: params,
+                    enabled: true,
+                    interval_minutes: Some(10),
+                    cron_expression: String::new(),
+                    timezone: Default::default(),
+                },
+                next_run_at: Some(now),
+            },
+            &context(),
+        )
+        .await
+        .unwrap();
+    task.advance_schedules(now).await.unwrap();
+    let runs = repository.list_runs(10, 0).await.unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].parameters.account_ids, ids);
+    assert_eq!(runs[0].active_items, 31);
+    assert!(repository.claim_next(now).await.unwrap().is_some());
+    assert!(repository.claim_next(now).await.unwrap().is_some());
+    assert!(repository.claim_next(now).await.unwrap().is_none());
+    db.close().await;
+}
+
+#[tokio::test]
 async fn account_result_filters_share_history_conditions_and_apply_before_directory_pagination() {
     use gateway_admin::{
         model::{
@@ -33,7 +320,7 @@ async fn account_result_filters_share_history_conditions_and_apply_before_direct
     let Some(db) = TestDatabase::create("eval_account_filter").await else {
         return;
     };
-    let (repository, _, _, service) = setup(&db, Reply::Answer).await;
+    let (repository, _, _, _) = setup(&db, Reply::Answer).await;
     sqlx::query("insert into provider_accounts (id,provider_kind,name,authentication_kind,provider_credentials_json,has_refresh_token,credential_observed_at,created_at,updated_at)
         select id,'openai',id,'oauth','{}'::jsonb,false,now(),now(),now() from unnest($1::text[]) id")
         .bind(vec!["acct_unknown", "acct_failed", "acct_empty", "acct_legacy"])
@@ -52,13 +339,45 @@ async fn account_result_filters_share_history_conditions_and_apply_before_direct
         preference_fixture: None,
         gate: None,
     });
-    let service = service
-        .with_turnstate(ProviderAdminRegistry::new([provider as Arc<dyn ProviderAdmin>]).unwrap());
+    let service = EvaluationService::new(
+        repository.clone(),
+        "test".into(),
+        Default::default(),
+        gateway_core::runtime::RuntimeSnapshotHandle::new(preference_snapshot(1, true)),
+    )
+    .with_turnstate(ProviderAdminRegistry::new([provider as Arc<dyn ProviderAdmin>]).unwrap());
     let probe_parameters = |ids: &[&str]| {
         let mut params = parameters(ids, 1);
         params.kind = EvaluationKind::Turnstate;
         params.reasoning_effort = Some("low".into());
         params
+    };
+    let formal = repository
+        .save_plan(
+            SaveEvaluationPlan {
+                id: "eval_plan_filter".into(),
+                expected_revision: None,
+                settings: EvaluationPlanSettings {
+                    monitoring: Some(Default::default()),
+                    account_selection: EvaluationAccountSelection::All,
+                    account_preference: None,
+                    name: "正式监测".into(),
+                    parameters: probe_parameters(&[]),
+                    enabled: true,
+                    interval_minutes: Some(10),
+                    cron_expression: String::new(),
+                    timezone: Default::default(),
+                },
+                next_run_at: Some(Utc::now()),
+            },
+            &context(),
+        )
+        .await
+        .unwrap();
+    let seed = |params: EvaluationParameters| {
+        let mut seed = EvaluationRunSeed::new(params, "test", Utc::now());
+        seed.profile.monitoring = Some(formal.monitoring_reference());
+        seed
     };
     let mut old = probe_parameters(&["acct_legacy"]);
     old.model = PublicModelId::new("old-filter-model").unwrap();
@@ -100,7 +419,7 @@ async fn account_result_filters_share_history_conditions_and_apply_before_direct
     repository
         .enqueue_manual(
             uuid::Uuid::new_v4(),
-            EvaluationRunSeed::new(probe_parameters(&accounts), "test", Utc::now()),
+            seed(probe_parameters(&accounts)),
             &context(),
         )
         .await
@@ -128,7 +447,20 @@ async fn account_result_filters_share_history_conditions_and_apply_before_direct
             _ => TurnStateOutcome::Accepted,
         };
         let mut completion = super::super::transactions::completion(status);
+        completion.observation.request_profile_revision =
+            Some("95cb9b4f84ceff132cc7a875d8c192bf4997016a939ee64141c1fd628c0e8738".into());
         completion.observation.turn_state = Some(TurnStateProbeResult {
+            diagnostic: None,
+            connection_revision: Some(
+                repository
+                    .account_states()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|account| account.id == claim.item.account_id)
+                    .unwrap()
+                    .connection_revision,
+            ),
             outcome,
             steps: Vec::new(),
             error: None,
@@ -141,11 +473,7 @@ async fn account_result_filters_share_history_conditions_and_apply_before_direct
     repository
         .enqueue_manual(
             uuid::Uuid::new_v4(),
-            EvaluationRunSeed::new(
-                probe_parameters(&["acct_pending", "acct_right"]),
-                "test",
-                Utc::now(),
-            ),
+            seed(probe_parameters(&["acct_pending", "acct_right"])),
             &context(),
         )
         .await
@@ -260,19 +588,19 @@ async fn account_result_filters_share_history_conditions_and_apply_before_direct
         )
         .await
         .unwrap();
-    assert!(
+    assert_eq!(
         service
             .filter_account_ids(EvaluationAccountStatus::Stable)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        ["acct_right", "acct_target"]
     );
     assert_eq!(
         service
             .filter_account_ids(EvaluationAccountStatus::Pending)
             .await
             .unwrap(),
-        ["acct_right"]
+        ["acct_pending"]
     );
     db.close().await;
 }
@@ -321,7 +649,7 @@ impl ProviderAdmin for ProbeProvider {
                 steps[1].ticket_fingerprint = "changed".into();
             }
         }
-        Ok(TurnStateProbeResult::new(
+        let mut report = TurnStateProbeResult::new(
             steps,
             if self.pending {
                 Some("测票已取消".into())
@@ -330,7 +658,16 @@ impl ProviderAdmin for ProbeProvider {
             } else {
                 None
             },
-        ))
+        );
+        report.connection_revision = Some(
+            gateway_core::account::UpstreamConnection::new(
+                account.clone(),
+                gateway_core::account::CredentialRevision::new(1).unwrap(),
+                None,
+            )
+            .revision,
+        );
+        Ok(report)
     }
 
     fn provider_kind(&self) -> &ProviderKind {
@@ -430,15 +767,25 @@ fn preference_snapshot(revision: u64, enabled: bool) -> gateway_core::routing::R
         ClientRoutingScope, FrozenAccountScope, RuntimeAccount, RuntimeAccountDirectory,
     };
     let provider = ProviderKind::new("openai").unwrap();
-    let accounts = ["acct_right", "acct_wrong", "acct_pending", "acct_target"]
-        .into_iter()
-        .map(|id| {
-            (
-                ProviderAccountId::new(id).unwrap(),
-                RuntimeAccount::new(provider.clone(), Default::default()),
-            )
-        })
-        .collect();
+    let accounts = [
+        "acct_right",
+        "acct_wrong",
+        "acct_pending",
+        "acct_target",
+        "acct_unknown",
+        "acct_failed",
+        "acct_empty",
+        "acct_legacy",
+        "acct_judge",
+    ]
+    .into_iter()
+    .map(|id| {
+        (
+            ProviderAccountId::new(id).unwrap(),
+            RuntimeAccount::new(provider.clone(), Default::default()),
+        )
+    })
+    .collect();
     let directory = Arc::new(RuntimeAccountDirectory::new(accounts));
     let policy = gateway_core::policy::ClientPolicy::new(
         gateway_core::policy::ClientApiKeyId::new("key_evaluation").unwrap(),
@@ -531,6 +878,11 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
             None,
             None,
             EvaluationPlanSettings {
+                monitoring: Some(EvaluationMonitoringPolicy {
+                    stable_count: 1,
+                    changed_count: 1,
+                    ..Default::default()
+                }),
                 account_preference: Some(EvaluationAccountPreference {
                     group_id: target.clone(),
                 }),
@@ -695,6 +1047,11 @@ async fn preference_rechecks_key_policy_after_concurrent_configuration_change() 
             None,
             None,
             EvaluationPlanSettings {
+                monitoring: Some(EvaluationMonitoringPolicy {
+                    stable_count: 1,
+                    changed_count: 1,
+                    ..Default::default()
+                }),
                 account_preference: Some(EvaluationAccountPreference {
                     group_id: target.clone(),
                 }),
@@ -777,6 +1134,11 @@ async fn stale_stopped_or_unauthorized_preference_results_preserve_group_members
         params.kind = EvaluationKind::Turnstate;
         params.reasoning_effort = Some("low".into());
         let settings = EvaluationPlanSettings {
+            monitoring: Some(EvaluationMonitoringPolicy {
+                stable_count: 1,
+                changed_count: 1,
+                ..Default::default()
+            }),
             account_preference: Some(EvaluationAccountPreference {
                 group_id: target.clone(),
             }),
@@ -805,6 +1167,7 @@ async fn stale_stopped_or_unauthorized_preference_results_preserve_group_members
             .unwrap();
         params.account_ids = vec!["acct_right".into()];
         let mut seed = EvaluationRunSeed::new(params, "test", now);
+        seed.profile.monitoring = Some(plan.monitoring_reference());
         seed.profile.account_selection = settings.account_selection.clone();
         seed.profile.account_preference = Some(EvaluationPreferenceSnapshot {
             group_id: target.clone(),
@@ -882,6 +1245,23 @@ async fn stale_stopped_or_unauthorized_preference_results_preserve_group_members
         }
         let mut completion =
             super::super::transactions::completion(EvaluationItemStatus::Succeeded);
+        completion.observation.request_profile_revision = Some("fixture-profile".into());
+        completion.observation.turn_state = Some(TurnStateProbeResult {
+            diagnostic: None,
+            connection_revision: Some(
+                repository
+                    .account_states()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|account| account.id == "acct_right")
+                    .unwrap()
+                    .connection_revision,
+            ),
+            outcome: TurnStateOutcome::Accepted,
+            steps: vec![],
+            error: None,
+        });
         completion.account_preference = Some(EvaluationPreferenceDecision {
             rule: claimed.profile.account_preference.clone().unwrap(),
             desired_member: Some(true),
@@ -945,7 +1325,7 @@ async fn stale_stopped_or_unauthorized_preference_results_preserve_group_members
 }
 
 #[tokio::test]
-async fn a_preference_group_can_have_only_one_enabled_plan() {
+async fn selecting_a_formal_plan_replaces_the_previous_owner_atomically() {
     let Some(db) = TestDatabase::create("eval_preference_owner").await else {
         return;
     };
@@ -957,6 +1337,11 @@ async fn a_preference_group_can_have_only_one_enabled_plan() {
     params.kind = EvaluationKind::Turnstate;
     params.reasoning_effort = Some("low".into());
     let settings = EvaluationPlanSettings {
+        monitoring: Some(EvaluationMonitoringPolicy {
+            stable_count: 1,
+            changed_count: 1,
+            ..Default::default()
+        }),
         account_preference: Some(EvaluationAccountPreference { group_id: target }),
         account_selection: EvaluationAccountSelection::Fixed,
         name: "优选".into(),
@@ -976,32 +1361,48 @@ async fn a_preference_group_can_have_only_one_enabled_plan() {
         .save_plan(save("eval_plan_first"), &context())
         .await
         .unwrap();
+    let second = repository
+        .save_plan(save("eval_plan_second"), &context())
+        .await
+        .unwrap();
+    let plans = repository.list_plans().await.unwrap();
+    assert_eq!(
+        plans
+            .iter()
+            .filter(|plan| plan.settings.monitoring.is_some())
+            .count(),
+        1
+    );
+    assert!(
+        plans
+            .iter()
+            .find(|plan| plan.id == first.id)
+            .unwrap()
+            .settings
+            .monitoring
+            .is_none()
+    );
+    assert_eq!(
+        repository.monitoring_data().await.unwrap().plan.unwrap().id,
+        second.id
+    );
     assert!(
         repository
-            .save_plan(save("eval_plan_second"), &context())
+            .save_plan(
+                SaveEvaluationPlan {
+                    id: first.id,
+                    expected_revision: Some(first.revision),
+                    settings,
+                    next_run_at: Some(Utc::now())
+                },
+                &context()
+            )
             .await
             .is_err()
     );
-    repository
-        .save_plan(
-            SaveEvaluationPlan {
-                id: first.id,
-                expected_revision: Some(first.revision),
-                settings: EvaluationPlanSettings {
-                    enabled: false,
-                    ..settings.clone()
-                },
-                next_run_at: None,
-            },
-            &context(),
-        )
-        .await
-        .unwrap();
-    assert!(
-        repository
-            .save_plan(save("eval_plan_second"), &context())
-            .await
-            .is_ok()
+    assert_eq!(
+        repository.monitoring_data().await.unwrap().plan.unwrap().id,
+        second.id
     );
     db.close().await;
 }
@@ -1036,6 +1437,7 @@ async fn ticket_probe_filters_api_keys_before_manual_and_fixed_work() {
             None,
             None,
             EvaluationPlanSettings {
+                monitoring: None,
                 account_preference: None,
                 account_selection: EvaluationAccountSelection::Fixed,
                 name: "仅保留支持的账号".into(),
@@ -1101,6 +1503,7 @@ async fn api_key_only_ticket_requests_do_not_create_runs_or_enabled_plans() {
     assert!(error.to_string().contains("没有支持快速探票的账号"));
     assert!(repository.list_runs(100, 0).await.unwrap().is_empty());
     let settings = EvaluationPlanSettings {
+        monitoring: None,
         account_preference: None,
         account_selection: EvaluationAccountSelection::Fixed,
         name: "API 不参加探票".into(),
@@ -1187,6 +1590,7 @@ async fn scheduled_ticket_ranges_and_available_counts_use_provider_capabilities(
                     id: id.clone(),
                     expected_revision: None,
                     settings: EvaluationPlanSettings {
+                        monitoring: None,
                         account_preference: None,
                         account_selection: selection,
                         name: name.into(),
