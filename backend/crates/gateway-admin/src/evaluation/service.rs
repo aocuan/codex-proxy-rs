@@ -161,6 +161,9 @@ impl EvaluationService {
         &self,
         parameters: &EvaluationParameters,
     ) -> Result<(), AdminError> {
+        if parameters.kind == EvaluationKind::Turnstate {
+            return Ok(());
+        }
         self.validate_access(&parameters.client_key_id, &parameters.account_ids)?;
         if let Some(EvaluationDefinition {
             grader: EvaluationGrader::Model { config },
@@ -277,6 +280,9 @@ impl EvaluationService {
         mut parameters: EvaluationParameters,
         context: &MutationContext,
     ) -> Result<EvaluationRun, AdminError> {
+        if parameters.kind == EvaluationKind::Turnstate {
+            parameters.client_key_id.clear();
+        }
         parameters.validate()?;
         self.validate_parameter_access(&parameters)?;
         self.retain_supported_accounts(&mut parameters).await?;
@@ -413,29 +419,12 @@ impl EvaluationService {
         {
             return Err(AdminError::invalid("修改计划必须携带当前版本"));
         }
+        if settings.parameters.kind == EvaluationKind::Turnstate {
+            settings.parameters.client_key_id.clear();
+        }
         // 时区由部署决定，不能由请求伪造显示为另一套调度时间
         settings.timezone = self.timezone;
         let next_run_at = settings.next_run_after(Utc::now())?;
-        if settings.enabled
-            && settings.monitoring.is_some()
-            && let Some(preference) = &settings.account_preference
-        {
-            let snapshot = self
-                .snapshot
-                .acquire()
-                .map_err(|_| AdminError::internal("当前账号授权配置不可用"))?;
-            let key = ClientApiKeyId::new(settings.parameters.client_key_id.clone())
-                .map_err(|_| AdminError::invalid("Client Key ID 无效"))?;
-            let policy = snapshot
-                .client_policy(&key)
-                .filter(|policy| policy.authorize().is_ok())
-                .ok_or_else(|| AdminError::invalid("所选 Key 不存在或已停用"))?;
-            if !super::accounts::independent_preference_key(policy, &preference.group_id) {
-                return Err(AdminError::invalid(
-                    "优选计划的授权 Key 不能绑定优选分组，请使用独立的检测范围",
-                ));
-            }
-        }
         if settings.account_selection.is_fixed() {
             if settings.enabled {
                 self.validate_parameter_access(&settings.parameters)?;
@@ -446,7 +435,7 @@ impl EvaluationService {
                 return Err(AdminError::invalid("没有支持快速探票的账号"));
             }
         }
-        if settings.enabled {
+        if settings.enabled && settings.parameters.kind != EvaluationKind::Turnstate {
             if !settings.account_selection.is_fixed() {
                 let snapshot = self
                     .snapshot

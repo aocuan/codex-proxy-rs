@@ -17,6 +17,7 @@ import ProviderIconGroup from '@/components/ProviderIconGroup.vue'
 import { useAccountGroupCatalog } from '@/composables/useAccountGroupCatalog'
 import { useAsyncAction } from '@/composables/useAsyncAction'
 import { generateRequestId } from '@/utils/operation'
+import AccountPreferenceModal from '@/views/evaluations/components/AccountPreferenceModal.vue'
 import AccountCreateModal from './components/account-create-modal/index.vue'
 import AccountImportTasks from './components/account-import-tasks/index.vue'
 import AccountQuotaPanel from './components/account-quota-panel/index.vue'
@@ -52,6 +53,7 @@ function openConcurrency(account: Account) {
 }
 
 const router = useRouter()
+const showPreference = shallowRef(false)
 const selectedIds = ref<Set<string>>(new Set())
 const refreshOptions = computed(() => [
   {
@@ -386,11 +388,11 @@ const {
             />
           </template>
         </AccountFilters>
-        <div v-if="evaluationVisible" class="mt-2 flex flex-wrap items-center gap-2 text-z-xs text-z-text-secondary">
-          <span v-if="monitoring?.plan">正式监测：{{ monitoring.plan.settings.name }} · {{ monitoring.plan.settings.parameters.model }}{{ monitoring.plan.settings.enabled ? '' : ' · 已暂停' }}</span>
-          <span v-else>尚未选择正式监测方案</span>
-          <ZButton size="small" variant="text" @click="router.push('/evaluations')">
-            设置监测方案
+        <div class="mt-2 flex flex-wrap items-center gap-2 text-z-xs text-z-text-secondary">
+          <span v-if="evaluationVisible && monitoring?.plan">正式监测：{{ monitoring.plan.settings.name }} · {{ monitoring.plan.settings.parameters.model }}{{ monitoring.plan.settings.enabled ? '' : ' · 已暂停' }}</span>
+          <span v-else-if="evaluationVisible">尚未选择正式监测方案</span>
+          <ZButton size="small" variant="text" @click="showPreference = true">
+            账号优选
           </ZButton>
         </div>
         <div v-if="evaluationsError" class="mt-2 flex items-center gap-2 text-z-xs text-z-error-text" role="alert">
@@ -659,6 +661,7 @@ const {
         {{ t('accounts.page.delete', { value: pendingDeleteAccount ? accountIdentityLabel(pendingDeleteAccount) : t('accounts.page.thisAccount') }) }}
       </p>
     </ZConfirmDialog>
+    <AccountPreferenceModal v-model="showPreference" @saved="refreshAccounts()" />
     <EvaluationOutputModal v-model="showEvaluationOutput" :item="evaluationItem" :run="evaluationRun" :account-name="evaluationAccountName" />
   </div>
 </template>

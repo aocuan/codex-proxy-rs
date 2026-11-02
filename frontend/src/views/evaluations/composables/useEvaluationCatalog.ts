@@ -130,9 +130,13 @@ export function useEvaluationCatalog() {
     loadingAccounts: accountRequest.loading,
     loadingKeys: keyRequest.loading,
     ready: computed(() => !accountRequest.loading.value && !keyRequest.loading.value),
-    load: () => Promise.allSettled([
+    load: ({ keys = true }: { keys?: boolean } = {}) => Promise.allSettled([
       loadAccounts(),
-      loadKeys(),
+      ...(keys
+        ? [
+            loadKeys(),
+          ]
+        : []),
       loadGroups(),
     ]),
     searchAccounts: useDebounceFn(loadAccounts, 250),

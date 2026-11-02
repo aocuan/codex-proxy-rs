@@ -43,11 +43,11 @@ async fn formal_rechecks_confirm_twice_while_diagnostics_never_drive_membership(
         gate: None,
     });
     let providers = ProviderAdminRegistry::new([provider as Arc<dyn ProviderAdmin>]).unwrap();
-    let snapshot = gateway_core::runtime::RuntimeSnapshotHandle::new(preference_snapshot(1, true));
+    let snapshot = gateway_core::runtime::RuntimeSnapshotHandle::new(preference_snapshot(1, false));
     let publisher = Arc::new(PreferencePublisher {
         handle: snapshot.clone(),
         revisions: Mutex::new(Vec::new()),
-        deny_at: None,
+        deny_at: Some(1),
     });
     let service = EvaluationService::new(
         repository.clone(),
@@ -68,6 +68,7 @@ async fn formal_rechecks_confirm_twice_while_diagnostics_never_drive_membership(
     .with_snapshot_control(publisher);
     let mut params = parameters(&["acct_right"], 1);
     params.kind = EvaluationKind::Turnstate;
+    params.client_key_id.clear();
     params.reasoning_effort = Some("low".into());
     let plan = service
         .save_plan(
@@ -995,7 +996,7 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
 }
 
 #[tokio::test]
-async fn preference_rechecks_key_policy_after_concurrent_configuration_change() {
+async fn preference_continues_when_business_key_is_disabled_during_probe() {
     let Some(db) = TestDatabase::create("eval_preference_policy_race").await else {
         return;
     };
@@ -1056,7 +1057,7 @@ async fn preference_rechecks_key_policy_after_concurrent_configuration_change() 
                     group_id: target.clone(),
                 }),
                 account_selection: EvaluationAccountSelection::Fixed,
-                name: "并发授权".into(),
+                name: "独立管理员检测".into(),
                 parameters: params,
                 enabled: true,
                 interval_minutes: Some(1),
@@ -1097,11 +1098,10 @@ async fn preference_rechecks_key_policy_after_concurrent_configuration_change() 
         TurnStateOutcome::Refreshed
     );
     let preference = item.observation.account_preference.as_ref().unwrap();
-    assert_eq!(preference.status, EvaluationPreferenceStatus::Skipped);
-    assert!(preference.reason.as_deref().unwrap().contains("授权范围"));
+    assert_eq!(preference.status, EvaluationPreferenceStatus::Removed);
     let still_member: bool = sqlx::query_scalar("select exists(select 1 from account_group_accounts where account_group_id=$1 and provider_account_id='acct_wrong')")
         .bind(&target).fetch_one(&db.pool).await.unwrap();
-    assert!(still_member);
+    assert!(!still_member);
     assert!(publisher.revisions.lock().unwrap().contains(&2));
     cancel.cancel();
     handle.await.unwrap().unwrap();
@@ -1109,11 +1109,11 @@ async fn preference_rechecks_key_policy_after_concurrent_configuration_change() 
 }
 
 #[tokio::test]
-async fn stale_stopped_or_unauthorized_preference_results_preserve_group_membership() {
+async fn stale_stopped_or_out_of_scope_preference_results_preserve_group_membership() {
     for scenario in [
         "paused",
         "stopped",
-        "key_changed",
+        "configuration_changed",
         "group_disabled",
         "source_removed",
         "audit_failure",
@@ -1219,8 +1219,7 @@ async fn stale_stopped_or_unauthorized_preference_results_preserve_group_members
                     .await
                     .unwrap();
             }
-            "key_changed" => {
-                sqlx::query("insert into client_api_key_groups (client_api_key_id,account_group_id,created_at) values ('key_evaluation',$1,now())").bind(&target).execute(&db.pool).await.unwrap();
+            "configuration_changed" => {
                 sqlx::query(
                     "update runtime_settings set config_revision=config_revision+1 where id=1",
                 )
@@ -1268,7 +1267,7 @@ async fn stale_stopped_or_unauthorized_preference_results_preserve_group_members
             expected_revision: Some(gateway_admin::model::Revision::new(1).unwrap()),
             skip_reason: None,
         });
-        if scenario == "key_changed" {
+        if scenario == "configuration_changed" {
             let stale = repository
                 .finish_item(&claimed.item.id, completion.clone())
                 .await

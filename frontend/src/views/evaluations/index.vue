@@ -7,6 +7,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { retryEvaluationJudgment } from '@/api'
 import EvaluationOutputModal from '@/components/evaluation/EvaluationOutputModal.vue'
 import { useAsyncAction } from '@/composables/useAsyncAction'
+import AccountPreferenceModal from './components/AccountPreferenceModal.vue'
 import EvaluationComparisonModal from './components/EvaluationComparisonModal.vue'
 import EvaluationDetailModal from './components/EvaluationDetailModal.vue'
 import EvaluationFormModal from './components/EvaluationFormModal.vue'
@@ -93,6 +94,7 @@ async function retryJudgment(item: EvaluationItem) {
 const showOutput = shallowRef(false)
 const outputItem = shallowRef<EvaluationItem | null>(null)
 const outputRun = shallowRef<EvaluationRun | null>(null)
+const showPreference = shallowRef(false)
 const showDelete = shallowRef(false)
 const deletingPlan = shallowRef<EvaluationPlan | null>(null)
 
@@ -122,6 +124,9 @@ async function confirmDelete() {
         <div class="flex w-full flex-wrap items-center gap-3">
           <ZSegmented v-model="tab" :options="[{ label: '测评历史', value: 'history' }, { label: '定时计划', value: 'plans' }]" aria-label="测评视图" />
           <div class="ml-auto flex flex-wrap justify-end gap-2">
+            <ZButton @click="showPreference = true">
+              账号优选
+            </ZButton>
             <ZButton v-if="entries.length" :loading="loadingComparison" @click="showComparison = true">
               <template #icon>
                 <Columns2 class="size-4" />
@@ -223,7 +228,7 @@ async function confirmDelete() {
             </template>
             <template #actions="{ row }">
               <div class="flex gap-2">
-                <ZButton size="small" :disabled="changingPlan" @click="editor.show(true, row)">
+                <ZButton size="small" :disabled="changingPlan" @click="row.settings.monitoring ? showPreference = true : editor.show(true, row)">
                   编辑
                 </ZButton>
                 <ZButton size="small" :loading="changingPlanId === row.id" :disabled="changingPlan" @click="evaluation.changePlan(row)">
@@ -238,7 +243,8 @@ async function confirmDelete() {
         </div>
       </template>
     </ZCard>
-    <EvaluationFormModal :editor="editor" :catalog="catalog" :config="config" :settings="settingsCurrent" :settings-saved-revision="lastSavedRevision" @configure="settings.show" />
+    <AccountPreferenceModal v-model="showPreference" @saved="evaluation.loadPlans()" />
+    <EvaluationFormModal :editor="editor" :catalog="catalog" :config="config" :settings="settingsCurrent" :settings-saved-revision="lastSavedRevision" @configure="settings.show" @preference="showPreference = true" />
     <EvaluationSettingsModal :settings="settings" :catalog="catalog" />
     <EvaluationDetailModal
       v-model="showDetail" :detail="detail" :loading="loadingDetail" :error="detailError"

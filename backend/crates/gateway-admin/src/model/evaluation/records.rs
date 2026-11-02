@@ -21,6 +21,7 @@ pub struct EvaluationParameters {
     pub kind: EvaluationKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub definition: Option<EvaluationDefinition>,
+    #[serde(default)]
     pub client_key_id: String,
     pub account_ids: Vec<String>,
     pub model: PublicModelId,
@@ -118,8 +119,10 @@ impl EvaluationParameters {
                 "快速测票固定两次 hi 请求、low 推理强度和每账号一组，不接受自定义题目或判题",
             ));
         }
-        ClientApiKeyId::new(self.client_key_id.clone())
-            .map_err(|_| AdminError::invalid("Client Key ID 无效"))?;
+        if self.kind != EvaluationKind::Turnstate {
+            ClientApiKeyId::new(self.client_key_id.clone())
+                .map_err(|_| AdminError::invalid("Client Key ID 无效"))?;
+        }
         if !(1..=MAX_REPETITIONS).contains(&self.repetitions)
             || (self.definition.is_none()
                 && self.kind == EvaluationKind::Pelican

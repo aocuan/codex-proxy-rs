@@ -16,6 +16,20 @@ fn parameters() -> gateway_admin::model::evaluation::EvaluationParameters {
 }
 
 #[test]
+fn only_ticket_diagnostics_allow_parameters_without_a_client_key() {
+    let mut payload = serde_json::to_value(parameters()).unwrap();
+    payload.as_object_mut().unwrap().remove("clientKeyId");
+    payload["repetitions"] = serde_json::json!(1);
+    payload["reasoningEffort"] = serde_json::json!("low");
+    for kind in ["turnstate", "candy", "pelican"] {
+        payload["kind"] = serde_json::json!(kind);
+        let params: gateway_admin::model::evaluation::EvaluationParameters =
+            serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(params.validate().is_ok(), kind == "turnstate");
+    }
+}
+
+#[test]
 fn evaluation_parameters_enforce_experiment_limits_before_enqueuing() {
     let value = parameters();
     assert!(value.validate().is_ok());

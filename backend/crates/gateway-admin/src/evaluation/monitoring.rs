@@ -1,7 +1,6 @@
 //! 正式监测快照的领域投影，状态、筛选及优选不随临时诊断切换
 
 use gateway_core::{
-    policy::ClientApiKeyId,
     routing::{ProviderKind, RuntimeSnapshot},
     runtime::RuntimeSnapshotHandle,
 };
@@ -14,16 +13,11 @@ use crate::{
 
 pub(super) fn profile_revision(
     snapshot: &RuntimeSnapshot,
-    key: &str,
     providers: Option<&ProviderAdminRegistry>,
 ) -> Result<String, AdminError> {
     let kind =
         ProviderKind::new("openai").map_err(|_| AdminError::internal("测票 Provider 无效"))?;
-    let key = ClientApiKeyId::new(key).map_err(|_| AdminError::invalid("测票 Key 无效"))?;
-    let profile = snapshot
-        .client_policy(&key)
-        .and_then(|policy| policy.account_scope().request_profile(&kind))
-        .or_else(|| snapshot.settings().request_profiles().get(&kind));
+    let profile = snapshot.settings().request_profiles().get(&kind);
     let wire = providers
         .and_then(|providers| providers.require(&kind).ok())
         .and_then(|provider| match profile {
@@ -47,11 +41,7 @@ pub(super) fn project(
             .map_err(|_| AdminError::internal("当前监测配置不可用"))?;
         (
             super::accounts::resolve(&plan.settings, &data.accounts, snapshots, providers)?,
-            profile_revision(
-                &snapshot,
-                &plan.settings.parameters.client_key_id,
-                providers,
-            )?,
+            profile_revision(&snapshot, providers)?,
             plan.settings.monitoring.clone().unwrap_or_default(),
         )
     } else {

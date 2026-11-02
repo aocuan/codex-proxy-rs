@@ -1,21 +1,10 @@
-//! 计划账号范围解析，账号事实来自仓储，Key 授权复用 Core 快照
+//! 管理员测票按显式范围选账号，能力测评继续复用 Core 的计费 Key 授权
 
 use crate::model::{AdminError, evaluation::*};
 use crate::ports::provider::ProviderAdminRegistry;
 use gateway_core::{
-    account::ProviderAccountId,
-    policy::{ClientApiKeyId, ClientPolicy},
-    runtime::RuntimeSnapshotHandle,
+    account::ProviderAccountId, policy::ClientApiKeyId, runtime::RuntimeSnapshotHandle,
 };
-
-pub(super) fn independent_preference_key(policy: &ClientPolicy, group_id: &str) -> bool {
-    !policy
-        .account_scope()
-        .routing_snapshot()
-        .groups_snapshot()
-        .iter()
-        .any(|group| group.id().as_str() == group_id)
-}
 
 pub(super) fn supports(
     account: &EvaluationAccountState,
@@ -59,25 +48,28 @@ pub(super) fn resolve(
     snapshots: &RuntimeSnapshotHandle,
     providers: Option<&ProviderAdminRegistry>,
 ) -> Result<Vec<String>, AdminError> {
-    let snapshot = snapshots
-        .acquire()
-        .map_err(|_| AdminError::internal("当前账号授权配置不可用"))?;
-    let key = ClientApiKeyId::new(settings.parameters.client_key_id.clone())
-        .map_err(|_| AdminError::invalid("Client Key ID 无效"))?;
-    let Some(policy) = snapshot
-        .client_policy(&key)
-        .filter(|policy| policy.authorize().is_ok())
-    else {
-        return Ok(Vec::new());
+    let snapshot = if settings.parameters.kind == EvaluationKind::Turnstate {
+        None
+    } else {
+        Some(
+            snapshots
+                .acquire()
+                .map_err(|_| AdminError::internal("当前账号授权配置不可用"))?,
+        )
     };
-    if settings
-        .account_preference
-        .as_ref()
-        .filter(|_| settings.monitoring.is_some())
-        .is_some_and(|rule| !independent_preference_key(policy, &rule.group_id))
-    {
-        return Ok(Vec::new());
-    }
+    let policy = if let Some(snapshot) = &snapshot {
+        let key = ClientApiKeyId::new(settings.parameters.client_key_id.clone())
+            .map_err(|_| AdminError::invalid("Client Key ID 无效"))?;
+        let Some(policy) = snapshot
+            .client_policy(&key)
+            .filter(|policy| policy.authorize().is_ok())
+        else {
+            return Ok(Vec::new());
+        };
+        Some(policy)
+    } else {
+        None
+    };
     let judge = settings
         .parameters
         .definition
@@ -92,8 +84,10 @@ pub(super) fn resolve(
             account.enabled
                 && supports(account, settings.parameters.kind, providers)
                 && judge != Some(account.id.as_str())
-                && ProviderAccountId::new(account.id.clone())
-                    .is_ok_and(|id| policy.account_scope().allows(&id))
+                && policy.is_none_or(|policy| {
+                    ProviderAccountId::new(account.id.clone())
+                        .is_ok_and(|id| policy.account_scope().allows(&id))
+                })
                 && match &settings.account_selection {
                     EvaluationAccountSelection::Fixed => {
                         settings.parameters.account_ids.contains(&account.id)

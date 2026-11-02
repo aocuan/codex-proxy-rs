@@ -17,9 +17,9 @@ const props = defineProps<{
   settings: EvaluationSettings | null
   settingsSavedRevision: number | null
 }>()
-const emit = defineEmits<{ configure: [] }>()
+const emit = defineEmits<{ configure: [], preference: [] }>()
 const { t } = useI18n({ useScope: 'global' })
-const { open, isPlan, editing, parameters, name, intervalMinutes, enabled, accountSelection, monitoringEnabled, monitoringPolicy, preferenceEnabled, preferenceGroupId, saving } = props.editor
+const { open, isPlan, editing, parameters, name, intervalMinutes, enabled, accountSelection, saving } = props.editor
 const { loadingAccounts, loadingKeys, groups, loadingGroups } = props.catalog
 const selectionMode = computed({
   get: () => accountSelection.value.mode,
@@ -31,12 +31,6 @@ const selectionMode = computed({
 })
 const automatic = computed(() => isPlan.value && selectionMode.value !== 'fixed')
 const ticketProbe = computed(() => parameters.value.kind === 'turnstate')
-const preferenceSourceConflict = computed(() => preferenceEnabled.value && accountSelection.value.mode === 'groups'
-  && accountSelection.value.groupIds.includes(preferenceGroupId.value))
-watch(monitoringEnabled, (enabled) => {
-  if (enabled && !editing.value && intervalMinutes.value === '60')
-    intervalMinutes.value = '10'
-})
 const panel = shallowRef<'main' | 'definition' | 'execution'>('main')
 const definitionDraft = ref<EvaluationDefinition | null>(null)
 watch(() => open.value && !loadingAccounts.value
@@ -45,8 +39,14 @@ watch(() => open.value && !loadingAccounts.value
   if (ids.length !== parameters.value.accountIds.length)
     parameters.value.accountIds = ids
 })
-const access = useEvaluationAccess(() => open.value, () => parameters.value.clientKeyId, () => props.catalog.accountOptions(parameters.value.accountIds, parameters.value.kind), () => parameters.value.accountIds)
-const { accountOptions, message: accessMessage, valid: accessValid, loading: checkingAccess, error: accessError } = access
+const access = useEvaluationAccess(() => open.value && !ticketProbe.value, () => parameters.value.clientKeyId, () => props.catalog.accountOptions(parameters.value.accountIds, parameters.value.kind), () => parameters.value.accountIds)
+const { message: accessMessage, valid: accessValid, loading: checkingAccess, error: accessError } = access
+const accountOptions = computed(() => ticketProbe.value
+  ? props.catalog.accountOptions(parameters.value.accountIds, 'turnstate')
+  : access.accountOptions.value)
+const selectionValid = computed(() => ticketProbe.value
+  ? parameters.value.accountIds.length > 0 && parameters.value.accountIds.every(id => !accountOptions.value.find(item => item.value === id)?.disabled)
+  : accessValid.value && !checkingAccess.value)
 const keyOptions = computed(() => props.catalog.keyOptions(parameters.value.clientKeyId))
 const mainTitle = computed(() => isPlan.value
   ? editing.value ? '编辑测评计划' : '新建测评计划'
@@ -154,6 +154,10 @@ watch(open, (value) => {
   definitionDraft.value = null
   applyDefaultsOnSave = false
   if (value)
+    void props.catalog.load({ keys: !ticketProbe.value })
+})
+watch(ticketProbe, (probe) => {
+  if (open.value && !probe)
     void props.catalog.load()
 })
 </script>
@@ -164,7 +168,7 @@ watch(open, (value) => {
       <ZFormItem v-if="isPlan" label="账号范围" required>
         <ZSelect v-model="selectionMode" :disabled="saving" :options="[{ label: '固定账号', value: 'fixed' }, { label: '自动跟随全部账号', value: 'all' }, { label: '自动跟随指定分组', value: 'groups' }]" aria-label="账号范围" />
         <p v-if="automatic" class="mt-2 mb-0 text-z-sm text-z-text-secondary">
-          每轮自动选择已启用且获 Key 授权的账号，新增账号下轮加入，独立判题账号不参与答题
+          {{ ticketProbe ? '每轮检测范围内已启用的 OAuth 账号，新增账号下轮加入' : '每轮自动选择已启用且获 Key 授权的账号，新增账号下轮加入，独立判题账号不参与答题' }}
         </p>
       </ZFormItem>
       <ZFormItem v-if="isPlan && accountSelection.mode === 'groups'" label="跟随分组" required>
@@ -180,10 +184,10 @@ watch(open, (value) => {
         <p v-if="ticketProbe" class="mt-2 mb-0 text-z-sm text-z-text-secondary">
           {{ t('accounts.evaluationActions.oauthOnly') }}
         </p>
-        <p v-if="accessMessage" class="mt-2 mb-0 text-z-sm text-z-warning-text wrap-anywhere" role="status">
+        <p v-if="!ticketProbe && accessMessage" class="mt-2 mb-0 text-z-sm text-z-warning-text wrap-anywhere" role="status">
           {{ accessMessage }}
         </p>
-        <ZButton v-if="accessError" size="small" variant="text" @click="access.refresh">
+        <ZButton v-if="!ticketProbe && accessError" size="small" variant="text" @click="access.refresh">
           重试授权检查
         </ZButton>
       </ZFormItem>
@@ -211,61 +215,24 @@ watch(open, (value) => {
           </template>
         </ZInput>
       </ZFormItem>
-      <div v-if="isPlan && ticketProbe" class="grid gap-3">
-        <ZCheckbox v-model="monitoringEnabled" :disabled="saving" label="作为正式账号监测方案" />
-        <p class="m-0 text-z-sm text-z-text-secondary">
-          正式方案用于账号状态、立即复测和优选，选择后会替换原正式方案
-        </p>
-        <template v-if="monitoringEnabled">
-          <ZFormItem label="结果有效期">
-            <ZInputNumber v-model="monitoringPolicy.validMinutes" :min="1" :max="10080" :disabled="saving" unit="分钟" aria-label="监测结果有效期" />
-          </ZFormItem>
-          <div class="grid grid-cols-2 gap-3">
-            <ZFormItem label="连续稳定后加入">
-              <ZInputNumber v-model="monitoringPolicy.stableCount" :min="1" :max="10" :disabled="saving" unit="次" aria-label="连续稳定次数" />
-            </ZFormItem>
-            <ZFormItem label="连续变化后移出">
-              <ZInputNumber v-model="monitoringPolicy.changedCount" :min="1" :max="10" :disabled="saving" unit="次" aria-label="连续变化次数" />
-            </ZFormItem>
-          </div>
-          <ZCheckbox v-model="monitoringPolicy.removeExpired" :disabled="saving" label="结果过期或账号环境变化后移出优选组" />
-        </template>
+      <div v-if="isPlan && ticketProbe" class="flex flex-wrap items-center gap-2 text-z-sm text-z-text-secondary">
+        <span>此处创建诊断计划，账号状态与自动分组由账号优选统一管理</span>
+        <ZButton size="small" variant="text" @click="open = false; emit('preference')">
+          设置账号优选
+        </ZButton>
       </div>
       <p v-if="!isPlan && ticketProbe" class="m-0 text-z-sm text-z-text-secondary">
         临时诊断仅保存历史，不改变正式监测状态或优选分组，更新账号状态请使用账号列表的立即复测
       </p>
-      <div v-if="isPlan" class="grid gap-2">
-        <ZCheckbox v-model="preferenceEnabled" :disabled="saving || (!ticketProbe && !preferenceEnabled)" label="账号优选" />
-        <p v-if="preferenceEnabled && !monitoringEnabled" class="m-0 text-z-sm text-z-warning-text">
-          只有正式账号监测方案会执行优选
-        </p>
-        <template v-if="preferenceEnabled">
-          <ZFormItem label="优选目标分组" required>
-            <ZSelect v-model="preferenceGroupId" :options="catalog.preferenceGroupOptions(preferenceGroupId)" :disabled="saving" :loading="loadingGroups" remote filterable placeholder="选择目标分组" @query-change="catalog.searchGroups" />
-          </ZFormItem>
-          <p class="m-0 text-z-sm text-z-text-secondary">
-            正式方案达到连续确认次数后加入或移出目标分组，失败或未判定不立即改组，分组变化会影响关联 Key 的账号调度
-          </p>
-          <p class="m-0 text-z-sm text-z-text-secondary">
-            检测范围和授权 Key 不能依赖目标分组，确保移出后仍可检测，票据信号不代表能力评测结论
-          </p>
-          <p v-if="preferenceSourceConflict" class="m-0 text-z-sm text-z-warning-text" role="alert">
-            检测范围不能包含优选目标分组，请选择独立分组
-          </p>
-        </template>
-        <p v-else-if="!ticketProbe" class="m-0 text-z-sm text-z-text-tertiary">
-          账号优选目前支持快速测票
-        </p>
-      </div>
       <div class="flex flex-wrap items-center justify-between gap-2 text-z-sm">
-        <span :class="parameters.clientKeyId ? 'text-z-text-secondary' : 'text-z-warning-text'">
-          {{ parameters.clientKeyId ? `${ticketProbe ? '授权' : '计费'} Key：${catalog.keyOptions(parameters.clientKeyId).find(item => item.value === parameters.clientKeyId)?.label ?? parameters.clientKeyId}` : `尚未配置${ticketProbe ? '授权' : '计费'} Key` }}
+        <span v-if="!ticketProbe" :class="parameters.clientKeyId ? 'text-z-text-secondary' : 'text-z-warning-text'">
+          {{ parameters.clientKeyId ? `计费 Key：${catalog.keyOptions(parameters.clientKeyId).find(item => item.value === parameters.clientKeyId)?.label ?? parameters.clientKeyId}` : '尚未配置计费 Key' }}
         </span>
         <div class="flex gap-2">
           <ZButton size="small" :disabled="saving" @click="panel = 'execution'">
             运行设置
           </ZButton>
-          <ZButton v-if="!parameters.clientKeyId" size="small" :disabled="saving" @click="configure">
+          <ZButton v-if="!ticketProbe && !parameters.clientKeyId" size="small" :disabled="saving" @click="configure">
             配置默认值
           </ZButton>
         </div>
@@ -279,7 +246,7 @@ watch(open, (value) => {
     </ZForm>
     <EvaluationDefinitionFields v-else-if="panel === 'definition' && definitionDraft" v-model="definitionDraft" :disabled="saving" :default-judge="settings?.defaults.judge ?? null" @configure-judge="configure" />
     <ZForm v-else-if="panel === 'execution'" class="grid gap-5 sm:grid-cols-2">
-      <ZFormItem class="sm:col-span-2" :label="ticketProbe ? '授权 Key' : '计费 Key'" required>
+      <ZFormItem v-if="!ticketProbe" class="sm:col-span-2" label="计费 Key" required>
         <ZSelect :model-value="parameters.clientKeyId || undefined" :options="keyOptions" :disabled="saving" remote filterable :loading="loadingKeys" placeholder="搜索 Key 名称" @update:model-value="parameters.clientKeyId = $event ?? ''" @query-change="catalog.searchKeys" />
       </ZFormItem>
       <ZFormItem label="推理强度">
@@ -314,7 +281,7 @@ watch(open, (value) => {
         <ZButton :disabled="saving" @click="open = false">
           取消
         </ZButton>
-        <ZButton type="primary" :loading="saving" :disabled="!config || !parameters.clientKeyId || preferenceSourceConflict || (preferenceEnabled && !ticketProbe) || (!automatic && (!isPlan || enabled) && (!accessValid || checkingAccess))" @click="editor.save">
+        <ZButton type="primary" :loading="saving" :disabled="!config || (!ticketProbe && !parameters.clientKeyId) || (!automatic && (!isPlan || enabled) && !selectionValid)" @click="editor.save">
           {{ isPlan ? '保存计划' : ticketProbe ? '开始诊断' : '开始测评' }}
         </ZButton>
       </template>

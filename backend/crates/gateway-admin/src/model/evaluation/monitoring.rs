@@ -224,7 +224,8 @@ impl EvaluationPlan {
         let settings = &self.settings;
         let version = serde_json::json!([
             settings.parameters.kind,
-            settings.parameters.client_key_id,
+            (settings.parameters.kind != EvaluationKind::Turnstate)
+                .then_some(&settings.parameters.client_key_id),
             settings.parameters.model,
             settings.parameters.reasoning_effort,
             settings.parameters.timeout_seconds,

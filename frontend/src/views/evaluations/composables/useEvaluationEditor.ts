@@ -73,6 +73,7 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
       model: parameters.value.model.trim(),
     }
     if (params.kind === 'turnstate') {
+      params.clientKeyId = ''
       params.definition = undefined
       params.reasoningEffort = 'low'
       params.repetitions = 1
@@ -81,10 +82,12 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
       ZNotification.warning({ message: '请填写测评名称和提示词' })
       return
     }
-    if (!params.clientKeyId || !params.model || ((!isPlan.value || accountSelection.value.mode === 'fixed') && (params.accountIds.length < 1 || params.accountIds.length > 20))) {
-      ZNotification.warning({ message: `请选择${params.kind === 'turnstate'
-        ? '授权'
-        : '计费'} Key、1 到 20 个账号，并填写模型 ID` })
+    if ((params.kind !== 'turnstate' && !params.clientKeyId) || !params.model || ((!isPlan.value || accountSelection.value.mode === 'fixed') && (params.accountIds.length < 1 || params.accountIds.length > 20))) {
+      ZNotification.warning({
+        message: params.kind === 'turnstate'
+          ? '请选择检测账号并填写模型 ID，固定账号最多 20 个'
+          : '请选择计费 Key、1 到 20 个账号，并填写模型 ID',
+      })
       return
     }
     if (isPlan.value && accountSelection.value.mode === 'groups' && !accountSelection.value.groupIds.length) {

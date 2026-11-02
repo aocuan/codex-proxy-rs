@@ -73,7 +73,7 @@ impl EvaluationRunner {
                 .profile
                 .account_preference
                 .as_ref()
-                .map(|rule| self.preference_decision(rule, &claim, &result, attempts >= 3));
+                .map(|rule| self.preference_decision(rule, &result, attempts >= 3));
             let finished = self
                 .repository
                 .finish_item(&claim.item.id, result.clone())
@@ -96,7 +96,6 @@ impl EvaluationRunner {
     fn preference_decision(
         &self,
         rule: &EvaluationPreferenceSnapshot,
-        claim: &ClaimedEvaluation,
         completion: &EvaluationCompletion,
         exhausted: bool,
     ) -> EvaluationPreferenceDecision {
@@ -130,19 +129,8 @@ impl EvaluationRunner {
             return decision;
         }
         let current = self.snapshot.acquire().ok().and_then(|snapshot| {
-            let account = ProviderAccountId::new(&claim.item.account_id).ok()?;
-            let key = ClientApiKeyId::new(&claim.parameters.client_key_id).ok()?;
-            let policy = snapshot.client_policy(&key)?;
-            if super::monitoring::profile_revision(
-                &snapshot,
-                &claim.parameters.client_key_id,
-                self.providers.as_ref(),
-            )
-            .ok()
+            if super::monitoring::profile_revision(&snapshot, self.providers.as_ref()).ok()
                 != completion.observation.request_profile_revision
-                || policy.authorize().is_err()
-                || !policy.account_scope().allows(&account)
-                || !super::accounts::independent_preference_key(policy, &rule.group_id)
             {
                 return None;
             }
@@ -150,7 +138,7 @@ impl EvaluationRunner {
         });
         if current.is_none() {
             decision.desired_member = None;
-            decision.skip_reason = Some("检测 Key 的授权范围已变化或配置暂不可用".into());
+            decision.skip_reason = Some("检测客户端身份已变化或配置暂不可用".into());
         }
         decision.expected_revision = current;
         decision
@@ -363,27 +351,10 @@ impl EvaluationRunner {
         }
         let account = ProviderAccountId::new(&claim.item.account_id)
             .map_err(|error| WorkerTaskError::safe("测票账号无效").with_source(error))?;
-        let key = ClientApiKeyId::new(&claim.parameters.client_key_id)
-            .map_err(|error| WorkerTaskError::safe("测票 Key 无效").with_source(error))?;
         let snapshot = self
             .snapshot
             .acquire()
-            .map_err(|error| WorkerTaskError::safe("测票授权配置暂不可用").with_source(error))?;
-        if !snapshot.client_policy(&key).is_some_and(|policy| {
-            policy.authorize().is_ok()
-                && policy.account_scope().allows(&account)
-                && claim
-                    .profile
-                    .account_preference
-                    .as_ref()
-                    .is_none_or(|rule| {
-                        super::accounts::independent_preference_key(policy, &rule.group_id)
-                    })
-        }) {
-            completion.error_code = Some("policy_denied".into());
-            completion.message = Some("当前 Key 不再授权此账号，未发送测票请求".into());
-            return Ok(completion);
-        }
+            .map_err(|error| WorkerTaskError::safe("测票配置暂不可用").with_source(error))?;
         let Some(providers) = &self.providers else {
             completion.message = Some("测票服务暂不可用".into());
             return Ok(completion);
@@ -395,16 +366,11 @@ impl EvaluationRunner {
             .map_err(|error| WorkerTaskError::safe("测票 Provider 不可用").with_source(error))?;
         let model = gateway_core::routing::UpstreamModelId::new(claim.parameters.model.as_str())
             .map_err(|error| WorkerTaskError::safe("测票模型无效").with_source(error))?;
-        let request_profile_revision = super::monitoring::profile_revision(
-            &snapshot,
-            &claim.parameters.client_key_id,
-            self.providers.as_ref(),
-        )
-        .map_err(|error| WorkerTaskError::safe("测票身份配置暂不可用").with_source(error))?;
-        let configuration = snapshot
-            .client_policy(&key)
-            .and_then(|policy| policy.account_scope().request_profile(&kind))
-            .or_else(|| snapshot.settings().request_profiles().get(&kind));
+        let request_profile_revision =
+            super::monitoring::profile_revision(&snapshot, self.providers.as_ref()).map_err(
+                |error| WorkerTaskError::safe("测票身份配置暂不可用").with_source(error),
+            )?;
+        let configuration = snapshot.settings().request_profiles().get(&kind);
         let child = cancellation.child_token();
         let result = tokio::time::timeout(
             Duration::from_secs(u64::from(claim.parameters.timeout_seconds)),
@@ -424,13 +390,9 @@ impl EvaluationRunner {
             ),
         };
         if let Ok(current) = self.snapshot.acquire() {
-            if super::monitoring::profile_revision(
-                &current,
-                &claim.parameters.client_key_id,
-                self.providers.as_ref(),
-            )
-            .ok()
-            .as_ref()
+            if super::monitoring::profile_revision(&current, self.providers.as_ref())
+                .ok()
+                .as_ref()
                 != Some(&request_profile_revision)
             {
                 report.outcome = TurnStateOutcome::Unknown;
