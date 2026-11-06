@@ -99,33 +99,40 @@ impl EvaluationRunner {
         completion: &EvaluationCompletion,
         exhausted: bool,
     ) -> EvaluationPreferenceDecision {
-        let desired_member = if completion.status == EvaluationItemStatus::Succeeded {
+        use EvaluationPreferenceAction as Action;
+        let action = if completion.status == EvaluationItemStatus::Succeeded {
             match completion
                 .observation
                 .turn_state
                 .as_ref()
                 .map(|probe| probe.outcome)
             {
-                Some(TurnStateOutcome::Accepted) => Some(true),
-                Some(TurnStateOutcome::Refreshed) => Some(false),
-                _ => None,
+                Some(TurnStateOutcome::Accepted) => Action::ConfirmStable,
+                Some(TurnStateOutcome::Refreshed) => Action::ConfirmChanged,
+                _ => Action::Skip("测票未得出明确结果"),
             }
+        } else if completion.status == EvaluationItemStatus::Failed
+            && let Some(unavailable) = completion
+                .observation
+                .turn_state
+                .as_ref()
+                .and_then(|probe| probe.diagnostic.as_ref())
+                .and_then(|diagnostic| diagnostic.unavailable)
+        {
+            Action::RemoveUnavailable(unavailable)
         } else {
-            None
+            Action::Skip("测票未得出明确结果")
         };
         let mut decision = EvaluationPreferenceDecision {
             rule: rule.clone(),
-            desired_member,
+            action,
             expected_revision: None,
-            skip_reason: None,
         };
-        if decision.desired_member.is_none() {
-            decision.skip_reason = Some("测票未得出明确结果".into());
+        if matches!(action, Action::Skip(_)) {
             return decision;
         }
         if exhausted {
-            decision.desired_member = None;
-            decision.skip_reason = Some("账号配置持续变化，已保留原分组".into());
+            decision.action = Action::Skip("账号配置持续变化，已保留原分组");
             return decision;
         }
         let current = self.snapshot.acquire().ok().and_then(|snapshot| {
@@ -137,8 +144,7 @@ impl EvaluationRunner {
             crate::model::Revision::new(snapshot.revision().get()).ok()
         });
         if current.is_none() {
-            decision.desired_member = None;
-            decision.skip_reason = Some("检测客户端身份已变化或配置暂不可用".into());
+            decision.action = Action::Skip("检测客户端身份已变化或配置暂不可用");
         }
         decision.expected_revision = current;
         decision

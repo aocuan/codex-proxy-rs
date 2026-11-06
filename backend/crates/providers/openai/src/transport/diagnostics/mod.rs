@@ -438,6 +438,36 @@ fn decode_identity_error_code(encoded: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+/// 快速测票仅使用已识别的机器字段，不以自由文本推导账号故障
+pub(super) fn classify_probe_failure(
+    status: Option<StatusCode>,
+    code: Option<&str>,
+    error_type: Option<&str>,
+) -> CodexFailureCategory {
+    if code.is_none() && error_type.is_none() {
+        return CodexFailureCategory::Unavailable;
+    }
+    let fields = ParsedUpstreamError {
+        upstream_fields: gateway_core::upstream::UpstreamFailureFields {
+            status: status.map(|status| status.as_u16()),
+            code: code.map(str::to_owned),
+            error_type: error_type.map(str::to_owned),
+            message: None,
+        },
+        code: code.map(str::to_owned),
+        error_type: error_type.map(str::to_owned),
+        message: String::new(),
+        client_message: None,
+        resets_at: None,
+    };
+    let source = if status.is_some() {
+        UpstreamFailureSource::HttpResponse
+    } else {
+        UpstreamFailureSource::SseFailure
+    };
+    classify_upstream_failure(source, status, "", &fields, None, None)
+}
+
 fn classify_upstream_failure(
     source: UpstreamFailureSource,
     status: Option<StatusCode>,

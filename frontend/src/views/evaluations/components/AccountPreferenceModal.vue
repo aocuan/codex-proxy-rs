@@ -200,7 +200,7 @@ watch(open, (value) => {
       </p>
       <p class="m-0 text-z-sm text-z-text-secondary">
         {{ enabled ? '保存后按间隔检测，也可从账号列表立即复测' : '暂停后停止检测与自动改组，现有成员保持不变' }}
-        <span v-if="target !== 'none'" class="block">失败或未判定不立即改组，票据信号只反映路由稳定性</span>
+        <span v-if="target !== 'none'" class="block">停用、授权失效、额度耗尽或模型不可用时移出，过载和超时保留成员</span>
         <span v-if="editing?.settings.cronExpression" class="block">保存后使用分钟间隔执行</span>
       </p>
     </ZForm>

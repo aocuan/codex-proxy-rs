@@ -84,6 +84,7 @@ fn monitoring_fixture(
         observed_at: chrono::Utc::now(),
         plan: Some(plan),
         accounts: vec![EvaluationAccountState {
+            credential_state: gateway_core::account::CredentialState::Ready,
             id: "acct_cooldown".into(),
             enabled: true,
             group_ids: vec![],

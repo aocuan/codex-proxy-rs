@@ -1,13 +1,18 @@
 //! 账号生命周期事实与测评子任务停止标记，历史输出不随账号删除
 
 use super::{db_error, lock_queue};
-use gateway_admin::{model::evaluation::EvaluationAccountState, ports::store::AdminStoreResult};
+use gateway_admin::{
+    model::evaluation::{EvaluationAccountState, preference_account_available},
+    ports::store::AdminStoreResult,
+};
+use gateway_core::account::CredentialState;
 use sqlx::PgPool;
 
 #[derive(sqlx::FromRow)]
 struct AccountStateRow {
     id: String,
     enabled: bool,
+    credential_state: String,
     group_ids: Vec<String>,
     provider_kind: String,
     authentication_kind: String,
@@ -24,7 +29,7 @@ pub(super) async fn list_on(
     connection: &mut sqlx::PgConnection,
 ) -> AdminStoreResult<Vec<EvaluationAccountState>> {
     let rows = sqlx::query_as::<_, AccountStateRow>(
-        "select a.id, a.enabled, array(select g.account_group_id from account_group_accounts g where g.provider_account_id = a.id order by g.account_group_id) as group_ids, a.provider_kind, a.authentication_kind, a.credential_revision,
+        "select a.id, a.enabled, a.credential_state, array(select g.account_group_id from account_group_accounts g where g.provider_account_id = a.id order by g.account_group_id) as group_ids, a.provider_kind, a.authentication_kind, a.credential_revision,
          case when coalesce(p.enabled, true) then a.outbound_proxy_url else null end as proxy_url
          from provider_accounts a left join outbound_proxies p on p.id=a.outbound_proxy_id order by a.id")
         .fetch_all(connection).await.map_err(db_error)?;
@@ -33,6 +38,7 @@ pub(super) async fn list_on(
             let AccountStateRow {
                 id,
                 enabled,
+                credential_state,
                 group_ids,
                 provider_kind,
                 authentication_kind,
@@ -43,12 +49,39 @@ pub(super) async fn list_on(
                 connection_revision: connection_revision(&id, revision, proxy.as_deref())?,
                 id,
                 enabled,
+                credential_state: parse_credential_state(&credential_state)?,
                 group_ids,
                 provider_kind,
                 authentication_kind,
             })
         })
         .collect()
+}
+
+fn parse_credential_state(value: &str) -> AdminStoreResult<CredentialState> {
+    CredentialState::parse(value).ok_or_else(|| super::invalid("账号凭据状态无效"))
+}
+
+/// 写入优选成员前锁定并复核当前账号状态与来源分组
+pub(super) async fn lock_preference_account(
+    connection: &mut sqlx::PgConnection,
+    id: &str,
+) -> AdminStoreResult<Option<(bool, Vec<String>)>> {
+    let row: Option<(bool, String, Vec<String>)> = sqlx::query_as(
+        "select a.enabled, a.credential_state, array(select g.account_group_id from account_group_accounts g where g.provider_account_id=a.id)
+         from provider_accounts a where a.id=$1 for update of a",
+    )
+    .bind(id)
+    .fetch_optional(connection)
+    .await
+    .map_err(db_error)?;
+    row.map(|(enabled, credential, groups)| {
+        Ok((
+            preference_account_available(enabled, parse_credential_state(&credential)?),
+            groups,
+        ))
+    })
+    .transpose()
 }
 
 fn connection_revision(id: &str, revision: i64, proxy: Option<&str>) -> AdminStoreResult<String> {

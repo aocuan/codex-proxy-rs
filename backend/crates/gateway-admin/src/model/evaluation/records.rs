@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
 use gateway_core::{
-    account::ProviderAccountId, policy::ClientApiKeyId, routing::PublicModelId,
+    account::{CredentialState, ProviderAccountId},
+    policy::ClientApiKeyId,
+    routing::PublicModelId,
     time::DeploymentTimeZone,
 };
 use serde::{Deserialize, Serialize};
@@ -74,8 +76,19 @@ pub struct EvaluationAccountState {
     pub provider_kind: String,
     pub authentication_kind: String,
     pub enabled: bool,
+    pub credential_state: CredentialState,
     pub group_ids: Vec<String>,
     pub connection_revision: String,
+}
+
+/// 已知凭据故障和主动停用均不适合继续调度，未核实账号仍可接受正式测票
+#[must_use]
+pub const fn preference_account_available(enabled: bool, credential: CredentialState) -> bool {
+    enabled
+        && matches!(
+            credential,
+            CredentialState::Ready | CredentialState::Unknown
+        )
 }
 
 impl EvaluationParameters {
@@ -393,9 +406,16 @@ pub struct EvaluationPreferenceSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvaluationPreferenceDecision {
     pub rule: EvaluationPreferenceSnapshot,
-    pub desired_member: Option<bool>,
+    pub action: EvaluationPreferenceAction,
     pub expected_revision: Option<crate::model::Revision>,
-    pub skip_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvaluationPreferenceAction {
+    ConfirmStable,
+    ConfirmChanged,
+    RemoveUnavailable(super::TurnStateUnavailable),
+    Skip(&'static str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -495,6 +515,21 @@ pub struct EvaluationPlanSettings {
 }
 
 impl EvaluationPlanSettings {
+    #[must_use]
+    pub fn includes_account(&self, account_id: &str, groups: &[String]) -> bool {
+        match &self.account_selection {
+            EvaluationAccountSelection::Fixed => self
+                .parameters
+                .account_ids
+                .iter()
+                .any(|id| id == account_id),
+            EvaluationAccountSelection::All => true,
+            EvaluationAccountSelection::Groups { group_ids } => {
+                groups.iter().any(|id| group_ids.contains(id))
+            }
+        }
+    }
+
     pub fn validate_parameters(&self) -> Result<(), AdminError> {
         self.account_selection.validate()?;
         if let Some(policy) = &self.monitoring {

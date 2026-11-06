@@ -33,9 +33,9 @@ impl EvaluationRepository for TestEvaluationRepository {
         })
     }
 
-    async fn expire_monitoring(
+    async fn cleanup_preference(
         &self,
-        _: EvaluationMonitoringExpiration,
+        _: EvaluationPreferenceCleanup,
     ) -> AdminStoreResult<Option<gateway_admin::model::Revision>> {
         unreachable!("this fixture does not exercise monitoring expiration")
     }

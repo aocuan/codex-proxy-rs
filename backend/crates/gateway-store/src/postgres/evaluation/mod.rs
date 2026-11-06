@@ -41,11 +41,11 @@ impl EvaluationRepository for PgEvaluationRepository {
         monitoring::load(&self.pool).await
     }
 
-    async fn expire_monitoring(
+    async fn cleanup_preference(
         &self,
-        command: EvaluationMonitoringExpiration,
+        command: EvaluationPreferenceCleanup,
     ) -> AdminStoreResult<Option<gateway_admin::model::Revision>> {
-        monitoring::expire(&self.pool, command).await
+        monitoring::cleanup(&self.pool, command).await
     }
 
     async fn account_states(&self) -> AdminStoreResult<Vec<EvaluationAccountState>> {

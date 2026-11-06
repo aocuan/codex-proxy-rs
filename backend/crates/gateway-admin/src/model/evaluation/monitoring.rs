@@ -245,17 +245,25 @@ impl EvaluationPlan {
     }
 }
 
-/// 到期回收使用同一快照的账号范围和版本，提交时重新核对是否已有新观测
+/// 正式方案回收当前目标组中的不可用账号和需要回收的过期结果
 #[derive(Debug, Clone)]
-pub struct EvaluationMonitoringExpiration {
+pub struct EvaluationPreferenceCleanup {
     pub plan: EvaluationPlanReference,
-    pub accounts: Vec<EvaluationExpirationTarget>,
+    pub accounts: Vec<EvaluationPreferenceCleanupTarget>,
     pub expected_revision: crate::model::Revision,
 }
 
-/// 记录快照中最近有效观测的身份，避免跨事务提交时钟造成遗漏
 #[derive(Debug, Clone)]
-pub struct EvaluationExpirationTarget {
+pub struct EvaluationPreferenceCleanupTarget {
     pub account_id: String,
-    pub last_signal_id: Option<String>,
+    pub reason: EvaluationPreferenceCleanupReason,
+}
+
+#[derive(Debug, Clone)]
+pub enum EvaluationPreferenceCleanupReason {
+    AccountUnavailable,
+    /// 提交时用观测身份排除快照之后已有新结果的账号
+    Expired {
+        last_signal_id: Option<String>,
+    },
 }

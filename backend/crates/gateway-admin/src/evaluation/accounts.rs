@@ -88,15 +88,7 @@ pub(super) fn resolve(
                     ProviderAccountId::new(account.id.clone())
                         .is_ok_and(|id| policy.account_scope().allows(&id))
                 })
-                && match &settings.account_selection {
-                    EvaluationAccountSelection::Fixed => {
-                        settings.parameters.account_ids.contains(&account.id)
-                    }
-                    EvaluationAccountSelection::All => true,
-                    EvaluationAccountSelection::Groups { group_ids } => {
-                        account.group_ids.iter().any(|id| group_ids.contains(id))
-                    }
-                }
+                && settings.includes_account(&account.id, &account.group_ids)
         })
         .map(|account| account.id.clone())
         .collect())

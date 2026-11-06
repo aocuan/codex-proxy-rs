@@ -15,6 +15,14 @@ pub(super) enum PreferenceApplication {
     Stale(Revision),
 }
 
+#[derive(sqlx::FromRow)]
+struct PreferenceHistoryRow {
+    id: String,
+    status: String,
+    observation_json: Json<EvaluationObservation>,
+    completed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 pub(super) async fn apply(
     tx: &mut Transaction<'_, Postgres>,
     item_id: &str,
@@ -25,12 +33,12 @@ pub(super) async fn apply(
         status: EvaluationPreferenceStatus::Skipped,
         reason: None,
     };
-    let Some(desired) = decision.desired_member else {
-        result.reason = decision
-            .skip_reason
-            .or_else(|| Some("测票未得出明确结果".into()));
+    use EvaluationPreferenceAction as Action;
+    if let Action::Skip(reason) = decision.action {
+        result.reason = Some(reason.into());
         return Ok(PreferenceApplication::Applied(result, None));
-    };
+    }
+    let desired = decision.action == Action::ConfirmStable;
     let row: (String, Option<String>, bool, Json<EvaluationObservation>, Json<EvaluationProfile>) = sqlx::query_as(
         "select i.account_id, coalesce(r.profile_json#>>'{monitoring,id}',r.plan_id), i.stop_requested or r.stop_requested, i.observation_json, r.profile_json
          from evaluation_items i join evaluation_runs r on r.id = i.run_id where i.id = $1",
@@ -81,30 +89,24 @@ pub(super) async fn apply(
     if current != expected {
         return Ok(PreferenceApplication::Stale(current));
     }
-    let account: Option<bool> =
-        sqlx::query_scalar("select enabled and credential_state not in ('expired','banned','invalid') from provider_accounts where id = $1 for update")
-            .bind(&account_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(db_error)?;
+    let account = super::accounts::lock_preference_account(tx, &account_id).await?;
     let group: Option<bool> =
         sqlx::query_scalar("select enabled from account_groups where id = $1 for update")
             .bind(&decision.rule.group_id)
             .fetch_optional(&mut **tx)
             .await
             .map_err(db_error)?;
-    if account != Some(true) || group != Some(true) {
+    let Some((available, groups)) = account.filter(|_| group == Some(true)) else {
         result.reason = Some("账号或优选分组已删除或停用".into());
         return Ok(PreferenceApplication::Applied(result, None));
+    };
+    if desired && !available {
+        result.reason = Some("账号已停用或凭据不可用".into());
+        return Ok(PreferenceApplication::Applied(result, None));
     }
-    if let EvaluationAccountSelection::Groups { group_ids } = &settings.account_selection {
-        let in_source: bool = sqlx::query_scalar(
-            "select exists(select 1 from account_group_accounts where provider_account_id = $1 and account_group_id = any($2::text[]))",
-        ).bind(&account_id).bind(group_ids).fetch_one(&mut **tx).await.map_err(db_error)?;
-        if !in_source {
-            result.reason = Some("账号已移出检测范围".into());
-            return Ok(PreferenceApplication::Applied(result, None));
-        }
+    if !settings.includes_account(&account_id, &groups) {
+        result.reason = Some("账号已移出检测范围".into());
+        return Ok(PreferenceApplication::Applied(result, None));
     }
     let connection = super::accounts::current_connection(tx, &account_id).await?;
     if observation
@@ -126,9 +128,13 @@ pub(super) async fn apply(
     } else {
         TurnStateOutcome::Refreshed
     };
-    let required = policy.required_count(outcome);
-    let recent: Vec<(String, Json<EvaluationObservation>, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
-        "select i.status, i.observation_json, i.completed_at from evaluation_items i join evaluation_runs r on r.id=i.run_id
+    let unavailable = match decision.action {
+        Action::RemoveUnavailable(reason) => Some(reason),
+        _ => None,
+    };
+    let required = unavailable.map_or_else(|| policy.required_count(outcome), |_| 1);
+    let recent: Vec<PreferenceHistoryRow> = sqlx::query_as(
+        "select i.id, i.status, i.observation_json, i.completed_at from evaluation_items i join evaluation_runs r on r.id=i.run_id
          where i.account_id=$1 and r.profile_json#>>'{monitoring,id}'=$2 and r.profile_json#>>'{monitoring,version}'=$3
            and i.status not in ('queued','running','skipped','cancelled')
          order by coalesce(i.started_at,r.created_at) desc, r.id desc, i.id desc limit $4")
@@ -136,50 +142,75 @@ pub(super) async fn apply(
         .bind(i64::try_from(required).map_err(|_| invalid("连续次数无效"))?)
         .fetch_all(&mut **tx).await.map_err(db_error)?;
     let cutoff = chrono::Utc::now() - chrono::Duration::minutes(i64::from(policy.valid_minutes));
-    let confirmed = recent
-        .iter()
-        .take_while(|(status, Json(observed), at)| {
-            status == "succeeded"
-                && at.is_some_and(|at| at > cutoff)
-                && observed.request_profile_revision == observation.request_profile_revision
-                && observed.turn_state.as_ref().is_some_and(|probe| {
-                    probe.outcome == outcome && probe.connection_revision == connection
-                })
-        })
-        .count();
-    if confirmed < required {
-        result.reason = Some(format!("连续确认 {confirmed}/{required} 次，保留当前分组"));
-        return Ok(PreferenceApplication::Applied(result, None));
+    if let Some(reason) = unavailable {
+        // 旧失败不能覆盖此后已经完成的正式检测
+        if !recent.first().is_some_and(|row| {
+            row.id == item_id
+                && row.status == "failed"
+                && row.completed_at.is_some_and(|at| at > cutoff)
+        }) {
+            result.reason = Some("检测失败后已有更新结果或已过期".into());
+            return Ok(PreferenceApplication::Applied(result, None));
+        }
+        result.reason = Some(reason.reason().into());
+    } else {
+        let confirmed = recent
+            .iter()
+            .take_while(|row| {
+                let observed = &row.observation_json.0;
+                row.status == "succeeded"
+                    && row.completed_at.is_some_and(|at| at > cutoff)
+                    && observed.request_profile_revision == observation.request_profile_revision
+                    && observed.turn_state.as_ref().is_some_and(|probe| {
+                        probe.outcome == outcome && probe.connection_revision == connection
+                    })
+            })
+            .count();
+        if confirmed < required {
+            result.reason = Some(format!("连续确认 {confirmed}/{required} 次，保留当前分组"));
+            return Ok(PreferenceApplication::Applied(result, None));
+        }
     }
+    let revision =
+        write_membership(tx, &account_id, &decision.rule.group_id, desired, item_id).await?;
+    result.status = match (revision.is_some(), desired) {
+        (false, _) => EvaluationPreferenceStatus::Unchanged,
+        (true, true) => EvaluationPreferenceStatus::Joined,
+        (true, false) => EvaluationPreferenceStatus::Removed,
+    };
+    Ok(PreferenceApplication::Applied(result, revision))
+}
+
+pub(super) async fn write_membership(
+    tx: &mut Transaction<'_, Postgres>,
+    account_id: &str,
+    group_id: &str,
+    desired: bool,
+    request_id: &str,
+) -> AdminStoreResult<Option<Revision>> {
     let changed = if desired {
         sqlx::query("insert into account_group_accounts (account_group_id, provider_account_id, created_at) values ($1, $2, now()) on conflict do nothing")
-            .bind(&decision.rule.group_id).bind(&account_id)
+            .bind(group_id).bind(account_id)
             .execute(&mut **tx).await.map_err(db_error)?.rows_affected() > 0
     } else {
         sqlx::query("delete from account_group_accounts where account_group_id = $1 and provider_account_id = $2")
-            .bind(&decision.rule.group_id).bind(&account_id)
+            .bind(group_id).bind(account_id)
             .execute(&mut **tx).await.map_err(db_error)?.rows_affected() > 0
     };
     if !changed {
-        result.status = EvaluationPreferenceStatus::Unchanged;
-        return Ok(PreferenceApplication::Applied(result, None));
+        return Ok(None);
     }
-    result.status = if desired {
-        EvaluationPreferenceStatus::Joined
-    } else {
-        EvaluationPreferenceStatus::Removed
-    };
     let revision = super::super::bump_config_revision_in_transaction(tx)
         .await
         .map_err(|error| crate::admin_store_error("evaluation preference", error))?;
     let context = MutationContext {
         actor: MutationActor::System,
-        request_id: item_id.to_owned(),
+        request_id: request_id.to_owned(),
     };
     let event = crate::mutation_audit(
         &context,
         MutationAuditOperation::EvaluationAccountPreference { joined: desired },
-        &account_id,
+        account_id,
         vec!["group_ids".into()],
     );
     super::super::append_admin_audit_event_in_transaction(tx, event, revision)
@@ -188,14 +219,11 @@ pub(super) async fn apply(
     let event = crate::mutation_audit(
         &context,
         MutationAuditOperation::EvaluationGroupPreference { joined: desired },
-        &decision.rule.group_id,
+        group_id,
         vec!["member_ids".into()],
     );
     super::super::append_admin_audit_event_in_transaction(tx, event, revision)
         .await
         .map_err(|error| crate::admin_store_error("evaluation preference", error))?;
-    Ok(PreferenceApplication::Applied(
-        result,
-        Some(crate::admin_revision(revision)?),
-    ))
+    Ok(Some(crate::admin_revision(revision)?))
 }

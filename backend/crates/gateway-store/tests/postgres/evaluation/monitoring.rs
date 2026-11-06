@@ -246,20 +246,22 @@ async fn expired_membership_is_audited_once_and_new_results_fence_stale_cleanup(
             .fetch_one(&db.pool)
             .await
             .unwrap();
-    let command = EvaluationMonitoringExpiration {
+    let command = EvaluationPreferenceCleanup {
         plan: formal.monitoring_reference(),
         accounts: ["acct_a", "acct_b"]
             .into_iter()
-            .map(|id| EvaluationExpirationTarget {
+            .map(|id| EvaluationPreferenceCleanupTarget {
                 account_id: id.into(),
-                last_signal_id: None,
+                reason: EvaluationPreferenceCleanupReason::Expired {
+                    last_signal_id: None,
+                },
             })
             .collect(),
         expected_revision: Revision::new(current as u64).unwrap(),
     };
     assert!(
         repository
-            .expire_monitoring(command.clone())
+            .cleanup_preference(command.clone())
             .await
             .unwrap()
             .is_some()
@@ -269,7 +271,7 @@ async fn expired_membership_is_audited_once_and_new_results_fence_stale_cleanup(
     assert_eq!(members, ["acct_b"]);
     assert!(
         repository
-            .expire_monitoring(command)
+            .cleanup_preference(command)
             .await
             .unwrap()
             .is_none()

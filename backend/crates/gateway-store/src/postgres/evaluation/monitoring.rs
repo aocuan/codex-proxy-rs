@@ -78,11 +78,10 @@ pub(super) async fn load(pool: &PgPool) -> AdminStoreResult<EvaluationMonitoring
     })
 }
 
-pub(super) async fn expire(
+pub(super) async fn cleanup(
     pool: &PgPool,
-    command: EvaluationMonitoringExpiration,
+    command: EvaluationPreferenceCleanup,
 ) -> AdminStoreResult<Option<gateway_admin::model::Revision>> {
-    use gateway_admin::model::{MutationActor, MutationContext, audit::MutationAuditOperation};
     let mut tx = pool.begin().await.map_err(db_error)?;
     super::lock_queue(&mut tx).await?;
     let plan: Option<rows::PlanRow> = sqlx::query_as("select id, revision, settings_json, next_run_at, created_at, updated_at from evaluation_plans where id=$1 and revision=$2 for update")
@@ -90,16 +89,11 @@ pub(super) async fn expire(
     let Some(plan) = plan.map(EvaluationPlan::from) else {
         return Ok(None);
     };
-    if !plan.settings.enabled
-        || !plan
-            .settings
-            .monitoring
-            .as_ref()
-            .is_some_and(|policy| policy.remove_expired)
-    {
+    if !plan.settings.enabled || plan.monitoring_reference() != command.plan {
         return Ok(None);
     }
-    let Some(rule) = &plan.settings.account_preference else {
+    let (Some(rule), Some(policy)) = (&plan.settings.account_preference, &plan.settings.monitoring)
+    else {
         return Ok(None);
     };
     let revision: i64 =
@@ -121,53 +115,46 @@ pub(super) async fn expire(
     }
     let mut committed = None;
     for target in command.accounts {
-        let id = target.account_id;
-        // 完成时间早于提交时间也必须识别新结果，队列锁保证核对与移出之间没有新终态提交
-        let current_signal: Option<String> = sqlx::query_scalar(
-            "select i.id from evaluation_items i join evaluation_runs r on r.id=i.run_id
-            where i.account_id=$1 and r.profile_json#>>'{monitoring,id}'=$2 and i.status='succeeded'
-              and i.observation_json#>>'{turnState,outcome}' in ('accepted','refreshed')
-            order by coalesce(i.started_at,r.created_at) desc,r.id desc,i.id desc limit 1",
-        )
-        .bind(&id)
-        .bind(&plan.id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(db_error)?;
-        if current_signal != target.last_signal_id {
+        let id = &target.account_id;
+        let Some((available, groups)) =
+            super::accounts::lock_preference_account(&mut tx, id).await?
+        else {
             continue;
-        }
-        let removed = sqlx::query("delete from account_group_accounts where account_group_id=$1 and provider_account_id=$2")
-            .bind(&rule.group_id).bind(&id).execute(&mut *tx).await.map_err(db_error)?.rows_affected();
-        if removed == 0 {
-            continue;
-        }
-        let revision = super::super::bump_config_revision_in_transaction(&mut tx)
-            .await
-            .map_err(|error| crate::admin_store_error("evaluation expiration", error))?;
-        let context = MutationContext {
-            actor: MutationActor::System,
-            request_id: format!("evaluation_expiration_{}", uuid::Uuid::new_v4().simple()),
         };
-        for (operation, entity, field) in [
-            (
-                MutationAuditOperation::EvaluationAccountPreference { joined: false },
-                id.as_str(),
-                "group_ids",
-            ),
-            (
-                MutationAuditOperation::EvaluationGroupPreference { joined: false },
-                rule.group_id.as_str(),
-                "member_ids",
-            ),
-        ] {
-            let event = crate::mutation_audit(&context, operation, entity, vec![field.into()]);
-            // 动作原因保留在请求标识和监测有效期中，审计字段仍沿用既有合同
-            super::super::append_admin_audit_event_in_transaction(&mut tx, event, revision)
-                .await
-                .map_err(|error| crate::admin_store_error("evaluation expiration", error))?;
+        if !groups.contains(&rule.group_id) || !plan.settings.includes_account(id, &groups) {
+            continue;
         }
-        committed = Some(crate::admin_revision(revision)?);
+        let source = match target.reason {
+            EvaluationPreferenceCleanupReason::AccountUnavailable if !available => "unavailable",
+            EvaluationPreferenceCleanupReason::Expired { last_signal_id }
+                if policy.remove_expired =>
+            {
+                // 队列锁保证核对与移出之间没有新的正式结果提交
+                let current_signal: Option<String> = sqlx::query_scalar(
+                    "select i.id from evaluation_items i join evaluation_runs r on r.id=i.run_id
+                    where i.account_id=$1 and r.profile_json#>>'{monitoring,id}'=$2 and i.status='succeeded'
+                      and i.observation_json#>>'{turnState,outcome}' in ('accepted','refreshed')
+                    order by coalesce(i.started_at,r.created_at) desc,r.id desc,i.id desc limit 1",
+                )
+                .bind(id)
+                .bind(&plan.id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db_error)?;
+                if current_signal != last_signal_id {
+                    continue;
+                }
+                "expiration"
+            }
+            _ => continue,
+        };
+        let request_id = format!("evaluation_{source}_{}", uuid::Uuid::new_v4().simple());
+        if let Some(revision) =
+            super::preference::write_membership(&mut tx, id, &rule.group_id, false, &request_id)
+                .await?
+        {
+            committed = Some(revision);
+        }
     }
     tx.commit().await.map_err(db_error)?;
     Ok(committed)

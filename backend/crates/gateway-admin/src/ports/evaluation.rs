@@ -9,9 +9,9 @@ use crate::ports::store::AdminStoreResult;
 #[async_trait]
 pub trait EvaluationRepository: Send + Sync {
     async fn monitoring_data(&self) -> AdminStoreResult<EvaluationMonitoringData>;
-    async fn expire_monitoring(
+    async fn cleanup_preference(
         &self,
-        command: EvaluationMonitoringExpiration,
+        command: EvaluationPreferenceCleanup,
     ) -> AdminStoreResult<Option<crate::model::Revision>>;
     async fn account_states(&self) -> AdminStoreResult<Vec<EvaluationAccountState>>;
     async fn reconcile_accounts(&self) -> AdminStoreResult<()>;

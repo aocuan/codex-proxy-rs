@@ -643,23 +643,45 @@ impl ProviderAdmin for ProbeProvider {
             completed: true,
         };
         let mut steps = vec![step.clone(), step];
-        if let Some(recovered) = &self.preference_fixture {
-            if account.as_str() == "acct_pending" {
-                steps.pop();
-            } else if account.as_str() == "acct_wrong" && !recovered.load(Ordering::SeqCst) {
-                steps[1].ticket_fingerprint = "changed".into();
-            }
+        let diagnostic =
+            self.preference_fixture
+                .as_ref()
+                .and_then(|recovered| match account.as_str() {
+                    "acct_pending" => Some(TurnStateDiagnostic {
+                        stage: "stream".into(),
+                        http_status: 200,
+                        error_code: Some("server_is_overloaded".into()),
+                        error_type: Some("service_unavailable_error".into()),
+                        unavailable: None,
+                    }),
+                    "acct_target" if !recovered.load(Ordering::SeqCst) => {
+                        Some(TurnStateDiagnostic {
+                            stage: "request".into(),
+                            http_status: 429,
+                            error_code: None,
+                            error_type: Some("usage_limit_reached".into()),
+                            unavailable: Some(TurnStateUnavailable::Quota),
+                        })
+                    }
+                    _ => None,
+                });
+        if let Some(recovered) = &self.preference_fixture
+            && account.as_str() == "acct_wrong"
+            && !recovered.load(Ordering::SeqCst)
+        {
+            steps[1].ticket_fingerprint = "changed".into();
         }
         let mut report = TurnStateProbeResult::new(
             steps,
             if self.pending {
                 Some("测票已取消".into())
-            } else if self.preference_fixture.is_some() && account.as_str() == "acct_target" {
+            } else if diagnostic.is_some() {
                 Some("模拟测票失败".into())
             } else {
                 None
             },
         );
+        report.diagnostic = diagnostic;
         report.connection_revision = Some(
             gateway_core::account::UpstreamConnection::new(
                 account.clone(),
@@ -838,11 +860,16 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
     let target = format!("grp_{}", "b".repeat(32));
     sqlx::query("update provider_accounts set authentication_kind='oauth' where id in ('acct_right','acct_wrong','acct_pending','acct_target')")
         .execute(&db.pool).await.unwrap();
+    sqlx::query("insert into provider_accounts (id,provider_kind,name,authentication_kind,provider_credentials_json,has_refresh_token,credential_observed_at,created_at,updated_at,enabled)
+        values ('acct_disabled','openai','disabled','oauth','{}',false,now(),now(),now(),false)")
+        .execute(&db.pool).await.unwrap();
     sqlx::query("insert into account_groups (id,name,color,created_at,updated_at) values ($1,'source','#FFFFFFFF',now(),now()),($2,'preferred','#FFFFFFFF',now(),now())")
         .bind(&source).bind(&target).execute(&db.pool).await.unwrap();
     sqlx::query("insert into client_api_keys (id,name,key,enabled,created_at,updated_at) values ('key_evaluation','test','evaluation-test-key',true,now(),now())")
         .execute(&db.pool).await.unwrap();
     sqlx::query("insert into account_group_accounts (account_group_id,provider_account_id,created_at) values ($1,'acct_right',now()),($1,'acct_wrong',now()),($1,'acct_pending',now()),($1,'acct_target',now()),($2,'acct_wrong',now()),($2,'acct_pending',now()),($2,'acct_target',now())")
+        .bind(&source).bind(&target).execute(&db.pool).await.unwrap();
+    sqlx::query("insert into account_group_accounts (account_group_id,provider_account_id,created_at) values ($1,'acct_disabled',now()),($2,'acct_disabled',now())")
         .bind(&source).bind(&target).execute(&db.pool).await.unwrap();
     let recovered = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let provider = Arc::new(ProbeProvider {
@@ -931,21 +958,36 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
     );
     assert_eq!(
         outcomes.get("acct_target"),
-        Some(&EvaluationPreferenceStatus::Skipped)
+        Some(&EvaluationPreferenceStatus::Removed)
+    );
+    assert!(!outcomes.contains_key("acct_disabled"));
+    assert_eq!(
+        detail
+            .items
+            .iter()
+            .find(|item| item.account_id == "acct_target")
+            .unwrap()
+            .observation
+            .account_preference
+            .as_ref()
+            .unwrap()
+            .reason
+            .as_deref(),
+        Some("上游额度已耗尽")
     );
     let members: Vec<String> = sqlx::query_scalar("select provider_account_id from account_group_accounts where account_group_id=$1 order by provider_account_id")
         .bind(&target).fetch_all(&db.pool).await.unwrap();
-    assert_eq!(members, ["acct_pending", "acct_right", "acct_target"]);
+    assert_eq!(members, ["acct_pending", "acct_right"]);
     let source_count: i64 =
         sqlx::query_scalar("select count(*) from account_group_accounts where account_group_id=$1")
             .bind(&source)
             .fetch_one(&db.pool)
             .await
             .unwrap();
-    assert_eq!(source_count, 4);
+    assert_eq!(source_count, 5);
     let audit_count: i64 = sqlx::query_scalar("select count(*) from admin_audit_events where action in ('auto_group_join','auto_group_remove') and config_revision is not null")
         .fetch_one(&db.pool).await.unwrap();
-    assert_eq!(audit_count, 4);
+    assert_eq!(audit_count, 8);
     let paired_audits: i64 = sqlx::query_scalar(
         "select count(*) from (select admin_request_id, action from admin_audit_events
          where action in ('auto_group_join','auto_group_remove')
@@ -954,7 +996,7 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
     .fetch_one(&db.pool)
     .await
     .unwrap();
-    assert_eq!(paired_audits, 2);
+    assert_eq!(paired_audits, 4);
     assert!(publisher.revisions.lock().unwrap().len() >= 2);
 
     recovered.store(true, Ordering::SeqCst);
@@ -987,9 +1029,9 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
             .status,
         EvaluationPreferenceStatus::Joined
     );
-    let restored: bool = sqlx::query_scalar("select exists(select 1 from account_group_accounts where account_group_id=$1 and provider_account_id='acct_wrong')")
+    let restored: i64 = sqlx::query_scalar("select count(*) from account_group_accounts where account_group_id=$1 and provider_account_id in ('acct_wrong','acct_target')")
         .bind(&target).fetch_one(&db.pool).await.unwrap();
-    assert!(restored);
+    assert_eq!(restored, 2);
     cancel.cancel();
     handle.await.unwrap().unwrap();
     db.close().await;
@@ -1263,9 +1305,8 @@ async fn stale_stopped_or_out_of_scope_preference_results_preserve_group_members
         });
         completion.account_preference = Some(EvaluationPreferenceDecision {
             rule: claimed.profile.account_preference.clone().unwrap(),
-            desired_member: Some(true),
+            action: EvaluationPreferenceAction::ConfirmStable,
             expected_revision: Some(gateway_admin::model::Revision::new(1).unwrap()),
-            skip_reason: None,
         });
         if scenario == "configuration_changed" {
             let stale = repository
@@ -1275,8 +1316,7 @@ async fn stale_stopped_or_out_of_scope_preference_results_preserve_group_members
             assert!(stale.retry_preference);
             assert_eq!(stale.config_revision.unwrap().get(), 2);
             let decision = completion.account_preference.as_mut().unwrap();
-            decision.desired_member = None;
-            decision.skip_reason = Some("检测 Key 的授权范围已变化".into());
+            decision.action = EvaluationPreferenceAction::Skip("检测客户端身份已变化");
         }
         let result = repository.finish_item(&claimed.item.id, completion).await;
         if scenario == "audit_failure" {

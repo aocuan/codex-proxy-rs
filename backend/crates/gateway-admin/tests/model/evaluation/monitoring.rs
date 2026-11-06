@@ -42,6 +42,7 @@ fn state(
     profile: &str,
 ) -> EvaluationAccountMonitoring {
     let account = EvaluationAccountState {
+        credential_state: gateway_core::account::CredentialState::Ready,
         id: "acct_test".into(),
         provider_kind: "openai".into(),
         authentication_kind: "oauth".into(),

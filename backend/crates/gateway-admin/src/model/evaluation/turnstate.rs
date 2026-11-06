@@ -67,6 +67,28 @@ pub struct TurnStateDiagnostic {
     pub http_status: u16,
     pub error_code: Option<String>,
     pub error_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<TurnStateUnavailable>,
+}
+
+/// Provider 已确认账号或被测模型不能用于本次请求
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnStateUnavailable {
+    Authorization,
+    Quota,
+    Model,
+}
+
+impl TurnStateUnavailable {
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::Authorization => "上游拒绝账号或工作区授权",
+            Self::Quota => "上游额度已耗尽",
+            Self::Model => "账号不支持被测模型",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

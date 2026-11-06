@@ -4,7 +4,9 @@ use std::{collections::BTreeMap, time::Instant};
 
 use futures::StreamExt as _;
 use gateway_admin::{
-    model::evaluation::{TurnStateDiagnostic, TurnStateProbeResult, TurnStateStep},
+    model::evaluation::{
+        TurnStateDiagnostic, TurnStateProbeResult, TurnStateStep, TurnStateUnavailable,
+    },
     ports::provider::{ProviderAdminError, ProviderAdminErrorKind},
 };
 use gateway_core::{
@@ -17,7 +19,11 @@ use secrecy::ExposeSecret as _;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
-use super::{client::build_account_http_client, profile::CodexWireProfile};
+use super::{
+    client::build_account_http_client,
+    diagnostics::{CodexFailureCategory, classify_probe_failure},
+    profile::CodexWireProfile,
+};
 use crate::credential::CodexCredentialCodec;
 
 const ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
@@ -280,15 +286,31 @@ fn diagnostic(status: u16, stage: &str, value: &Value) -> TurnStateDiagnostic {
         .get("error")
         .or_else(|| value.pointer("/response/error"))
         .unwrap_or(value);
+    let error_code = code(error.get("code"));
+    let error_type = code(error.get("type"));
+    let status_code = (stage == "request")
+        .then_some(status)
+        .and_then(|status| reqwest::StatusCode::from_u16(status).ok());
+    let unavailable =
+        match classify_probe_failure(status_code, error_code.as_deref(), error_type.as_deref()) {
+            CodexFailureCategory::CredentialExpired
+            | CodexFailureCategory::Banned
+            | CodexFailureCategory::IdentityVerificationRequired => {
+                Some(TurnStateUnavailable::Authorization)
+            }
+            CodexFailureCategory::QuotaExhausted | CodexFailureCategory::UsageLimitExhausted => {
+                Some(TurnStateUnavailable::Quota)
+            }
+            CodexFailureCategory::ModelUnsupported => Some(TurnStateUnavailable::Model),
+            _ => None,
+        };
     TurnStateDiagnostic {
         stage: stage.into(),
         http_status: status,
-        error_code: code(
-            error
-                .get("code")
-                .or_else(|| value.pointer("/response/incomplete_details/reason")),
-        ),
-        error_type: code(error.get("type")),
+        error_code: error_code
+            .or_else(|| code(value.pointer("/response/incomplete_details/reason"))),
+        error_type,
+        unavailable,
     }
 }
 
