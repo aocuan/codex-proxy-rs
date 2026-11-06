@@ -12,7 +12,6 @@ on:
       - '.github/workflows/fork-release.yml'
       - '.github/workflows/_quality.yml'
       - '.github/scripts/**'
-      - '.github/actions/cargo-cache/**'
       - '.github/actions/verify-container/**'
   workflow_dispatch:
 
@@ -95,29 +94,7 @@ jobs:
           path: dist
 
       - name: Setup Docker Buildx
-        id: buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Restore Cargo snapshot
-        id: cargo-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/fork-container-cargo
-          key: fork-container-cargo-v2-${{ matrix.arch }}-${{ hashFiles('backend/Cargo.lock', 'backend/rust-toolchain.toml', 'backend/**/Cargo.toml', 'deploy/Dockerfile', '.github/actions/cargo-cache/Dockerfile') }}
-          restore-keys: |
-            fork-container-cargo-v2-${{ matrix.arch }}-
-
-      - name: Restore Cargo mounts to BuildKit
-        id: cargo-restore
-        uses: ./.github/actions/cargo-cache
-        with:
-          operation: restore
-          builder: ${{ steps.buildx.outputs.name }}
-          path: ${{ runner.temp }}/fork-container-cargo
-          architecture: ${{ matrix.arch }}
-
-      - name: Release restored Cargo snapshot
-        run: rm -rf "$RUNNER_TEMP/fork-container-cargo"
 
       - name: Login to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -204,23 +181,6 @@ jobs:
           path: ${{ runner.temp }}/fork-image-digests/*
           if-no-files-found: error
           retention-days: 1
-
-      - name: Export Cargo snapshot
-        id: cargo-snapshot
-        if: steps.cargo-cache.outputs.cache-hit != 'true' || steps.cargo-restore.outputs.usable != 'true'
-        uses: ./.github/actions/cargo-cache
-        with:
-          operation: snapshot
-          builder: ${{ steps.buildx.outputs.name }}
-          path: ${{ runner.temp }}/fork-container-cargo
-          architecture: ${{ matrix.arch }}
-
-      - name: Save Cargo snapshot
-        if: steps.cargo-snapshot.outputs.usable == 'true' && steps.cargo-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/fork-container-cargo
-          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   publish:
     needs: [metadata, quality, build]
