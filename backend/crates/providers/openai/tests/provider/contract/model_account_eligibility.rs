@@ -141,8 +141,11 @@ async fn unlisted_models_remain_available_without_catalog_discovery() {
 }
 
 #[tokio::test]
-async fn catalog_membership_and_model_access_precede_weight_affinity_and_fixed_accounts() {
-    use gateway_core::account::{AccountModelAccess, AccountModelAccessMode};
+async fn account_allowlists_override_catalog_omissions_but_weight_affinity_and_pinning_do_not() {
+    use gateway_core::account::{
+        AccountModelAccess,
+        AccountModelAccessMode::{All, Allowlist, Denylist},
+    };
     use provider_openai::credential::ResponsesTransport;
 
     for (primary_api, secondary_api) in [(false, false), (true, true), (true, false), (false, true)]
@@ -264,52 +267,45 @@ async fn catalog_membership_and_model_access_precede_weight_affinity_and_fixed_a
             }
         }
         assert_eq!(affinity.binding_count(), 1);
-        // 目录资格不能被固定账号、模型允许列表或另一个账号的目录放宽
-        for (model, required, disable_supported) in [
-            ("gpt-6-astra", Some("acct_scope_new"), false),
-            ("custom-unlisted", None, false),
-            ("gpt-6-astra", None, true),
+        let primary = "acct_provider_contract";
+        let secondary = "acct_scope_new";
+        // 目录外许可只属于明确添加该模型的账号，不能借用同池账号的白名单
+        for (model, required, primary_mode, secondary_mode, expected) in [
+            ("gpt-6-astra", Some(secondary), All, All, None),
+            ("custom-unlisted", None, All, All, None),
+            ("gpt-6.1-sol", None, Allowlist, All, Some(primary)),
+            ("gpt-6-astra", None, Denylist, Allowlist, Some(secondary)),
+            (
+                "custom-unlisted",
+                None,
+                Denylist,
+                Allowlist,
+                Some(secondary),
+            ),
+            ("gpt-6-luna", Some(primary), Denylist, Allowlist, None),
         ] {
-            let scope = if disable_supported {
-                Arc::new(FrozenAccountScope::new(
-                    Arc::new(RuntimeAccountDirectory::new(BTreeMap::from([
-                        (
-                            ProviderAccountId::new("acct_provider_contract").unwrap(),
-                            RuntimeAccount::new(
-                                ProviderKind::new("openai").unwrap(),
-                                BTreeSet::new(),
-                            )
-                            .with_model_access(
-                                AccountModelAccess::new(
-                                    AccountModelAccessMode::Denylist,
-                                    vec![model.to_owned()],
-                                )
-                                .unwrap(),
-                            ),
-                        ),
-                        (
-                            ProviderAccountId::new("acct_scope_new").unwrap(),
-                            RuntimeAccount::new(
-                                ProviderKind::new("openai").unwrap(),
-                                BTreeSet::new(),
-                            )
-                            .with_model_access(
-                                AccountModelAccess::new(
-                                    AccountModelAccessMode::Allowlist,
-                                    vec![model.to_owned()],
-                                )
-                                .unwrap(),
-                            ),
-                        ),
-                    ]))),
-                    ClientRoutingScope::all_accounts(),
-                ))
-            } else {
-                contract_account_scope()
-            };
+            let accounts = [(primary, primary_mode), (secondary, secondary_mode)]
+                .into_iter()
+                .map(|(id, mode)| {
+                    let access = if mode == All {
+                        AccountModelAccess::all()
+                    } else {
+                        AccountModelAccess::new(mode, vec![model.to_owned()]).unwrap()
+                    };
+                    (
+                        ProviderAccountId::new(id).unwrap(),
+                        RuntimeAccount::new(ProviderKind::new("openai").unwrap(), BTreeSet::new())
+                            .with_model_access(access),
+                    )
+                })
+                .collect();
+            let scope = Arc::new(FrozenAccountScope::new(
+                Arc::new(RuntimeAccountDirectory::new(accounts)),
+                ClientRoutingScope::all_accounts(),
+            ));
             let attempt = AttemptContext::new(
                 RequestAttemptContext::new(
-                    ModelRequestId::new("req_catalog_rejected").unwrap(),
+                    ModelRequestId::new("req_account_catalog_policy").unwrap(),
                     ClientApiKeyId::new("key_openai_contract").unwrap(),
                 ),
                 NonZeroU32::MIN,
@@ -325,19 +321,26 @@ async fn catalog_membership_and_model_access_precede_weight_affinity_and_fixed_a
                 CancellationToken::new(),
             );
             let acquisitions = leases.requests.lock().unwrap().len();
-            let error = provider
+            let result = provider
                 .clone()
                 .execute(
                     planned_request_for_model("openai", operation(model), model),
                     attempt,
                 )
-                .await
-                .err()
-                .expect("catalog and model access must both permit the account");
-            assert_eq!(error.kind(), ProviderErrorKind::NoEligibleAccount);
-            assert_eq!(leases.requests.lock().unwrap().len(), acquisitions);
+                .await;
+            if let Some(expected) = expected {
+                let mut stream = result.unwrap();
+                assert_eq!(stream.metadata().provider_account_id().as_str(), expected);
+                while let Some(event) = stream.next().await {
+                    event.unwrap();
+                }
+            } else {
+                let error = result.err().expect("account must be excluded");
+                assert_eq!(error.kind(), ProviderErrorKind::NoEligibleAccount);
+                assert_eq!(leases.requests.lock().unwrap().len(), acquisitions);
+            }
         }
-        let sent = native
+        let sent: Vec<_> = native
             .received_requests()
             .await
             .unwrap()
@@ -345,8 +348,16 @@ async fn catalog_membership_and_model_access_precede_weight_affinity_and_fixed_a
             .chain(api_primary.received_requests().await.unwrap())
             .chain(api_secondary.received_requests().await.unwrap())
             .filter(|request| request.method == "POST")
-            .count();
-        assert_eq!(sent, 2);
+            .map(|request| {
+                captured_request_body(&request)["model"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(sent.len(), 5);
+        assert!(sent.iter().any(|model| model == "gpt-6.1-sol"));
+        assert!(sent.iter().any(|model| model == "custom-unlisted"));
     }
 }
 
@@ -450,6 +461,133 @@ async fn missing_catalog_unknown_plan_and_rotated_api_credentials_preserve_upstr
         while let Some(event) = stream.next().await {
             event.unwrap();
         }
+    }
+}
+
+#[tokio::test]
+async fn unsupported_reasoning_value_preserves_account_eligibility_across_transports() {
+    for transport in ["http", "sse", "websocket"] {
+        let store = Arc::new(MemoryAccountStore::default());
+        create_account(&store, "acct_provider_contract").await;
+        let cooldowns = Arc::new(MemoryCooldownPort::new());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (provider, pool) = provider_with_cooldowns(
+            &store,
+            format!("http://{}", listener.local_addr().unwrap()),
+            cooldowns.clone(),
+        );
+        let upstream_error = json!({
+            "code": "unsupported_value",
+            "type": "invalid_request_error",
+            "param": "reasoning.effort",
+            "message": "Unsupported value: 'none' is not supported with the 'gpt-6-astra' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'."
+        });
+        let expected_message = upstream_error["message"].as_str().unwrap().to_owned();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            if transport == "websocket" {
+                let mut socket = accept_codex_test_websocket(socket).await;
+                socket.next().await.unwrap().unwrap();
+                socket
+                    .send(Message::Text(
+                        json!({
+                            "type": "error", "error": upstream_error, "status": 400
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+            } else {
+                read_http_request(&mut socket).await;
+                let (status, content_type, body) = if transport == "sse" {
+                    let event = json!({"type":"response.failed","response":{
+                        "id":"resp_bad_effort","status":"failed","output":[],"error":upstream_error
+                    }});
+                    (
+                        "200 OK",
+                        "text/event-stream",
+                        gateway_protocol::openai::sse::encode_sse_event(
+                            "response.failed",
+                            &event.to_string(),
+                        ),
+                    )
+                } else {
+                    (
+                        "400 Bad Request",
+                        "application/json",
+                        json!({"error":upstream_error}).to_string(),
+                    )
+                };
+                socket.write_all(format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                ).as_bytes()).await.unwrap();
+            }
+            // 合法请求仍应使用同一个账号，不能被上一请求的参数拒绝隔离
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_http_request(&mut socket).await;
+            socket.write_all(format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{CAPTURE_COMPLETED_SSE}",
+                CAPTURE_COMPLETED_SSE.len()
+            ).as_bytes()).await.unwrap();
+        });
+        let payload = ProtocolPayload::json_object(
+            "openai",
+            json!({
+                "model":"gpt-6-astra","input":"hello","reasoning":{"effort":"none"}
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+        .unwrap()
+        .with_context(Map::from_iter([(
+            "use_websocket".to_owned(),
+            json!(transport == "websocket"),
+        )]));
+        let mut stream = provider
+            .clone()
+            .execute(
+                planned_request_for_model(
+                    "openai",
+                    Operation::Generate(GenerateRequest::from_protocol_payload(payload)),
+                    "gpt-6-astra",
+                ),
+                context("req_unsupported_effort", CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+        let (_, error) = super::precommit::stream_failure(&mut stream).await;
+        assert_eq!(
+            error.kind(),
+            ProviderErrorKind::InvalidRequest,
+            "{transport}"
+        );
+        assert!(error.retry_is_prohibited(), "{transport}");
+        assert!(!error.replay_is_safe(), "{transport}");
+        let visible = error.client_visible_upstream_error().unwrap();
+        assert_eq!(visible.code(), Some("unsupported_value"));
+        assert_eq!(visible.message(), expected_message);
+        drop(stream);
+        assert!(cooldowns.scoped.lock().unwrap().is_empty(), "{transport}");
+        let mut recovered = provider
+            .clone()
+            .execute(
+                planned_request_for_model("openai", operation("gpt-6-astra"), "gpt-6-astra"),
+                context("req_valid_effort", CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            recovered.metadata().provider_account_id().as_str(),
+            "acct_provider_contract"
+        );
+        while let Some(event) = recovered.next().await {
+            event.unwrap();
+        }
+        server.await.unwrap();
+        pool.shutdown().await;
     }
 }
 

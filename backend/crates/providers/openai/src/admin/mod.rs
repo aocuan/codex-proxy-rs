@@ -256,8 +256,29 @@ impl ProviderAdmin for OpenAiAdminProvider {
         &self,
         configuration: &gateway_core::account::OpaqueProviderData,
     ) -> Result<gateway_core::account::OpaqueProviderData, ProviderAdminError> {
+        if configuration
+            .expose_to_provider()
+            .contains_key("installationId")
+            || gateway_core::settings::request_profiles::inherited_fields(configuration).is_some()
+        {
+            return Err(provider_admin_error(ProviderAdminErrorKind::Invalid)
+                .with_public_message("安装 ID 只能在 API 密钥中设置"));
+        }
         self.profile
             .preview_selection(configuration)
+            .map_err(map_client_profile_error)
+    }
+
+    fn preview_key_client_profile(
+        &self,
+        key: &gateway_core::account::OpaqueProviderData,
+        global: Option<&gateway_core::account::OpaqueProviderData>,
+    ) -> Result<gateway_core::account::OpaqueProviderData, ProviderAdminError> {
+        crate::transport::profile::identity::inherited_identity_fields(key)
+            .map_err(map_client_profile_error)?;
+        let profile = gateway_core::settings::request_profiles::resolve_key_profile(key, global);
+        self.profile
+            .preview_selection(&profile)
             .map_err(map_client_profile_error)
     }
 
@@ -1871,12 +1892,15 @@ fn log_import_failure(stage: &'static str, error: &'static str) {
 }
 
 fn map_oauth_error(error: CodexOAuthAdminError) -> ProviderAdminError {
+    use crate::credential::token_client::AuthorizationCodeExchangeError as Exchange;
     use CodexOAuthAdminError as Error;
     use ProviderAdminErrorKind as Kind;
-    let (kind, message) = match error {
+    let (kind, message) = match &error {
         Error::InvalidInput => (Kind::Invalid, "OpenAI 授权参数不合法，请重新发起授权"),
         Error::CallbackRejected => (Kind::Invalid, "OpenAI 授权回调校验失败，请重新发起授权"),
-        Error::TokenRejected => (Kind::Invalid, "OpenAI 拒绝了授权码，请重新发起授权"),
+        Error::TokenRejected | Error::Exchange(Exchange::Rejected) => {
+            (Kind::Invalid, "OpenAI 拒绝了授权码，请重新发起授权")
+        }
         Error::Credential => (Kind::Invalid, "OpenAI 授权返回的凭据不完整或无效"),
         Error::NotFound | Error::FlowExpired => (
             Kind::NotFound,
@@ -1886,29 +1910,51 @@ fn map_oauth_error(error: CodexOAuthAdminError) -> ProviderAdminError {
             Kind::Conflict,
             "OpenAI 授权流程正在处理或已被更新，请先检查授权状态",
         ),
-        Error::Ambiguous => (
+        Error::Exchange(Exchange::Ambiguous { .. }) => (
             Kind::Ambiguous,
             "OpenAI 授权结果未知，请先核对账号状态，不要立即重复提交",
         ),
-        Error::UpstreamUnavailable => (
+        Error::Exchange(Exchange::Connection {
+            timed_out: true, ..
+        }) => (
+            Kind::Unavailable,
+            "连接 OpenAI 授权服务超时，请检查出站连接",
+        ),
+        Error::Exchange(Exchange::Connection {
+            timed_out: false, ..
+        }) => (
+            Kind::Unavailable,
+            "无法连接 OpenAI 授权服务，请检查出站连接",
+        ),
+        Error::Exchange(Exchange::Unavailable) => (
             Kind::Unavailable,
             "OpenAI 授权服务暂不可用，请检查出站连接后重试",
         ),
         Error::StorageUnavailable => (Kind::Unavailable, "OpenAI 授权状态存储暂不可用，请稍后重试"),
     };
-    provider_admin_error(kind).with_public_message(message)
+    provider_admin_error(kind)
+        .with_public_message(message)
+        .with_source(error)
 }
 
 const fn oauth_error_code(error: &CodexOAuthAdminError) -> &'static str {
+    use crate::credential::token_client::AuthorizationCodeExchangeError as Exchange;
     match error {
         CodexOAuthAdminError::InvalidInput => "invalid_input",
         CodexOAuthAdminError::NotFound => "not_found",
         CodexOAuthAdminError::Conflict => "conflict",
         CodexOAuthAdminError::FlowExpired => "flow_expired",
         CodexOAuthAdminError::CallbackRejected => "callback_rejected",
-        CodexOAuthAdminError::TokenRejected => "token_rejected",
-        CodexOAuthAdminError::UpstreamUnavailable => "upstream_unavailable",
-        CodexOAuthAdminError::Ambiguous => "ambiguous",
+        CodexOAuthAdminError::TokenRejected
+        | CodexOAuthAdminError::Exchange(Exchange::Rejected) => "token_rejected",
+        CodexOAuthAdminError::Exchange(Exchange::Unavailable) => "upstream_unavailable",
+        CodexOAuthAdminError::Exchange(Exchange::Connection {
+            timed_out: true, ..
+        }) => "connect_timeout",
+        CodexOAuthAdminError::Exchange(Exchange::Connection {
+            timed_out: false, ..
+        }) => "connect_failed",
+        CodexOAuthAdminError::Exchange(Exchange::Ambiguous { .. }) => "ambiguous",
         CodexOAuthAdminError::StorageUnavailable => "storage_unavailable",
         CodexOAuthAdminError::Credential => "credential",
     }
@@ -2102,6 +2148,7 @@ fn map_client_profile_error(
     use crate::transport::profile::selection::ClientProfileError;
     let message = match error {
         ClientProfileError::Invalid => "客户端身份字段或版本组合不合法",
+        ClientProfileError::InvalidInstallationId => "安装 ID 必须是带连字符的 UUID",
         ClientProfileError::InvalidUserAgent => {
             "User-Agent 必须是 1 至 4096 字节的单行 ASCII 文本，且首尾不能含空白"
         }

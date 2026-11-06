@@ -220,6 +220,7 @@ async fn initialize_inner(
         auth,
         accounts: accounts.clone(),
         account_groups: Arc::new(DefaultAccountGroupService::new(
+            upstream_info.clone(),
             store.account_groups(),
             store.account_runtime(),
             snapshot.clone(),

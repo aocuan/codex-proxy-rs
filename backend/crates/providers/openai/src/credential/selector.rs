@@ -8,8 +8,8 @@ use std::time::{Duration, SystemTime};
 use gateway_core::error::ErrorSource;
 
 use gateway_core::account::{
-    AccountAffinity, AccountCandidate, AccountCapacitySnapshot, AccountEligibilityPolicy,
-    AccountErrorReason, AccountFeedbackStats, AccountQuotaSignals, AccountRuntimeSignals,
+    AccountAffinity, AccountCandidate, AccountCapacitySnapshot, AccountErrorReason,
+    AccountFeedbackStats, AccountModelAccessMode, AccountQuotaSignals, AccountRuntimeSignals,
     AccountSchedulingBlocker, AccountSelectionContext, AccountSelectionPolicy, AccountSelector,
     AccountStatus, CredentialState, PreferredAccountSelection, ProviderAccount, ProviderAccountId,
     QuotaEvidence, RotationStrategy,
@@ -332,31 +332,36 @@ impl CodexCredentialSelector {
         self
     }
 
-    fn quota_signals(
+    fn scheduling_signals(
         &self,
         account: &ProviderAccount,
         model: CodexSelectionModel<'_>,
         strategy: RotationStrategy,
-    ) -> Option<AccountQuotaSignals> {
+    ) -> (
+        Option<AccountQuotaSignals>,
+        Option<gateway_core::account::AccountConcurrencyLimit>,
+    ) {
         if account.authentication_kind() == CODEX_AUTHENTICATION_KIND_OAUTH {
-            return self.quota.scheduling_signals(account);
+            return (self.quota.scheduling_signals(account), None);
         }
-        if strategy != RotationStrategy::Smart {
-            return None;
-        }
-        let signal =
-            self.upstream_info
-                .as_ref()?
-                .signal(account, model.model()?, SystemTime::now())?;
-        let rank = if signal.exhausted {
-            Some(0)
-        } else {
-            signal
-                .remaining_percent
-                .map(|percent| (percent.clamp(0.0, 100.0) * 100.0).round() as u64)
+        let Some(signal) = self
+            .upstream_info
+            .as_ref()
+            .and_then(|source| source.signal(account, model.model(), SystemTime::now()))
+        else {
+            return (None, None);
         };
-        // 选号只读取 Smart 额度分，额度恢复由互联同步事务独立提交
-        Some(AccountQuotaSignals::new(None, rank))
+        let quota = (strategy == RotationStrategy::Smart).then(|| {
+            let rank = if signal.exhausted {
+                Some(0)
+            } else {
+                signal
+                    .remaining_percent
+                    .map(|percent| (percent.clamp(0.0, 100.0) * 100.0).round() as u64)
+            };
+            AccountQuotaSignals::new(None, rank)
+        });
+        (quota, signal.concurrency_limit)
     }
 
     pub(crate) async fn select_with_cyber_policy(
@@ -505,7 +510,8 @@ impl CodexCredentialSelector {
             ),
             _ => None,
         };
-        let diagnostic = request.attempt.is_diagnostic_required_account();
+        let eligibility = request.attempt.account_eligibility();
+        let diagnostic = eligibility.bypasses_local_eligibility();
         let binding_key = request.session_affinity_key.filter(|_| !diagnostic);
         let affinity_mode = request
             .attempt
@@ -629,10 +635,19 @@ impl CodexCredentialSelector {
                 })
                 .collect::<Vec<_>>();
             let mut eligible = Vec::with_capacity(accounts.len());
-            let catalog_excluded = match model {
-                CodexSelectionModel::Requested(model) if !diagnostic => self
-                    .catalog
-                    .scheduling_exclusions(&accounts, model, SystemTime::now()),
+            let catalog_excluded = match (model, request.attempt.account_scope()) {
+                (CodexSelectionModel::Requested(model), Some(scope)) if !diagnostic => {
+                    // 候选已通过冻结的模型政策，白名单精确命中的 ID 交给上游验证
+                    let mut excluded =
+                        self.catalog
+                            .scheduling_exclusions(&accounts, model, SystemTime::now());
+                    excluded.retain(|id| {
+                        scope.directory().account(id).is_none_or(|account| {
+                            account.model_access().mode() != AccountModelAccessMode::Allowlist
+                        })
+                    });
+                    excluded
+                }
                 _ => Default::default(),
             };
             let mut catalog_rejected = 0_usize;
@@ -777,6 +792,11 @@ impl CodexCredentialSelector {
                     let health = self
                         .account_feedback
                         .scheduling_signals(&self.provider_kind, account.id());
+                    let (quota, inherited_concurrency) = self.scheduling_signals(
+                        &account,
+                        model,
+                        request.attempt.account_selection_policy().strategy(),
+                    );
                     let signals = scheduling
                         .signals()
                         .get(account.id())
@@ -790,14 +810,14 @@ impl CodexCredentialSelector {
                             failure_rate_basis_points: None,
                             first_output_latency_ms: None,
                         })
-                        .with_provider_quota(self.quota_signals(
-                            &account,
-                            model,
-                            request.attempt.account_selection_policy().strategy(),
-                        ))
+                        .with_provider_quota(quota)
                         .with_rate_limit(rate_limits.get(account.id()).copied().flatten())
                         .with_runtime_health(health.0, health.1);
-                    AccountCandidate { account, signals }
+                    AccountCandidate {
+                        account,
+                        signals,
+                        inherited_concurrency,
+                    }
                 })
                 .collect::<Vec<_>>();
             let mut affinity = binding
@@ -851,11 +871,7 @@ impl CodexCredentialSelector {
                     preferred_account: preferred.clone(),
                     preferred_account_overrides_weight: true,
                     round_robin_cursor,
-                    eligibility: if diagnostic {
-                        AccountEligibilityPolicy::BypassForDiagnostic
-                    } else {
-                        AccountEligibilityPolicy::Enforce
-                    },
+                    eligibility,
                     account_scope: request.attempt.account_scope().cloned(),
                     reserved_concurrency,
                 };
@@ -1052,7 +1068,8 @@ impl CodexCredentialSelector {
                     busy_accounts.insert(account.id().clone());
                     continue;
                 }
-                let allows_account_state_mutation = !diagnostic || account.enabled();
+                let allows_account_state_mutation =
+                    eligibility.allows_account_state_mutation(account.enabled());
                 match self
                     .leases
                     .try_acquire(ProviderLeaseRequest::Scheduling(
@@ -1060,7 +1077,7 @@ impl CodexCredentialSelector {
                             self.provider_kind.clone(),
                             account.id().clone(),
                             account.revision(),
-                            context.concurrency_limit(&account),
+                            context.concurrency_limit(selected),
                             request.attempt.deadline(),
                         )
                         .with_metadata(request.attempt.lease_metadata())
@@ -1804,7 +1821,7 @@ impl CodexCredentialLease {
         self.cyber_policy_scope.as_ref()
     }
 
-    /// 禁用账号的管理端诊断必须只返回真实上游结果，不能回写账号侧状态
+    /// 租约保留本次选号的回写权限，覆盖成功、失败与流式反馈
     #[must_use]
     pub(crate) const fn allows_account_state_mutation(&self) -> bool {
         self.allows_account_state_mutation

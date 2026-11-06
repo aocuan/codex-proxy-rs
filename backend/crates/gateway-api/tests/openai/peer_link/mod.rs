@@ -69,6 +69,10 @@ async fn fixture(sharing: ClientPeerSharing, plaintext: &str) -> (AdminTestFixtu
         .await
         .unwrap()
         .record;
+    key.limits = RateLimits {
+        max_concurrency: 5,
+        requests_per_minute: 60,
+    };
     key.peer_sharing = sharing;
     key.groups = vec![group.clone()];
     key.name = "private-key-sentinel".into();
@@ -243,7 +247,11 @@ async fn exports_scoped_observations_even_when_the_key_budget_is_exhausted_witho
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await;
     assert_eq!(body["object"], "cpr.peer");
-    assert_eq!(body["schema_version"], 2);
+    assert_eq!(body["schema_version"], 3);
+    assert_eq!(
+        body["key_limits"],
+        json!({"max_concurrency":5,"requests_per_minute":60})
+    );
     assert_eq!(body["usage"]["data"]["windows"][0]["remaining"], "0");
     assert_eq!(body["usage"]["data"]["allowed"], false);
     assert_eq!(body["usage"]["data"]["windows"][0]["limit_reached"], true);
@@ -259,6 +267,117 @@ async fn exports_scoped_observations_even_when_the_key_budget_is_exhausted_witho
     assert!(!body.to_string().contains(RAW_KEY));
     assert_eq!(*fixture.client_key.lock().unwrap(), before);
     assert!(fixture.observations.lock().unwrap().summaries.is_empty());
+}
+
+#[tokio::test]
+async fn pool_plans_use_account_plan_fallback_independently_of_quota_sharing() {
+    for share_quota in [true, false] {
+        let (fixture, app) = fixture(
+            ClientPeerSharing {
+                share_plans: true,
+                share_quota,
+                ..sharing()
+            },
+            RAW_KEY,
+        )
+        .await;
+        for (account_plan, quota_plan, expected) in [
+            (None, Some("free"), Some("Free")),
+            (Some("unknown"), Some("free"), Some("Free")),
+            (Some("  "), Some("free"), Some("Free")),
+            (Some("edu_pro"), Some("edu"), Some("EduPro")),
+            (Some("free"), None, Some("Free")),
+            (None, None, None),
+            (None, Some("unknown"), None),
+        ] {
+            fixture
+                .account
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .account
+                .plan_type = account_plan.map(str::to_owned);
+            fixture
+                .provider_quota
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .plan_type = quota_plan.map(str::to_owned);
+
+            let response = query(&app, PATH, Some(RAW_KEY)).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = response_json(response).await;
+            let plans =
+                expected.map_or_else(|| json!([]), |name| json!([{ "name": name, "count": 1 }]));
+            assert_eq!(
+                body["pool"]["plans"], plans,
+                "{account_plan:?} / {quota_plan:?}"
+            );
+            assert_eq!(body["pool"]["account_count"], 1);
+            assert_eq!(body.get("quota").is_some(), share_quota);
+            assert_eq!(
+                fixture
+                    .account
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .account
+                    .plan_type
+                    .as_deref(),
+                account_plan,
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn plan_only_summary_limits_exported_data_and_preserves_unknown_on_quota_read_failure() {
+    let (fixture, app) = fixture(
+        ClientPeerSharing {
+            share_plans: true,
+            share_quota: false,
+            ..sharing()
+        },
+        RAW_KEY,
+    )
+    .await;
+    fixture
+        .account
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .account
+        .plan_type = None;
+    {
+        let mut quota = fixture.provider_quota.lock().unwrap();
+        let quota = quota.as_mut().unwrap();
+        quota.plan_type = Some("free".into());
+        quota.windows =
+            vec![quota.windows[0].clone(); gateway_protocol::peer::MAX_QUOTA_WINDOWS + 1];
+    }
+    let response = query(&app, PATH, Some(RAW_KEY)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(
+        body["pool"]["plans"],
+        json!([{ "name": "Free", "count": 1 }])
+    );
+    assert_eq!(
+        body["capabilities"],
+        json!(["key_usage", "key_limits", "pool_summary"])
+    );
+    assert!(body.get("quota").is_none());
+
+    *fixture.provider_quota.lock().unwrap() = None;
+    let response = query(&app, PATH, Some(RAW_KEY)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["pool"]["account_count"], 1);
+    assert_eq!(body["pool"]["plans"], json!([]));
 }
 
 #[tokio::test]

@@ -40,6 +40,12 @@ use tar::{Builder, EntryType, Header};
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+const BINARY_NAME: &str = if cfg!(windows) {
+    "codex-proxy-rs.exe"
+} else {
+    "codex-proxy-rs"
+};
+
 const OLD_RELEASE_MANIFEST: &str = r#"{"gateway_version":"1.0.0"}"#;
 
 const TARGET_VERSION: &str = "1.9.9";
@@ -253,7 +259,11 @@ impl Fixture {
     }
 
     fn executable(&self) -> PathBuf {
-        self.root.path().join("codex-proxy-rs")
+        self.root.path().join(BINARY_NAME)
+    }
+
+    fn backup(&self) -> PathBuf {
+        self.root.path().join(format!("{BINARY_NAME}.backup"))
     }
 
     fn web(&self) -> PathBuf {
@@ -393,7 +403,7 @@ impl Fixture {
 #[derive(Clone, Copy)]
 enum ArchiveKind {
     Safe,
-    UnsafePath,
+    UnsafePath(&'static str),
     MissingOfficialManifest,
     NestedOfficialAsset,
     OfficialSymlink,
@@ -409,13 +419,14 @@ enum ChecksumKind {
 fn release_archive(kind: ArchiveKind) -> Vec<u8> {
     let encoder = GzEncoder::new(Vec::new(), Compression::default());
     let mut tar = Builder::new(encoder);
-    append_file(&mut tar, "codex-proxy-rs", b"new-binary", false);
-    append_file(&mut tar, "web/dist/index.html", b"new-web", false);
+    append_file(&mut tar, BINARY_NAME, b"new-binary", 0o755, false);
+    append_file(&mut tar, "web/dist/index.html", b"new-web", 0o755, false);
     if !matches!(kind, ArchiveKind::MissingOfficialManifest) {
         append_file(
             &mut tar,
             "plugins/official/plugin-release-manifest.json",
             b"new-manifest",
+            0o444,
             false,
         );
     }
@@ -423,16 +434,18 @@ fn release_archive(kind: ArchiveKind) -> Vec<u8> {
         &mut tar,
         "plugins/official/new-plugin.tar.gz",
         b"new-plugin",
+        0o644,
         false,
     );
-    if matches!(kind, ArchiveKind::UnsafePath) {
-        append_file(&mut tar, "safe", b"escape", true);
+    if let ArchiveKind::UnsafePath(name) = kind {
+        append_file(&mut tar, name, b"escape", 0o755, true);
     }
     if matches!(kind, ArchiveKind::NestedOfficialAsset) {
         append_file(
             &mut tar,
             "plugins/official/nested/plugin.tar.gz",
             b"nested",
+            0o444,
             false,
         );
     }
@@ -458,16 +471,24 @@ fn append_symlink(tar: &mut Builder<GzEncoder<Vec<u8>>>, name: &str, target: &st
     tar.append(&header, std::io::empty()).expect("append link");
 }
 
-fn append_file(tar: &mut Builder<GzEncoder<Vec<u8>>>, name: &str, data: &[u8], unsafe_path: bool) {
+fn append_file(
+    tar: &mut Builder<GzEncoder<Vec<u8>>>,
+    name: &str,
+    data: &[u8],
+    mode: u32,
+    unsafe_path: bool,
+) {
     let mut header = Header::new_gnu();
     header.set_entry_type(EntryType::Regular);
-    header.set_mode(0o755);
+    header.set_mode(mode);
     header.set_size(u64::try_from(data.len()).expect("size"));
-    header.set_path(name).expect("path");
+    header
+        .set_path(if unsafe_path { "safe" } else { name })
+        .expect("path");
     if unsafe_path {
         let bytes = header.as_mut_bytes();
         bytes[..100].fill(0);
-        bytes[..9].copy_from_slice(b"../escape");
+        bytes[..name.len()].copy_from_slice(name.as_bytes());
     }
     header.set_cksum();
     tar.append(&header, data).expect("append");
