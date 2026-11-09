@@ -1,2 +1,5 @@
 version: 3.44.0
-published: {}
+published:
+  '3':
+    beta: 3.44.0-beta.21+aocuan.4660ac010df7
+    alpha: 3.44.0-beta.21+aocuan.4660ac010df7
