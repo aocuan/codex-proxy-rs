@@ -65,6 +65,7 @@ module ForkRelease
       'PLATFORM_MATRIX' => JSON.generate('include' => platforms)
     )
     ReleasePackage.archives(compose_path: compose_path)
+    FileUtils.cp(ReleasePackage::MANIFEST, 'dist/release')
   end
 
   def self.collect(digest)
