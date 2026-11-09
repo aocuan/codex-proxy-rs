@@ -130,21 +130,14 @@ async fn preparing_diagnostics_never_wait_for_the_serialized_prepare_io() {
 async fn diagnostics_report_a_published_process_fault_without_plugin_details() {
     let (cache, store, runtime) = super::setup().await;
     let controls = tempfile::tempdir().unwrap();
-    let exit = controls.path().join("published-exit");
+    let exit = controls.path().join("exit");
     let mut snapshot = store.snapshot.lock().unwrap().clone();
     snapshot.instances[0].configuration = serde_json::json!({"exit_after_ready_signals":[exit]});
     let active = PluginPreparation::prepare(&runtime, snapshot.clone())
         .await
         .expect("candidate starts before the controlled exit");
-    // 发布完成后再触发故障，避免进程在注册阶段提前退出
-    std::fs::write(&exit, []).unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while active.is_ready() {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("worker exit observed");
+    std::fs::write(exit, b"exit").unwrap();
+    wait_until_unready(&active).await;
 
     let diagnostics = gateway_admin::ports::plugins::PluginRuntimeDiagnostics::runtime_diagnostics(
         &runtime,
@@ -176,7 +169,7 @@ async fn diagnostics_report_a_published_process_fault_without_plugin_details() {
 async fn a_published_process_crash_preserves_the_serving_snapshot_and_other_plugin_status() {
     let (cache, store, runtime) = super::setup().await;
     let controls = tempfile::tempdir().unwrap();
-    let exit = controls.path().join("isolated-exit");
+    let exit = controls.path().join("exit");
     let snapshot = {
         let mut snapshot = store.snapshot.lock().unwrap();
         let mut failed = snapshot.instances[0].clone();
@@ -188,7 +181,7 @@ async fn a_published_process_crash_preserves_the_serving_snapshot_and_other_plug
     let generation = ExtensionPreparationPort::prepare(&runtime, ConfigRevision::new(1).unwrap())
         .await
         .unwrap();
-    std::fs::write(&exit, []).unwrap();
+    std::fs::write(exit, b"exit").unwrap();
     wait_until_unready(&generation).await;
     assert!(generation.can_serve());
     assert!(!generation.is_ready());

@@ -2,12 +2,28 @@ require 'tmpdir'
 require 'uri'
 require_relative 'package-release'
 require_relative 'publish-release'
+require_relative 'published-channels'
 
 # 二开发行复用宿主的归档、清单和发布合同，只管理自身版本与镜像入口
 module ForkRelease
   REPOSITORY = 'aocuan/codex-proxy-rs'
   IMAGE = "ghcr.io/#{REPOSITORY}"
   METADATA = 'dist/fork-release.json'
+
+  # 二开仅发行两个 Linux 平台，通道索引仍复用宿主的已验证发布流程
+  class ChannelPublisher < PublishedChannels::Publisher
+    def verify_assets(version)
+      release = find_release(version)
+      raise 'Fork release must be public and prerelease' unless release &&
+        release.fetch('tag_name') == "v#{version}" && !release.fetch('draft') && release.fetch('prerelease')
+      expected = %w[amd64 arm64].map { |arch| "codex-proxy-rs_#{version}_linux_#{arch}.tar.gz" }
+      expected.concat(%w[checksums.txt compose.yaml config.example.yaml image-digest.txt plugin-release-manifest.json])
+      uploaded = release.fetch('assets').filter_map do |asset|
+        asset.fetch('name') if asset.fetch('state') == 'uploaded' && asset.fetch('size').positive?
+      end
+      raise 'Incomplete fork release assets' unless (expected - uploaded).empty?
+    end
+  end
 
   def self.version(base, sequence, sha)
     base = ReleaseMetadata.version(base).split(/[+-]/, 2).first
@@ -152,6 +168,7 @@ module ForkRelease
     else
       puts "Published #{data.fetch('tag')}; evaluation remains at #{current}"
     end
+    ChannelPublisher.new(REPOSITORY).publish(data.fetch('version'))
   end
 end
 

@@ -44,7 +44,7 @@ fn wire_profile() -> CodexWireProfileState {
         arch: "x86_64".to_owned(),
         terminal: "quota-contract".to_owned(),
         exact_user_agent: None,
-        installation_id: None,
+        installation_seed: None,
         residency: None,
         account_routing_override: None,
         verified_at: Utc
@@ -155,7 +155,7 @@ fn exhausted_quota(reset_at: Option<SystemTime>) -> QuotaState {
 }
 
 #[tokio::test]
-async fn successful_inference_headers_are_authoritative_even_at_full_display_usage() {
+async fn successful_inference_at_the_subscription_limit_stops_further_scheduling() {
     let store = Arc::new(MemoryAccountStore::default());
     let account_id = "acct_passive_allowed";
     create_account(&store, account_id).await;
@@ -182,11 +182,11 @@ async fn successful_inference_headers_are_authoritative_even_at_full_display_usa
         .expect("quota snapshot");
 
     assert_eq!(snapshot.fact().remaining_percent(), Some(0));
-    assert_eq!(snapshot.quota().access(), QuotaAccessState::Allowed);
-    assert_eq!(current.quota().access(), QuotaAccessState::Allowed);
+    assert_eq!(snapshot.quota().access(), QuotaAccessState::Exhausted);
+    assert_eq!(current.quota().access(), QuotaAccessState::Exhausted);
     assert_eq!(
         current.status_projection(SystemTime::now(), None).status,
-        AccountStatus::Normal
+        AccountStatus::QuotaExhausted
     );
 }
 
@@ -276,7 +276,8 @@ async fn passive_quota_updates_keep_core_and_model_specific_buckets_independent(
     assert_eq!(spark.used_percent(), Some(1.0));
 
     let core_headers = vec![
-        ("x-codex-active-limit".to_owned(), "codex".to_owned()),
+        // 文本响应的活动标记不是独立额度头，通用周窗口仍应更新原来的账号额度
+        ("x-codex-active-limit".to_owned(), "premium".to_owned()),
         ("x-codex-primary-used-percent".to_owned(), "82".to_owned()),
         (
             "x-codex-primary-window-minutes".to_owned(),

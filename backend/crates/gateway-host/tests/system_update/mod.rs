@@ -1,6 +1,7 @@
 //! 系统更新测试入口与发行包、前置校验和本地安装夹具
 
 mod channels;
+mod discovery;
 mod download;
 mod events;
 mod installation;
@@ -23,7 +24,7 @@ use futures::StreamExt as _;
 use gateway_admin::model::{
     Revision,
     system::{
-        SystemOperationAccepted, SystemOperationKind, SystemOperationStatus,
+        SystemOperationAccepted, SystemOperationKind, SystemOperationStatus, SystemUpdateCheck,
         SystemUpdateEventLevel, SystemUpdateStatus,
     },
 };
@@ -37,7 +38,7 @@ use gateway_host::system_update::{
 };
 use sha2::{Digest as _, Sha256};
 use tar::{Builder, EntryType, Header};
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const BINARY_NAME: &str = if cfg!(windows) {
@@ -361,13 +362,7 @@ impl Fixture {
     }
 
     async fn mount_release_once(&self, server: &MockServer, version: &str) {
-        let assets = Vec::new();
-        Mock::given(method("GET"))
-            .and(path("/repos/owner/repository/releases"))
-            .respond_with(release_response(version, assets))
-            .up_to_n_times(1)
-            .mount(server)
-            .await;
+        mount_release_json(server, version, available_assets(version), Some(1)).await;
     }
 
     async fn mount_custom_release(
@@ -378,23 +373,17 @@ impl Fixture {
     ) {
         let archive = release_archive(ArchiveKind::Safe);
         let name = archive_name(TARGET_VERSION);
-        let mut assets = vec![serde_json::json!({
-            "name": name,
-            "browser_download_url": archive_url,
-            "size": archive.len(),
-        })];
-        if let Some(checksum_url) = checksum_url {
-            assets.push(serde_json::json!({
-                "name": "checksums.txt",
-                "browser_download_url": checksum_url,
-                "size": 80,
-            }));
-        } else {
-            assets.push(serde_json::json!({
-                "name": "checksums.txt",
-                "browser_download_url": format!("{}/checksums", server.uri()),
-                "size": 80,
-            }));
+        let checksums = format!("{}  {name}\n", hex::encode(Sha256::digest(&archive)));
+        let local_url = format!("{}/checksums", server.uri());
+        let assets = vec![
+            serde_json::json!({"name": name, "browser_download_url": archive_url, "size": archive.len()}),
+            serde_json::json!({"name": "checksums.txt", "browser_download_url": checksum_url.unwrap_or(&local_url), "size": checksums.len()}),
+        ];
+        if checksum_url.is_none() {
+            Mock::given(path("/checksums"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(checksums))
+                .mount(server)
+                .await;
         }
         mount_release_json(server, TARGET_VERSION, assets, None).await;
     }
@@ -495,11 +484,17 @@ fn append_file(
 }
 
 fn archive_name(version: &str) -> String {
-    format!(
-        "codex-proxy-rs-{version}-{}-{}.tar.gz",
-        std::env::consts::OS,
-        std::env::consts::ARCH
-    )
+    let os = if cfg!(target_os = "macos") {
+        "darwin"
+    } else {
+        std::env::consts::OS
+    };
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "amd64"
+    };
+    format!("codex-proxy-rs_{version}_{os}_{arch}.tar.gz")
 }
 
 async fn mount_release_json(
@@ -508,13 +503,38 @@ async fn mount_release_json(
     assets: Vec<serde_json::Value>,
     times: Option<u64>,
 ) {
+    mount_index(server, fixture_index(version)).await;
     let mock = Mock::given(method("GET"))
-        .and(path("/repos/owner/repository/releases"))
+        .and(path(format!(
+            "/repos/owner/repository/releases/tags/v{version}"
+        )))
         .respond_with(release_response(version, assets));
     match times {
-        Some(times) => mock.up_to_n_times(times).mount(server).await,
+        Some(n) => mock.up_to_n_times(n).mount(server).await,
         None => mock.mount(server).await,
     }
+}
+
+const BUILD_VERSION: &str = "4.0.0-beta.1";
+const INDEX_PATH: &str = "/owner/repository/refs/heads/main/release/version.yaml";
+
+fn available_assets(version: &str) -> Vec<serde_json::Value> {
+    [archive_name(version), "checksums.txt".to_owned()].into_iter()
+        .map(|name| serde_json::json!({"name":name,"size":128,"browser_download_url":"https://github.com/owner/repository/releases/download/test/file"})).collect()
+}
+
+fn fixture_index(version: &str) -> serde_json::Value {
+    let major = version.split('.').next().unwrap();
+    let base = version.split('-').next().unwrap();
+    serde_json::json!({"version":BUILD_VERSION, "published": {major: {"stable": version,"beta":version,"rc":version,"alpha":version,"exp":{base: version}}}})
+}
+
+async fn mount_index(server: &MockServer, index: serde_json::Value) {
+    Mock::given(method("GET"))
+        .and(path(INDEX_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(index))
+        .mount(server)
+        .await;
 }
 
 fn release_response(version: &str, assets: Vec<serde_json::Value>) -> ResponseTemplate {
@@ -523,7 +543,7 @@ fn release_response(version: &str, assets: Vec<serde_json::Value>) -> ResponseTe
         .pre
         .is_empty();
     let release = serde_json::json!({
-        "tag_name": format!("v{version}"),
+        "draft": false, "tag_name": format!("v{version}"),
         "name": format!("Release {version}"),
         "body": "notes",
         "html_url": "https://github.com/owner/repository/releases/latest",
@@ -531,7 +551,7 @@ fn release_response(version: &str, assets: Vec<serde_json::Value>) -> ResponseTe
         "published_at": "2026-07-19T00:00:00Z",
         "assets": assets,
     });
-    ResponseTemplate::new(200).set_body_json(serde_json::json!([release]))
+    ResponseTemplate::new(200).set_body_json(release)
 }
 
 struct RejectingRestartPreflight;

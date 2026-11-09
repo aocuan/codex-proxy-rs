@@ -1,5 +1,5 @@
 import type { SystemUpdateDetail, SystemVersion } from '@/api'
-import { ArrowUpCircle, CheckCircle2, RefreshCw, XCircle } from '@lucide/vue'
+import { ArrowUpCircle, CheckCircle2, RefreshCw, TriangleAlert, XCircle } from '@lucide/vue'
 import { t } from '@/i18n'
 import { formatVersionLabel } from '@/utils/format'
 
@@ -15,15 +15,12 @@ interface SystemUpdatePresentationInput {
   hasUpdate: boolean
   updateStreaming: boolean
   updateStreamError: string
-  previousTargetVersion: string
-  confirmedTargetVersion: string | null
 }
 
 export function resolveSystemUpdatePresentation(input: SystemUpdatePresentationInput) {
   return {
     status: resolveStatus(input),
     summaryItems: resolveSummaryItems(input),
-    confirmRows: resolveConfirmRows(input),
     releaseVersion: versionLabel(input.updateInfo?.latestVersion),
     streamStatusLabel: input.updateStreaming
       ? t('systemUpdate.logs.live')
@@ -62,12 +59,20 @@ function resolveStatus(input: SystemUpdatePresentationInput) {
       iconClass: 'text-z-info',
     }
   }
-  if (input.updateError || input.updateInfo?.warning) {
+  if (input.updateError) {
     return {
       label: t('common.status.error'),
       icon: XCircle,
       badge: 'bg-z-error-container text-z-error-on-container',
       iconClass: 'text-z-error',
+    }
+  }
+  if (input.updateInfo?.warning && !input.needRestart) {
+    return {
+      label: t('systemUpdate.status.warning'),
+      icon: TriangleAlert,
+      badge: 'bg-z-warning-container text-z-warning-on-container',
+      iconClass: 'text-z-warning-on-container',
     }
   }
   if (input.needRestart || input.hasUpdate || input.updateInfo) {
@@ -103,8 +108,10 @@ function resolveSummaryItems(input: SystemUpdatePresentationInput) {
     {
       key: 'latest',
       label: t('systemUpdate.latestVersion'),
-      value: versionLabel(input.updateInfo?.latestVersion),
-      title: input.updateInfo?.latestVersion,
+      value: input.updateInfo?.warning
+        ? t('systemUpdate.status.unconfirmedVersion')
+        : versionLabel(input.updateInfo?.latestVersion),
+      title: input.updateInfo?.warning ? undefined : input.updateInfo?.latestVersion,
       releaseUrl: input.updateInfo?.releaseUrl,
     },
     {
@@ -118,29 +125,6 @@ function resolveSummaryItems(input: SystemUpdatePresentationInput) {
       label: t('systemUpdate.deployment'),
       value: deploymentModeLabel(input.version?.deploymentMode),
       title: input.version?.deploymentMode,
-    },
-  ]
-}
-
-function resolveConfirmRows(input: SystemUpdatePresentationInput) {
-  return [
-    {
-      key: 'current',
-      label: t('systemUpdate.currentVersion'),
-      value: versionLabel(input.version?.version),
-      title: input.version?.version,
-    },
-    {
-      key: 'previous',
-      label: t('systemUpdate.displayedTarget'),
-      value: versionLabel(input.previousTargetVersion),
-      title: input.previousTargetVersion,
-    },
-    {
-      key: 'target',
-      label: t('systemUpdate.remoteTarget'),
-      value: versionLabel(input.confirmedTargetVersion),
-      title: input.confirmedTargetVersion,
     },
   ]
 }

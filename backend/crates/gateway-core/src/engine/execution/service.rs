@@ -785,7 +785,6 @@ impl DefaultExecutionService {
         request_id: &ModelRequestId,
         authorization: &mut AuthorizedExecution,
     ) -> Result<ExecutionStartGuard, GatewayError> {
-        let concurrency_wait_budget = ConcurrencyWaitBudget::default();
         let (admission, admission_decision_ms) = if authorization.nested.is_some() {
             let permit = authorization.nested_permit.take().ok_or_else(|| {
                 GatewayError::new(
@@ -802,7 +801,6 @@ impl DefaultExecutionService {
                     request_id,
                     authorization.deadline_at,
                     authorization.cancellation.clone(),
-                    &concurrency_wait_budget,
                 )
                 .await?;
             let admission = if let Some(permit) = authorization.nested_permit.take() {
@@ -835,7 +833,6 @@ impl DefaultExecutionService {
         Ok(ExecutionStartGuard {
             admission,
             active_request,
-            concurrency_wait_budget,
             admission_decision_ms,
         })
     }
@@ -863,7 +860,6 @@ impl DefaultExecutionService {
         let ExecutionStartGuard {
             admission,
             active_request,
-            concurrency_wait_budget,
             admission_decision_ms,
         } = start_guard;
         let observation = plan
@@ -945,7 +941,7 @@ impl DefaultExecutionService {
             )
             .await
         {
-            Ok(core) => core.with_concurrency_wait_budget(concurrency_wait_budget),
+            Ok(core) => core,
             Err(error) => {
                 if let Some(budget) = &self.budget {
                     settle_budget(
@@ -1306,13 +1302,13 @@ impl DefaultExecutionService {
         request_id: &ModelRequestId,
         deadline_at: Deadline,
         cancellation: CancellationToken,
-        budget: &ConcurrencyWaitBudget,
     ) -> Result<AdmissionLease, GatewayError> {
         let policy = client.snapshot.client_queue_policy();
         let limits = client.policy.limits();
         let key = client.policy.key_id();
+        let budget = ConcurrencyWaitBudget::default();
         let mut waiting =
-            CapacityWait::new(&self.admission_waiting, policy, deadline_at.at(), budget);
+            CapacityWait::new(&self.admission_waiting, policy, deadline_at.at(), &budget);
         let mut admission = AdmissionLease {
             port: Arc::clone(&self.admissions),
             diagnostics: self.diagnostics.clone(),
@@ -1528,7 +1524,18 @@ impl DefaultExecutionService {
             }
             _ => (AccountProbeErrorSource::Gateway, None, None),
         };
+        let mut failure = AccountProbeError::new(
+            gateway_error_from_engine(error),
+            source,
+            send_state,
+            upstream_response,
+        );
         if let EngineError::Provider(provider_error) = error {
+            if source == AccountProbeErrorSource::Provider {
+                failure.proxy_hint = provider_error
+                    .diagnostic()
+                    .and_then(|diagnostic| diagnostic.proxy_hint());
+            }
             let latency = started_at.elapsed().unwrap_or_default();
             let latency_ms = u64::try_from(latency.as_millis()).unwrap_or(u64::MAX);
             tracing::warn!(
@@ -1564,12 +1571,7 @@ impl DefaultExecutionService {
                 );
             }
         }
-        AccountProbeError::new(
-            gateway_error_from_engine(error),
-            source,
-            send_state,
-            upstream_response,
-        )
+        failure
     }
 }
 
@@ -1627,7 +1629,12 @@ impl ExecutionService for DefaultExecutionService {
             for kind in scope.provider_kinds() {
                 let provider = providers.get(kind).ok_or(ProviderCatalogUnavailable)?;
                 let Some(models) = provider
-                    .query_client_model_catalog(scope, protocol, client_version)
+                    .query_client_model_catalog(
+                        client.policy.key_id(),
+                        scope,
+                        protocol,
+                        client_version,
+                    )
                     .await?
                 else {
                     for profile in client.snapshot.profiles_for_provider_scope(kind, scope) {

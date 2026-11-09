@@ -326,8 +326,8 @@ Chat 沿用 [Client Key 鉴权](#openai-数据面客户端接口)、[请求期�
 [请求头与身份](#请求头与身份)及[隐私策略](#隐私策略)。隐私策略的 `request_body` 面向转换后的 Responses 正文，
 例如 `$.input`，不需要另外维护一套针对 `messages` 的规则
 
-转换后的请求按选中 Provider 的正文规则处理。OpenAI 的[正文兼容](#正文兼容)会移除顶层 `temperature` 和
-`prompt_cache_retention`。输出上限原值交给上游校验，低于模型下限时会收到上游错误；`top_p` 是否可用也由上游判断
+转换后的请求按选中的 Provider 执行。OpenAI 的字段处理见[正文兼容](#正文兼容)；
+输出上限原值交给上游校验，低于模型下限时会收到上游错误
 
 ### Images 请求
 
@@ -406,7 +406,7 @@ API Key 与 OAuth 共用模拟客户端画像（`User-Agent`、`originator`、`v
 包括会话、线程、Lite 和其他业务扩展头。
 上游认证只来自选中的账号；API Key 不携带 OAuth Cookie、ChatGPT 账号身份或下游的
 `X-OpenAI-Actor-Authorization` 托管认证声明。
-`x-codex-installation-id` 优先使用当前 Key 设置的安装 ID，否则使用选中账号已持久化的安装 ID，与正文 `client_metadata` 中的安装身份一致。
+`x-codex-installation-id` 在 Key 配置种子时，由种子、Key ID 与选中账号 ID 稳定派生；未配置时使用账号已持久化的安装 ID，与正文 `client_metadata` 中的安装身份一致
 `x-openai-internal-codex-residency` 和 `x-openai-account-routing-override` 分别由部署配置
 `openai.residency`、`openai.account_routing_override` 控制，配置值原样发送并覆盖客户端同名头，
 省略或 `null` 时删除对应请求头。配置说明见 [部署与运维](../deploy/README.md#启动后的运行设置)
@@ -426,7 +426,7 @@ Responses 明确换号时清理 `traceparent`、`tracestate`、`sentry-trace`、
 `ws_request_header_*` 副本。同账号及归属未知时保留原值，业务输入和工具结果保持原始内容
 
 会话、线程、窗口及父子线程引用在出站时按本次安装身份稳定映射为 UUID；
-默认使用账号安装身份，换账号会改变映射；Key 配置固定安装 ID 时，换账号仍沿用该 ID 的映射。HTTP 请求头、正文 metadata、WS 副本及
+默认使用账号安装身份；Key 配置种子时，每个 Key × 账号组合拥有独立的安装身份，换账号会改变映射。HTTP 请求头、正文 metadata、WS 副本及
 已识别的 Desktop 自动 Git 上下文使用一致映射。
 轮次及父子轮次引用保留客户端原值，包括输入项的 `internal_chat_message_metadata_passthrough.turn_id`、
 请求 metadata 中的 `turn_id`、`parent_turn_id`、`root_turn_id`，以及 `x-client-turn-id`、
@@ -454,6 +454,15 @@ OpenAI Provider 的 Responses 上游编码会移除 Codex 不接受的顶层 `te
 `prompt_cache_key`、`reasoning`、`include` 等 Codex 参数继续保留。上述参数过滤只作用于顶层，
 不删除工具参数 schema、输入内容或 `client_metadata` 内的同名业务字段；其他未知字段继续透传。
 `prompt_cache_key` 不用于补造会话或线程请求头；客户端未提供缓存键、会话或线程身份时保持缺省
+
+发往 Codex/OAuth 的 Responses 请求另按下表处理；API Key 上游保留这些字段。规则只匹配表中列出的位置
+
+| 请求字段 | Codex/OAuth 出站行为 |
+| --- | --- |
+| `top_p`、`frequency_penalty`、`presence_penalty`、`chat_template_kwargs`、`user`、`metadata`、`safety_identifier` | 省略；采样参数取默认值时也省略 |
+| `stream_options.include_usage` | 省略该成员，保留其他流式选项 |
+| `truncation`、`stop_sequences`、`prompt_cache_options` | 分别仅在值为 `"disabled"`、`[]`、`{}` 时省略；显式策略交给上游校验 |
+| `max_completion_tokens`、`max_tokens` | 转为 `max_output_tokens`。原生字段优先，其次按左列顺序取首个非 `null` 值 |
 
 Codex/OAuth 上游的历史回填按字段形状兼容，不以 User-Agent 品牌区分：显式 `type: "reasoning"`
 的 `input` 项移除顶层 `status`；该项具有非空字符串 `encrypted_content` 时，还会移除非空数组
@@ -572,7 +581,8 @@ OpenAI Provider 按客户端传入的 `client_version` 请求上游目录，完�
 `base_instructions`、`model_messages`、`service_tiers`、工具与能力字段，以及未知嵌套字段、显式 `null`
 和字段缺失的区别。
 API Key 上游返回完整 Codex `models` 目录时沿用该合同；仅返回普通 `data` 模型列表时使用通用画像，
-未提供的推理能力保持未知，不补充推理档位。
+未提供的推理能力保持未知，不补充推理档位。已知的专用生图、Live／Realtime 和语音合成模型以 `visibility: "hide"`
+保留在 Codex 目录中，且不出现在默认选模列表。其他 ID 保持可见；此规则不影响普通模型列表或直接调用。
 模型别名仅替换 `slug`，不替换上游展示名、提示词、能力或 `priority`；保持原生模型顺序，新增别名附在后面。
 目录按当前路由快照的模型存在性及账号模型政策过滤，避免公布已知无法路由的模型；新模型需待后台目录对账后进入列表。
 xAI 没有 Codex 原生目录，使用官方 CLI proxy 当前目录生成通用画像。推理菜单读取
@@ -1151,13 +1161,17 @@ OpenAI OAuth 账号支持此操作，API Key 账号不支持，仍可参加普�
 未要求探测时，该字段表示冷却结束时间。`protectionRules` 返回触发时的规则快照 `[{ id, name }]`，
 没有保护原因时为空数组，修改或删除当前规则不改写此快照。错误保护与上游限流独立恢复，解除保护不保证其他限制已经解除
 
-`quota.credits` 返回上游点数余额，未提供点数信息时为 `null`。对象包含 `hasCredits`、`unlimited` 和
-`balance`，余额为保留上游精度的十进制字符串，未提供余额时为 `null`，明确的零余额为 `"0"`。
-OpenAI 点数随现有额度刷新和正常请求的额度信息同步，不与主动重置卡库存或百分比限额合并，
-不根据 `balance` 单独推导可用性。主动查询明确 `hasCredits=true` 或 `unlimited=true`，且无阻止
-点数支出的上限或工作区限制时，即使套餐窗口耗尽也可使用点数，并解除已有额度耗尽状态。
-真实额度拒绝后的后台回读同样支持此恢复路径，但不会自动重发本次失败请求；点数不能清除
-凭据错误、停用或冷却状态。上游点数信息也可能延迟，后续真实拒绝仍会记录额度耗尽
+`quota.credits` 返回上游点数信息，缺失时为 `null`；包含 `hasCredits`、`unlimited` 和 `balance`。
+余额是保留上游精度的十进制字符串，未知为 `null`，零为 `"0"`，与重置卡库存独立
+
+支持点数的账号返回 `capabilities.quotaCredits=true`。通过 `POST /api/admin/accounts/batch-update`
+提交 `{ "accountIds": ["acct_..."], "autoUseQuotaCredits": true }` 设置是否自动使用点数：
+
+- 默认关闭，订阅额度耗尽即停止调度
+- 开启后，上游确认 `hasCredits=true` 或 `unlimited=true` 且没有支出限制时，允许靠点数继续请求；余额数字本身不能证明可用
+- 对已耗尽账号开启时复查额度；关闭时立即撤销仅靠点数的放行
+
+点数不解除凭据错误、停用或冷却，也不触发对已被上游拒绝请求的重发
 
 账号名称是本地显示信息，与账号 ID、上游邮箱和凭据独立。编辑接口的可选 `name` 省略或为 `null` 时保留原值；
 提供字符串时去除首尾空白，空字符串清除名称并回退显示邮箱，原始输入最多 512 个 UTF-8 字节且不能包含控制字符。
@@ -1247,6 +1261,7 @@ Key 预算及其访问状态随互联默认公开，不要求开启 `shareQuota`
 最多 256 项，每个 ID 最多 256 字节；重复 ID 去重，不接受空白、控制字符、`__` 前缀或 `*` 通配符。
 允许保存当前上游目录尚未返回的 ID。限制按全局模型映射后的上游 ID 判断，不扩大账号本身的上游权限。
 管理端刷新目录只更新目录，不修改模型限制。全选与取消全选只作用于上游目录中符合当前搜索条件的模型。
+自定义模型取消勾选后在本次编辑期间保留，可再次勾选。保存时以最终选中项更新限制，关闭或取消编辑会丢弃草稿。
 白名单的清理按钮列出当前目录未返回的已选 ID，默认不选中任何项，
 由管理员确认后从当前表单移除，保存账号后生效。目录未就绪、刷新失败或返回空目录时不能清理，清理也不能将白名单置空。
 图像、搜索、插件适配模型和映射目标可能不在目录中，目录缺失本身不代表模型失效。
@@ -1389,6 +1404,7 @@ OAuth 等待回调期间不持有保护；提交仍拒绝已删除或连接配�
   "source": "upstream",
   "gatewayErrorCode": "rate_limited",
   "sendState": "sent",
+  "proxyHint": null,
   "error": "upstream unavailable",
   "providerErrorCode": "usage_exhausted",
   "providerErrorType": "invalid_request_error",
@@ -1404,6 +1420,9 @@ OAuth 等待回调期间不持有保护；提交仍拒绝已删除或连接配�
 - `source` 为 `gateway`、`provider` 或 `upstream`：分别表示尚未进入 Provider、Provider 本地且未发送、
   已发送/可能已发送或已经捕获到上游事实
 - `gatewayErrorCode` 是 `GatewayErrorKind` 的稳定机器值，管理端据此生成中文摘要
+- `proxyHint` 仅在 Provider 发送前失败且有代理诊断时返回：`invalid_configuration` 表示代理配置无效，
+  `unreachable` 表示无法连接代理端点，`tunnel_failed` 表示代理隧道协商失败。
+  `check_proxy` 表示本次使用代理且建连失败，不能据此判定故障在代理；无提示时为 `null`
 - `sendState` 为 `not_sent`、`sent`、`ambiguous`，非 Provider 错误为 `null`
 - `error`、`providerErrorCode`、`providerErrorType`、`upstreamStatus`、`upstreamContentType` 和
   `upstreamBody` 是实际捕获的原始诊断字段；缺失时为 `null`，不会由本地猜测或翻译
@@ -1603,8 +1622,10 @@ OpenAI 授权码交换与令牌刷新请求的连接超时为 30 秒，单次上
   失效后需取得新 PAT 再导入
 - 首次 OAuth 保留回调 `state`、PKCE 与官方 token exchange，并持久化 `idToken`、`accessToken`、
   `refreshToken`。刷新响应中的三个 token 字段均按官方语义独立轮换：返回新值时替换，省略时分别保留
-  现值。重新授权也保留这些回调保护，但只轮换目标账号的 token。回调地址只承载 `code`/`state`，
-  不以 host/path 形式作为拒绝条件
+  现值。回调地址只承载 `code`/`state`，不以 host/path 形式作为拒绝条件
+- OpenAI 重新授权允许登录另一个上游账号。保留本地账号 ID、名称和调度设置，按新授权更新令牌、
+  上游用户与工作区 ID、邮箱和套餐。换号时清除旧账号的额度快照和耗尽状态，新额度由后台重新查询。
+  无法识别新用户或新身份已绑定其他记录时，原账号保持不变
 - OAuth 账号文件导入和 OAuth complete（包括重新授权）在 credential 提交后后台尝试一次额度观测，不等待
   观测完成才返回成功。观测失败只记录告警，不回滚已提交的账号；手工或后台 RT 刷新只更新 token，
   不隐式等同于手工额度刷新，也不更新既有账号资料或 OAuth principal。xAI 导入与 OAuth complete
@@ -1873,16 +1894,25 @@ HTTP 返回 `403` 和 `image_generation_disabled`，WebSocket 每个 `response.c
 开启后推理和 [CPR 互联导出](#cpr-互联只读协议) 都限制到这些组内的直连 OAuth 账号。
 账号池、原生额度窗口、套餐分布分别按对应开关公开；关闭共享不改变已保存的其他开关值
 
+### Key 客户端身份
+
 `providerRequestProfileOverrides` 按 Provider ID 保存身份选择，列表返回同名对象。创建时各项为完整配置对象，
 未提供的 Provider 跟随通用设置；更新时省略某项保留原值，设为 `null` 清除该项覆盖。最多 256 项，每项最多 64 KiB。
 独立配置整体覆盖通用设置，不逐字段继承；切换全局配置不会影响独立 Key。目录与选择规则见 [Provider 客户端身份](#provider-客户端身份)
 
-OpenAI Key 可设置 `installationId`（带连字符的 UUID，大小写均可）。在 `providerRequestProfileOverrides.openai` 中，继承全局 UA 时使用 `{"inherit":{"installationId":"3b11bc82-c666-417d-b9ff-2a34fd040385"}}`；独立预设和自定义 UA 将该字段与各自的画像字段并列。
-省略、空字符串或 `null` 使用选中账号的安装身份；填写后仅覆盖这把 Key 的出站安装身份，换账号仍使用该值，不改写账号凭据。通用设置不接受此字段。
+OpenAI Key 的 `installationSeed` 接受带连字符的 UUID，保存时规范化为小写；通用设置不接受此字段。
+在 `providerRequestProfileOverrides.openai` 中，继承全局 UA 时使用
+`{"inherit":{"installationSeed":"3b11bc82-c666-417d-b9ff-2a34fd040385"}}`；独立预设或自定义 UA 将它与画像字段并列
+
+- 省略、空字符串或 `null`：使用选中账号的安装身份
+- 填写种子：按种子、Key 记录 ID 和账号记录 ID 派生安装 UUID；重启、UA 变化或凭据更新不改变结果，换 Key、换账号或修改种子会改变身份
+- 种子不发送给上游，也不改写账号凭据；更改或清除种子使生效身份变化时，WebSocket 精确续写须重发完整上下文
 
 兼容字段 `openaiClientProfileOverride` 和 `xaiClientProfileOverride` 分别对应上述映射中的 `openai`、`xai`。
 创建时省略或 `null` 表示无覆盖；更新时省略保留、`null` 清除。与通用字段同时提交时必须一致，否则拒绝整个请求；
 响应中的兼容字段从同一映射派生，不是第二份配置
+
+### 名称与密钥值
 
 密钥列表的 `search` 仅匹配名称和标签，不匹配密钥值或可见前缀；搜索不区分大小写，使用字面量包含匹配，`%`、`_` 和 `\` 按普通字符处理。
 创建和更新时去除名称首尾空白，并按忽略大小写、首尾空格的名称查重，重复返回 `409`。
@@ -1911,6 +1941,8 @@ OpenAI Key 可设置 `installationId`（带连字符的 UUID，大小写均可�
 
 自定义 Key 的分组权限、日／周限额和并发规则按本平台配置执行，不导入其他平台的历史用量
 
+### 限额与调度
+
 金额字段为非负十进制字符串，最多 10 位整数与 10 位小数，`"0"` 表示不限额。
 创建时省略金额字段默认为零；更新时省略或 `null` 保留当前值，修改限额不会清空已用金额。
 `maxConcurrency` 和 `requestsPerMinute` 是非负整数，零表示不限
@@ -1931,7 +1963,7 @@ OpenAI Key 可设置 `installationId`（带连字符的 UUID，大小写均可�
 繁忙时先按调度策略选择可用账号，临时分流不改写会话绑定；没有可立即使用的账号时才按配置排队。严格亲和下已有绑定的后代线程只等待当前会话账号，
 根线程迁移后跟随新账号。绑定缺失时，任何有可靠会话身份的请求都可按调度策略原子首绑，后续请求沿用该绑定
 
-严格亲和下的后代线程始终启用账号排队，沿用 `concurrencyWaitTimeoutSeconds` 和请求截止时间；
+严格亲和下的后代线程始终启用账号排队，沿用 `accountQueueTimeoutSeconds` 和请求截止时间；
 `maxWaitingPerAccount` 为 0 时使用每队列 1,000 人上限，否则沿用配置的上限。
 可识别来源的 Search、Images、Live 创建请求采用同样规则，身份与轮次关联见[会话绑定](architecture.md#6-路由账号范围与-continuation)。
 插件显式选号须通过账号资格与租约检查，见[调度合同](../backend/crates/gateway-plugin/sdk/docs/capabilities.md#路由调度与观察)。普通请求关闭账号排队且没有可用容量时返回 `503` / `account_capacity_unavailable`，
@@ -1947,7 +1979,7 @@ xAI 由本地账号/模型冷却、无可选账号、并发容量不足及选号
 保留 `account_unavailable_error` 类型和各自的机器码；可用备用 Provider 仍按路由范围与换号预算尝试。
 同次请求选号耗尽时保留最近一次上游失败，新的基础设施故障仍按自身原因报告
 
-队列满返回 `429` / `concurrency_queue_full`，排队超时返回 `429` / `concurrency_queue_timeout`；
+默认队列满返回 `429` / `concurrency_queue_full`，排队超时返回 `429` / `concurrency_queue_timeout`；
 WebSocket 使用对应错误事件。等待期间不发送上游请求，取消后释放等待位置，排队重查不重复计入 RPM。
 SSE 在 Key 准入完成并取得执行会话前不发送保活帧，此阶段保留 HTTP 错误状态；
 取得会话后的账号等待受 SSE 保活覆盖，已开始交付的失败沿用流内错误合同
@@ -1996,7 +2028,7 @@ HTTP 返回 `429`，`error.code` 为 `key_daily_budget_exceeded` 或 `key_weekly
 | [隐私策略](#隐私策略) | `codexPrivacyPolicy` |
 | 模型映射 | `modelMappings` |
 | 凭据刷新 | `refreshMarginSeconds`、`refreshConcurrency` |
-| [并发与排队](#并发与排队) | `maxConcurrentPerAccount`、`maxWaitingPerKey`、`maxWaitingPerAccount`、`openaiGuardianReservedConcurrency`、`concurrencyWaitTimeoutSeconds` |
+| [并发与排队](#并发与排队) | `maxConcurrentPerAccount`、`maxWaitingPerKey`、`maxWaitingPerAccount`、`openaiGuardianReservedConcurrency`、`keyQueueTimeoutSeconds`、`accountQueueTimeoutSeconds`、`switchAccountOnQueueFailure` |
 | [上游重试等待](#容量拒绝与重试) | `maxRetryAfterSeconds` |
 | [亲和与换号](#账号亲和与换号) | `openaiAccountAffinity`、`openaiSessionAffinityTtlHours`、`maxAccountRotations` |
 | [调度策略](#智能调度) | `rotationStrategy`、`smartScheduling` |
@@ -2109,9 +2141,17 @@ UA、平台参数及自动 Git 上下文版本由 [OpenAI 上游客户端身份]
 每个 Key、每个账号各自独立计数，没有单对象覆盖字段。执行并发为 5、最大排队数为 5 时，
 该对象最多容纳 5 个执行请求与 5 个等待请求。Key 并发为 0（不限）时跳过 Key 排队。
 OpenAI 严格亲和下后代线程的会话账号等待不随普通账号排队关闭，见 [Client Key 等待规则](#7-client-key)。
-`concurrencyWaitTimeoutSeconds` 取值 1～120，默认 30，从首次入队开始计时，密钥与账号两层共享该等待时限；
-切换账号或内部重试不重新计时；若插件设置了请求总时限，等待也计入该时限。排队超时不用于中断已开始的上游生成。
-设置更新请求须包含这三个字段，新请求使用更新后的快照
+
+| 字段 | 默认值 | 行为 |
+| --- | --- | --- |
+| `keyQueueTimeoutSeconds` | `30` | Key 排队超时，1～120 秒 |
+| `accountQueueTimeoutSeconds` | `30` | 账号排队超时，1～120 秒 |
+| `switchAccountOnQueueFailure` | `false` | 开启后，账号队满或超时可再选一次允许且可立即准入的账号，不重新排队；关闭或无空位时返回原错误 |
+
+两层从各自首次入队开始计时，账号重选、Provider 切换或内部重试不重置账号时限。
+请求总期限优先，排队超时不中断已开始的上游生成。密钥排队失败、必须跟随根线程的后代、固定账号与原生续写不触发换号。
+OpenAI 严格模式成功换号后迁移绑定，优先模式临时分流时保留主绑定。
+设置更新须提交两层队列容量、两个超时值和换号开关，对新请求生效
 
 `openaiGuardianReservedConcurrency`（默认 5，取值 0～4,294,967,295）设置 Codex Guardian 自动审批的每账号独立并发，保存后对新请求生效。
 Guardian 以 `subagent_kind` 或 `client_metadata.x-openai-subagent` 值 `guardian` 识别。取值 R 大于 0 时，
@@ -2126,10 +2166,18 @@ Guardian 以 `subagent_kind` 或 `client_metadata.x-openai-subagent` 值 `guardi
 `openaiAccountAffinity` 控制 Codex 账号亲和，默认 `strict`（严格）：
 
 - `relaxed`（宽松）：会话内请求直接按 `rotationStrategy` 选号，不优先主账号
-- `preferred`（优先）：会话内所有可关联请求优先主账号，并发已满、额度耗尽、停用、限流冷却或不支持当前模型时临时分流，保留会话绑定，后续请求仍优先主账号
+- `preferred`（优先）优先使用会话主账号，短时满载、限流或模型不匹配时临时分流，后备按同一会话的稳定顺序参与既有调度
+  主账号被删除、停用或凭据过期、失效、封禁时，在后备账号成功准入时原子迁移绑定
+  额度耗尽且重置时间未知或距离当前时刻超过账号排队时限时迁移，接近重置时保留主绑定，并给刚过重置时间的额度复核同长度宽限
+  原生续接仍固定其状态归属账号
 - `strict`（严格）：同一会话共用账号，后代请求等待当前账号并跟随根请求换号
 
 插件显式选号及原生续写的状态归属约束在三种模式下仍然生效
+
+Chat Completions 和 Responses 通过原生 OpenAI Provider 选号时，缺少显式会话 ID 的请求会在同一 Client Key 下匹配账号亲和。
+网关先匹配客户端传入的 `prompt_cache_key`，否则按上游模型、开头的指令和首条用户消息的文本匹配。
+后续消息及工具列表不参与匹配。优先模式允许临时分流；严格模式沿用根请求的等待与迁移规则，启用账号排队时等待繁忙的绑定账号，关闭排队或账号失效时允许重新选号并迁移绑定。
+宽松模式、没有缓存键又缺少对话开头文本的请求，仍按普通调度选号。内容亲和只用于选号，不建立会话身份或续接归属
 
 `openaiSessionAffinityTtlHours` 是账号绑定及其会话关联的滑动保留时长，单位小时，默认 24，取值 1～720。
 各类请求统一在发送前成功准入时按请求冻结值续期。
@@ -2306,7 +2354,7 @@ Responses 的自动 Desktop Git 上下文与请求头使用同一画像快照：
 该同步不依赖隐私策略开关；显式隐私规则在其后执行，仍可覆盖最终字段
 
 配置在请求开始时冻结，Provider 首次解析的版本用于该请求的全部重试与换号。
-安装 ID 不变时 WebSocket 精确续写沿用所属连接；更改或清除覆盖导致生效 ID 变化时，须重新发送完整上下文
+WebSocket 精确续写沿用所属连接；安装身份配置与变更限制见 [Key 客户端身份](#key-客户端身份)
 
 ### xAI 上游客户端身份
 
@@ -2375,8 +2423,7 @@ HTTP 拒绝使用原始上游状态码；SSE 或 WS 流内失败只使用错误�
 无探测时到期恢复，有探测时到期仍阻止调度，探测失败按冻结时的时长顺延。关闭保护或探测后，已有冻结等待当前冷却结束再解除。
 保护到期或探测解除不清除独立的上游限流或模型冷却；账号手动恢复沿用强制清除本地状态的语义，使旧在途反馈和旧探测失效
 
-设置更新不接受 `accountAutoFreeze*` 字段，缺少 `accountErrorProtection` 或混用新旧字段均拒绝，避免旧客户端覆盖已保存规则。
-已有部署与备份的旧保护设置清理见[错误保护配置升级](../deploy/README.md#错误保护配置升级)
+设置更新必须包含 `accountErrorProtection`，不接受未知字段；已有部署或备份的配置处理见[升级前检查](../deploy/README.md#升级前检查)
 
 ### Windows 客户端下载
 
@@ -2742,6 +2789,10 @@ WebSocket 握手不主动添加专项计时请求头，客户端显式提供的�
 `environment.scope = export_time` 明确版本、构建与部署信息是导出时状态，不能代替事发环境
 
 `request.routed.data.accountPolicy` 保存执行时冻结的账号策略与预算。
+OpenAI 账号队满或超时后的重选记录为 `account.queue.reselect`；绑定迁移成功后，
+`account.binding.migrated` 保存拒绝原因 `reason`、原账号 `fromAccountId` 和新账号 `toAccountId`。
+首次认领、临时分流和失败重选不记录为绑定迁移
+
 `attempt.failed.data.recovery` 保存 Provider 的重放安全性和恢复意图；`retry.decided` 保存当时
 实际参与决策的门槛、剩余预算和发送状态，`retry.policy` 保存宿主及插件策略的停止事实。
 已有的 `provider.precommit.released` 数据保留释放原因、预取字节数与等待时间，不等同于下游已提交
@@ -2811,8 +2862,8 @@ Provider metadata 分别保留 `requestedServiceTier` 与 `upstreamServiceTier` 
 
 | 方法 | 路由 | 主要 query/body | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/api/admin/system/version` | 无 | 当前构建、部署模式和可用更新 |
-| `GET` | `/api/admin/system/update/detail` | `refresh=true\|false`、`channel?` | 按临时通道读取或刷新 Release 详情 |
+| `GET` | `/api/admin/system/version` | 无 | 当前构建、部署模式及进程内的运行通道摘要 |
+| `GET` | `/api/admin/system/update/detail` | `refresh?`、`summaryOnly?`、`channel?` | 按临时通道读取或刷新 Release 详情 |
 | `GET` | `/api/admin/system/update/events` | 无 | SSE 更新事件流 |
 | `POST` | `/api/admin/system/update` | `{ targetVersion, channel? }` | 受理后台在线更新，返回 `202` |
 | `GET` | `/api/admin/system/update/status` | 无 | 查询当前更新或回滚状态 |
@@ -2826,15 +2877,16 @@ Provider metadata 分别保留 `requestedServiceTier` 与 `upstreamServiceTier` 
 响应的 `policy` 包含本次 `channel` 与 `availableChannels`，普通实例可选 `stable`、`rc`、`beta`、`alpha`，
 实验实例仅允许 `exp`。不可用通道返回 `40901`，未知枚举值返回参数错误。
 执行时应同时发送页面确认的 `channel` 与 `targetVersion`，服务端冻结该通道并重新复核远端目标；
-省略通道时按运行版本推导。版本摘要接口始终检查运行通道，不受临时查询影响。
+省略通道时按运行版本推导。版本接口只读本地构建和已有运行通道摘要，缓存未就绪时 `updateCached=false`，不会发起网络请求。
 检查与执行使用同一规则，禁止的通道转换、跨实验线、跨大版本、降级或同版本重装均以 `40901` 拒绝。
 `hasUpdate=true` 仅表示当前构建支持在线更新，且存在允许的更高版本；`latestVersion`、`releaseUrl` 和
 `notes` 对应这个候选。没有可升级候选时，`hasUpdate=false`、`latestVersion` 为当前版本，
 `releaseUrl` 和 `notes` 保留当前版本的已发布 Release 信息；找不到匹配当前版本的 Release 时为空。
 当前构建不支持在线更新时不查询 Release，`hasUpdate=false`、`latestVersion` 为当前版本，
 `releaseUrl` 和 `notes` 为空，不支持原因通过 `updateSupported=false`、`unsupportedReason` 返回。
-强制检查失败时通过 `warning` 返回错误，`hasUpdate=false`，不以旧缓存或“没有更新”掩盖失败。
-普通查询可复用 20 分钟内的结果，缓存按通道隔离，较慢的旧检查不能覆盖新检查结果。下载时仍会校验目标资产、校验和及归档
+`summaryOnly=true` 优先于 `refresh`，按发布索引检查版本，仅对更高候选核对公开 Release 和当前平台附件；`notes`、`releaseUrl` 为空。详情或摘要检查失败时返回 `warning` 和 `hasUpdate=false`，此时 `latestVersion` 不代表已确认的通道版本。GitHub 限流时，`retryAt` 为最早可重试的 RFC 3339 时间，`retryAtDisplay` 按部署时区展示；其他情况两者均为 `null`。
+普通查询缓存 20 分钟，手动刷新最短间隔为 60 秒；临时错误缓存 60 秒，限流按来源退避。
+后台安装重新核对通道和目标版本，目标变化须再次检查并确认；下载与校验流程见[在线更新](../deploy/README.md#管理端在线更新)
 
 更新 POST 在本地校验目标版本并持久化任务后返回 `202`，数据包含 `operationId`、`targetVersion`、
 `deploymentMode` 和 `message`，只表示已受理。Release 查询、远端目标复核、下载、校验及文件替换在后台
@@ -3082,7 +3134,8 @@ GitHub 的 `location` 使用 `kind: "github"`、`repository: "owner/repo"`、`ta
 
 回调保持类型、期限、取消、实例 revision、资源归属和事务一致性检查。模型调用可显式选择 Key，按所选 Key 的准入、预算、用量与计费合同执行；省略 Key 时继承现有模型父请求身份
 
-受管 HTTP 不限制插件目标地址段。宿主解析 DNS，连接保留原始 Host 与 TLS 域名校验；代理沿用账号配置，失败不自动回退直连，重定向不自动跟随
+受管 HTTP 不限制插件目标地址段。宿主解析 DNS，连接保留原始 Host 与 TLS 域名校验；出口可继承调用范围、指定账号或按代理 ID 选择，连接失败不自动回退直连，重定向不自动跟随。
+显式代理选择与目录查询见 [SDK 网络回调](../backend/crates/gateway-plugin/sdk/docs/capabilities.md#网络)
 
 #### 能力绑定与范围
 
@@ -3206,6 +3259,7 @@ GET/HEAD 不接受正文。响应状态码为 200–599，内容类型元数据�
 `If-None-Match` 匹配时返回无正文的 `304`。停用、版本或授权变更后，旧目标仍被拒绝，不返回缓存命中。
 两类响应默认设置 nosniff、no-referrer 与限制性 CSP，动态处理器可显式覆盖默认响应头。管理端页面使用隔离 iframe，
 仅允许脚本，不具有父页面同源权限；联网、弹窗、表单、嵌套页面和顶层导航均不开放。
+插件页面可通过宿主桥请求打开 HTTPS 外链，管理员在宿主确认后才打开新标签页。
 页面访问已声明管理路由须经过固定目标的宿主桥，不能指定其他实例或版本。插件页面作者合同见
 [SDK 管理 API 与页面](../backend/crates/gateway-plugin/sdk/docs/capabilities.md#管理页面公开入口与-cli)
 

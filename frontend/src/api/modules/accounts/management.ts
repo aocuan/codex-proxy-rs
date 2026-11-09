@@ -71,6 +71,7 @@ interface AccountUpdateParam {
 }
 
 interface AccountBatchUpdateParam {
+  autoUseQuotaCredits?: boolean
   outboundProxyUrl?: string
   outboundProxyId?: string
   accountIds: string[]

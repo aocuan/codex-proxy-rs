@@ -331,9 +331,11 @@ impl CodexProvider {
         // Standalone Provider 端点没有可证明的账号 owner；Images/Search metadata 必须按
         // 跨账号输入收敛到当前 lease，不能沿用下游声明的账号或 installation identity
         let client = self.client_for_request(&context)?;
-        let installation_id = client
-            .profile_state()
-            .effective_installation_id(lease.installation_id());
+        let installation_id = client.profile_state().effective_installation_id(
+            context.client_api_key_ref(),
+            lease.account_id(),
+            lease.installation_id(),
+        );
         let turn_metadata = payload
             .context()
             .get("turn_metadata")
@@ -349,7 +351,7 @@ impl CodexProvider {
             installation_id,
             client: client
                 .for_account(lease.account())
-                .map_err(|error| map_client_error(error, UpstreamSendState::NotSent, false).error)?
+                .map_err(|error| map_client_error(error, UpstreamSendState::NotSent, None).error)?
                 .with_responses_api_base_url(lease.authentication().responses_api_base_url())
                 .with_middleware_headers(middleware_headers)
                 .with_outbound_middleware(outbound_middleware)
@@ -427,6 +429,8 @@ pub(super) struct OpenAiSessionState {
     pub(super) account_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) credential_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) oauth_identity: Option<String>,
     pub(super) conversation_id: Option<String>,
     #[serde(default)]
     pub(super) turn_state: Option<String>,
@@ -448,6 +452,7 @@ pub(super) enum OpenAiContinuationScope {
 pub(super) struct OpenAiSessionCapture {
     pub(super) account_id: String,
     pub(super) credential_revision: Option<u64>,
+    pub(super) oauth_identity: Option<String>,
     pub(super) conversation_id: Option<String>,
     pub(super) turn_state: Option<String>,
     pub(super) client_turn_id: Option<String>,
@@ -496,6 +501,7 @@ fn encode_openai_session_capture(
     encode_openai_session_state(OpenAiSessionState {
         account_id: capture.account_id.clone(),
         credential_revision: capture.credential_revision,
+        oauth_identity: capture.oauth_identity.clone(),
         conversation_id: capture.conversation_id.clone(),
         turn_state: capture.turn_state.clone(),
         client_turn_id: capture.client_turn_id.clone(),
@@ -582,9 +588,12 @@ pub(super) async fn create_response_attempt(
 
 pub(super) fn map_handshake_attempt_error(
     error: CodexHandshakeAttemptError,
+    account: &ProviderAccount,
 ) -> MappedProviderFailure {
     match error {
-        CodexHandshakeAttemptError::Client(error) => map_handshake_error(error),
+        CodexHandshakeAttemptError::Client(error) => {
+            map_client_error(error, UpstreamSendState::Ambiguous, Some(account))
+        }
         CodexHandshakeAttemptError::Cancelled => MappedProviderFailure::plain(provider_error(
             ProviderErrorKind::Cancelled,
             UpstreamSendState::Ambiguous,
@@ -635,6 +644,7 @@ pub(super) async fn create_json_attempt(
 pub(super) fn cold_json_response_stream(request: ColdJsonResponse) -> EventStream {
     Box::pin(async_stream::try_stream! {
         let allows_account_state_mutation = request.lease.allows_account_state_mutation();
+        let image_endpoint = matches!(request.endpoint_path, CODEX_IMAGE_GENERATIONS_PATH | CODEX_IMAGE_EDITS_PATH);
         let failure_context = OpenAiFailureContext {
             client: &request.client,
             selector: &request.selector,
@@ -642,6 +652,7 @@ pub(super) fn cold_json_response_stream(request: ColdJsonResponse) -> EventStrea
             response_origin: &request.response_origin,
             cyber_policy_scope: None,
             allows_account_state_mutation,
+            image_endpoint,
             upstream_model: None,
         };
         let active_account = request.lease.account().clone();
@@ -675,7 +686,7 @@ pub(super) fn cold_json_response_stream(request: ColdJsonResponse) -> EventStrea
                 error,
             );
         }
-        let response = match response.map_err(map_handshake_attempt_error) {
+        let response = match response.map_err(|error| map_handshake_attempt_error(error, &active_account)) {
             Ok(response) => response,
             Err(mut failure) => {
                 if let Some(observation) = failure.observation.take() {
@@ -707,6 +718,7 @@ pub(super) fn cold_json_response_stream(request: ColdJsonResponse) -> EventStrea
                 &request.quota,
                 &active_account,
                 &response.rate_limit_headers,
+                image_endpoint,
             )
             .await;
             if !response.set_cookie_headers.is_empty()
@@ -730,7 +742,7 @@ pub(super) fn cold_json_response_stream(request: ColdJsonResponse) -> EventStrea
         let response_meta =
             ResponseMeta::for_provider_endpoint(request.context.request_id().as_str());
         yield ProviderEvent::canonical(GatewayEvent::Started(response_meta.clone()));
-        if matches!(request.endpoint_path, CODEX_IMAGE_GENERATIONS_PATH | CODEX_IMAGE_EDITS_PATH)
+        if image_endpoint
             && let Some((usage, cost)) = image_response_metering(&request.body, &response.body, request.context.pricing())
         {
             yield ProviderEvent::canonical(GatewayEvent::Usage(usage));
@@ -806,6 +818,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
         let allows_account_state_mutation = lease.allows_account_state_mutation();
         let failure_context = OpenAiFailureContext {
             client: &client,
+            image_endpoint: false,
             selector: &selector,
             quota: &quota,
             response_origin: &response_origin,
@@ -864,7 +877,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                 error,
             );
         }
-        let response = response.map_err(map_handshake_attempt_error);
+        let response = response.map_err(|error| map_handshake_attempt_error(error, &active_account));
         let response = match response {
             Ok(response) => response,
             Err(mut failure) => {
@@ -1162,7 +1175,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
             if let Some(affinity) = &routing_affinity {
                 for fact in events.iter().flat_map(ProviderEvent::canonical_facts) {
                     if let GatewayEvent::Started(meta) = fact {
-                        guardian_routing.remember(context.client_api_key_ref(), active_account.id(), meta.response_id(), affinity);
+                        guardian_routing.remember(context.client_api_key_ref(), &active_account, meta.response_id(), affinity);
                     }
                 }
             }

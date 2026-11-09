@@ -51,6 +51,26 @@ class ForkReleaseTest < Minitest::Test
     refute ForkRelease.can_promote?(first, ForkRelease.version('3.29.7', '1', 'b' * 40))
   end
 
+  def test_channel_index_requires_both_verified_fork_platforms
+    version = metadata.fetch('version')
+    publisher = ForkRelease::ChannelPublisher.new(ForkRelease::REPOSITORY)
+    names = %w[amd64 arm64].map { |arch| "codex-proxy-rs_#{version}_linux_#{arch}.tar.gz" }
+    names.concat(%w[checksums.txt compose.yaml config.example.yaml image-digest.txt plugin-release-manifest.json])
+    release = { 'tag_name' => "v#{version}", 'draft' => false, 'prerelease' => true,
+                'assets' => names.map { |name| { 'name' => name, 'state' => 'uploaded', 'size' => 1 } } }
+    publisher.stub(:find_release, release) { publisher.verify_assets(version) }
+    publisher.stub(:find_release, release.merge('draft' => true)) do
+      assert_raises(RuntimeError) { publisher.verify_assets(version) }
+    end
+    publisher.stub(:find_release, release.merge('assets' => release.fetch('assets').drop(1))) do
+      assert_raises(RuntimeError) { publisher.verify_assets(version) }
+    end
+    document = { 'version' => '3.44.0', 'published' => {} }
+    assert PublishedChannels.advance(document, version)
+    assert_equal({ 'beta' => version, 'alpha' => version }, document.fetch('published').fetch('3'))
+    refute PublishedChannels.advance(document, version)
+  end
+
   def test_archives_preserve_verified_files_and_publish_matching_checksums
     previous_env = ENV.to_h
     in_workspace do

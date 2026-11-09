@@ -297,7 +297,7 @@ const {
 </script>
 
 <template>
-  <div class="flex min-h-0 w-full flex-col xl:h-full xl:overflow-hidden">
+  <div class="flex min-h-0 w-full flex-col xl:h-[calc(100dvh-3rem)] xl:flex-none!">
     <ZPageHeader
       :title="t('navigation.accounts')"
       :description="t('accounts.page.description')"
@@ -306,7 +306,7 @@ const {
     <AccountOverviewCards :summary="accountSummary" />
 
     <ZCard
-      class="mt-4 flex flex-col xl:h-[calc(100dvh-250px)] xl:min-h-125"
+      class="mt-4 flex flex-col xl:min-h-80 xl:flex-1"
     >
       <template #header>
         <AccountFilters
@@ -418,17 +418,18 @@ const {
             @sort-change="handleSortChange"
           >
             <template #expander="{ row }">
-              <button
-                type="button"
-                class="inline-flex size-6 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-z-text-secondary transition hover:bg-z-bg-text-hover hover:text-z-text"
-                :title="expandedAccountIds.has(row.id) ? t('accounts.page.collapseStatistics') : t('accounts.page.expandStatistics')"
+              <ZIconButton
+                size="small"
+                class="size-6! rounded-md! hover:bg-z-bg-text-hover!"
+                :aria-label="expandedAccountIds.has(row.id) ? t('accounts.page.collapseStatistics') : t('accounts.page.expandStatistics')"
+                :aria-expanded="expandedAccountIds.has(row.id)"
                 @click.stop="toggleExpanded(row.id)"
               >
                 <ChevronDown
                   class="size-3.5 transition-transform"
                   :class="expandedAccountIds.has(row.id) ? '' : '-rotate-90'"
                 />
-              </button>
+              </ZIconButton>
             </template>
 
             <template #header-selection>

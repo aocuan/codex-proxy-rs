@@ -13,6 +13,8 @@
       "s": "{duration} 秒",
       "unlimited": "无限",
       "noPointsAvailableYet": "暂无可用点数",
+      "autoUsePoints": "自动使用额度点数",
+      "autoUsePointsHelp": "订阅额度耗尽后，使用可用点数继续请求",
       "quotaPoints": "额度点数",
       "point": "点",
       "requestsInThisWindow": "窗口请求：{requestDisplay} 次",
@@ -67,7 +69,7 @@
       "completedAt": "完成时间",
       "events": {
         "title": "事件轨迹",
-        "request": "发起请求",
+        "request": "准备测试请求",
         "response": "接收响应内容",
         "completed": "响应完成"
       },
@@ -84,6 +86,11 @@
         "capacityUnavailable": "指定账号当前没有可用容量",
         "infrastructureUnavailable": "Provider 本地基础设施暂不可用",
         "rateLimited": "上游请求过于频繁",
+        "notSent": "请求未能发往上游",
+        "proxyInvalid": "账号代理配置无效",
+        "proxyUnreachable": "无法连接账号代理，请在「代理管理」中测试该代理",
+        "proxyTunnelFailed": "未能通过账号代理建立隧道，请检查代理设置",
+        "checkProxy": "请求未能发往上游，可在「代理管理」中测试账号代理",
         "upstreamUnavailable": "上游服务暂不可用",
         "timeout": "上游请求超时",
         "canceled": "测试请求已取消",
@@ -98,7 +105,7 @@
       },
       "stages": {
         "gateway": "网关校验",
-        "provider": "Provider 本地准备",
+        "provider": "请求发送前失败",
         "upstream": "上游响应"
       },
       "failed": "测试失败",
@@ -106,7 +113,6 @@
       "runningDescription": "正在向所选模型发送请求并接收流式响应",
       "successTitle": "连接正常",
       "completedDescription": "请求已完成，可在下方查看模型、耗时和事件轨迹",
-      "failedDescription": "请求未完成，请在下方查看失败来源与原始诊断",
       "readyTitle": "准备测试",
       "readyDescription": "选择模型后，点击“开始测试”发送真实请求",
       "starting": "开始测试 {value}",
@@ -143,8 +149,7 @@
     },
     "capacity": {
       "concurrentRequestsLimit": "账号并发占用 {value}，上限 {value2}",
-      "viewConcurrencyDetails": "{label}，查看并发明细",
-      "viewDetails": "{label}，查看明细"
+      "viewConcurrencyDetails": "{label}，查看并发明细"
     },
     "concurrency": {
       "title": "并发明细",
@@ -205,7 +210,7 @@
       "searchOrEnterId": "搜索模型或输入完整 ID",
       "addModel": "添加模型",
       "customModels": "自定义",
-      "selectedModels": "已选模型",
+      "availableModels": "可选模型",
       "upstreamCatalog": "上游目录",
       "selectAll": "全选",
       "deselectAll": "取消全选",
@@ -525,7 +530,6 @@
         "label": "自动使用临期重置卡"
       },
       "automaticallyUseResetCard": "自动使用重置卡",
-      "automaticallyUsed": "自动使用",
       "automaticUsageRules": "自动使用规则",
       "setGlobalLeadTime": "设置全局提前时间",
       "minutesInAdvance": "提前 {leadMinutes} 分钟",

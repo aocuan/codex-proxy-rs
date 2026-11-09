@@ -28,7 +28,9 @@ env:
 
 jobs:
   metadata:
-    if: github.repository == 'aocuan/codex-proxy-rs' && github.ref == 'refs/heads/main'
+    if: >-
+      github.repository == 'aocuan/codex-proxy-rs' && github.ref == 'refs/heads/main' &&
+      !startsWith(github.event.head_commit.message, 'chore(release): update release channels to ')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:

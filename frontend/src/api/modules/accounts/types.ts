@@ -141,6 +141,7 @@ export interface AccountModelAccess {
 }
 
 export interface Account {
+  autoUseQuotaCredits: boolean
   upstream: AccountUpstream | null
   capabilities: AccountCapabilities
   outboundProxyId: string | null
@@ -203,6 +204,7 @@ export interface AccountUpstream {
 
 export interface AccountCapabilities {
   turnStateProbe: boolean
+  quotaCredits: boolean
   quota: boolean
   quotaRefresh: boolean
   profile: boolean
