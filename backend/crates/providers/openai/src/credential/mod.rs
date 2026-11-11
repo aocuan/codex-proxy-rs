@@ -30,7 +30,9 @@ pub(crate) use types::parse_access_token_expiration;
 
 pub(crate) use crate::CODEX_AUTHENTICATION_KIND_API_KEY;
 
-pub use api_key::{ApiKeyAuthentication, ApiKeyConfiguration, ApiKeyCredentialData};
+pub use api_key::{
+    ApiKeyAuthentication, ApiKeyConfiguration, ApiKeyCredentialData, ApiKeyProtocol,
+};
 
 pub use admin::{
     CodexCprExportDocument, CodexCredentialAdmin, CodexCredentialAdminError,
@@ -39,8 +41,8 @@ pub use admin::{
     PreparedCodexCredentialRotationGuard,
 };
 pub use catalog::{
-    CodexCatalogScope, CodexCredentialCatalogError, CodexCredentialCatalogService,
-    CodexCredentialCatalogSnapshot, CodexPlanCatalog,
+    CodexAccountCatalog, CodexCatalogScope, CodexCredentialCatalogError,
+    CodexCredentialCatalogService, CodexCredentialCatalogSnapshot,
 };
 pub use codec::{
     CodexCredentialCodec, CodexCredentialDataError, CodexRuntimeAuthentication,

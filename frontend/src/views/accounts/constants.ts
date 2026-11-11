@@ -105,6 +105,7 @@ export const accountColumns = computed(() => (defineTableColumns<Account>([
 
 export const statusLabels = computed<Record<AccountStatus, string>>(() => ({
   normal: t('common.status.healthy'),
+  quota_paused: t('accounts.quotaLimits.badge'),
   quota_exhausted: t('accounts.fields.quotaExhausted'),
   rate_limited: t('accounts.fields.rateLimiting'),
   disabled: t('accounts.fields.deactivated'),
@@ -113,6 +114,7 @@ export const statusLabels = computed<Record<AccountStatus, string>>(() => ({
 
 export const statusTones: Record<AccountStatus, 'success' | 'danger' | 'warning' | 'info' | 'normal'> = {
   normal: 'success',
+  quota_paused: 'warning',
   quota_exhausted: 'warning',
   rate_limited: 'warning',
   disabled: 'normal',
@@ -125,6 +127,7 @@ export const accountStatusFilterOptions = computed(() => ([
     value: '',
   },
   { label: statusLabels.value.normal, value: 'normal' },
+  { label: statusLabels.value.quota_paused, value: 'quota_paused' },
   { label: statusLabels.value.quota_exhausted, value: 'quota_exhausted' },
   { label: statusLabels.value.rate_limited, value: 'rate_limited' },
   { label: statusLabels.value.disabled, value: 'disabled' },

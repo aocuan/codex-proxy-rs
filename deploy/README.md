@@ -405,7 +405,8 @@ PostgreSQL/Redis 启动密码。日常校验使用 `config --quiet`
 ### CPR 互联
 
 在上游的「API 密钥」中为专用密钥选择账号分组并开启「CPR 互联」，即可共享密钥预算、并发上限和 RPM，并按需公开账号池、账号额度和套餐信息。
-共享 Key 的实际推理只使用这些分组中的直连 OAuth 账号；分组内的 API Key 转供账号不会参与
+共享 Key 按所选分组正常调度，包括 OAuth 和 API Key 账号。请求回到已经过的 CPR 部署时停止转发；正常链路没有固定跳数上限。转发链上的代理须保留 `X-CPR-Route` 请求头。
+同库副本共用部署标记。如果从整库副本搭建独立节点，在新库执行 `UPDATE runtime_settings SET peer_routing_id = gen_random_uuid() WHERE id = 1` 后启动，以免被当作原部署
 
 在下游导入或编辑 OpenAI API Key 账号，填写上游 API 地址和该 Key，后台自动发现 CPR 互联能力。
 地址包含自定义前缀时保留完整前缀，后台在该地址下请求 `cpr/link`。
@@ -476,9 +477,9 @@ Compose 默认只绑定 `127.0.0.1`。从其他设备访问时，在应用前配
 HTTP 传输不加密，公网部署仍建议使用 HTTPS。
 会话 Cookie 合同见 [管理接口鉴权](../docs/api.md#管理接口)
 
-反向代理需要保留 `Authorization`，支持 `/v1/responses` 的 WebSocket Upgrade，
-并关闭 SSE 响应缓冲。读取超时应覆盖长时间生成任务。
-客户端使用部署地址下的 `/v1`，协议与部署一致，不要使用前端开发服务的 `5173/dev/v1`。
+反向代理应保留客户端发送的 `Authorization`、`x-api-key`、`anthropic-version` 和 `anthropic-beta` 请求头，
+支持 `/v1/responses` 的 WebSocket Upgrade，并关闭 SSE 响应缓冲。读取超时应覆盖长时间生成任务。
+客户端连接网关的部署地址，不要使用前端开发服务的 `5173/dev/v1`。
 当前应用只支持单副本，不能通过复制容器扩容
 
 Responses 流式请求完成准入后，每 15 秒无输出会发送一次 SSE 注释保活，覆盖首个业务事件前的等待，
@@ -522,13 +523,16 @@ SSE 注释保活用于防止传输链路空闲断开，不会重置 Codex 等待
 
 ## 客户端配置
 
-在管理端创建客户端密钥，打开「使用密钥」，按操作系统复制 `config.toml`。
+在管理端创建客户端密钥。Responses、Chat Completions 和 Anthropic Messages 客户端的 Base URL 见[客户端接入](../README.md#客户端接入)；
+直接发送 HTTP 请求可参考 [Messages 示例](../docs/api.md#messages-请求)
+
+使用 Codex 时，打开「使用密钥」，按操作系统复制 `config.toml`。
 已有配置先备份，合并后完全退出并重启 Codex。代理密钥由 Provider 配置提供，
 不需要另写 `auth.json`，已有官方登录文件可以保留
 
 管理端生成的 CC Switch 一键导入包含连接信息和当前 Key 的日／周额度查询，默认每 30 分钟刷新。
 查询地址和凭据随导入生成，在 CC Switch 中修改 Provider 的地址或 Key 后，需重新导入以同步用量查询。
-导入不包含下方模板的远程压缩、原生生图、WebSocket 和语音设置。需要这些设置时，使用下方配置直连 CPR，
+导入不包含下方模板的远程压缩、异步压缩、原生生图、WebSocket 和语音设置。需要这些设置时，使用下方配置直连 CPR，
 避免 CC Switch 切换或接管后重写 Provider 配置
 
 Linux/macOS 默认目录为 `~/.codex/`，Windows 为 `%USERPROFILE%\.codex\`；
@@ -567,6 +571,8 @@ remote_compaction = "v2"
 X-OpenAI-Actor-Authorization = "proxy-managed"
 
 [features]
+api_key_model_discovery = true
+async_compaction = true
 image_generation = true
 goals = true
 ```
@@ -660,14 +666,14 @@ metrics_exporter = "none"
 - 地址包含 `5173/dev/v1`：这是开发代理地址，依赖 Vite 服务。日常使用改成后端或 HTTPS 地址；
   验证 WebSocket 时直接连接后端，当前 Vite 代理未显式开启 WebSocket 转发
 
-其他客户端使用 Responses API、`/v1` Base URL 和代理密钥即可，不需要 Actor 标记。
-路由与请求格式见 [API 参考](../docs/api.md#3-openai-数据面与模型目录)
-
 ## 停止与重启
 
 管理端重启、SIGTERM 和 SIGINT 使用同一关闭策略：停止接收新连接，不等待现有 HTTP、SSE、
-WebSocket 会话完成，进程退出时强制断开剩余连接。已入队的观测写入与后台清理保留
+WebSocket 会话完成，进程退出时强制断开剩余连接。待写费用、已入队的观测与后台清理保留
 `host.worker_shutdown_timeout_seconds`（默认 30 秒）的收尾预算；客户端在新进程就绪后重新连接
+
+费用被写入队列接管不等于已落库。数据库持续失败、收尾超时或进程强制退出时，未持久化费用与
+未写入的观测可能丢失，重启不会恢复这些内存队列。延长收尾预算不能保证费用不丢失
 
 正常关闭会在后台收尾预算内释放本实例的账号并发占位，租约清理最多等待 2 秒。
 强制终止、清理超时或 Redis 清理失败时，占位由最后一次续期后的 10 分钟 TTL 回收，不影响其他实例的租约
@@ -703,7 +709,7 @@ Compose 使用以下绑定目录：
 
 PostgreSQL 是账号、Client Key、运行设置、请求记录与审计的权威存储；账号 credential 按
 Provider schema 以明文 JSON 保存于 PostgreSQL。Redis 只保存可重建、可过期的协调状态，例如
-会话亲和、lease、cooldown、OAuth pending flow 与套餐模型目录 cache
+会话亲和、lease、cooldown、OAuth pending flow 与模型目录缓存
 
 备份应覆盖哪些目录、如何生成一致性数据库归档，见 [备份与恢复](#备份与恢复)
 
@@ -1053,7 +1059,9 @@ OpenAI 主动额度重置卡及消费结果由上游持有，不属于本地备�
 ### 备份内容与限制
 
 业务归档为 `.sql.gz`，保留完整数据库结构和迁移记录，但不包含请求明细、诊断与审计日志、
-逐请求费用去重记录和可重建的统计明细。Key 当前日、周的已用额度独立保留
+逐请求费用去重记录和可重建的统计明细。Key 当前日、周的边界与已用额度独立保留。
+恢复后，已有窗口可继续使用；更改边界时不能重算恢复前的消费，以恢复后开始的新周期接续即可。
+从未记录费用历史完整范围的版本升级时，宿主以库中最早留存的费用判断可重算范围；没有费用事件时采用升级时间
 
 原生用量按 UTC 小时保留全局请求数、成功/失败数、Token 和实际费用，每小时至多一行；
 插件维护的用量贡献按其原维度保留。原生汇总只覆盖备份快照中已发布且尚未被历史清理撤销的统计，

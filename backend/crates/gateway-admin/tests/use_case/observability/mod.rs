@@ -34,6 +34,8 @@ use gateway_admin::{
     ports::store::{AdminStoreResult, ObservabilityStore, SettingsStore},
 };
 
+mod errors;
+
 #[test]
 fn external_observability_range_accepts_exactly_366_days() {
     let end = Utc::now();
@@ -1437,9 +1439,10 @@ impl SettingsStore for FixtureSettingsStore {
                 audit_retention_days: 30,
                 account_error_protection: gateway_core::account::AccountErrorProtection::default(),
                 account_warmup_enabled: false,
-                account_warmup_schedule_time: "08:00".to_owned(),
+                account_warmup_cron: "0 8 * * *".to_owned(),
                 account_warmup_model: None,
                 reset_credit_lead_minutes: 10,
+                reset_credit_on_low_weekly_quota: false,
                 reset_credit_max_weekly_remaining_percent: None,
             },
         })
@@ -1519,6 +1522,7 @@ fn total_record(
 ) -> UsageListRecord {
     UsageListRecord {
         provider_account_upstream_peer: None,
+        has_upstream_error: false,
         error_code: None,
         error_message: None,
         error_kind: None,
@@ -1527,6 +1531,7 @@ fn total_record(
         upstream_connection_exit_reason: None,
         recovered: false,
         client_status_code: None,
+        upstream_status_code: None,
         outcome: gateway_admin::model::observability::RequestOutcome::Succeeded,
         client_api_key_name: Some("Production".to_owned()),
         id: id.to_owned(),

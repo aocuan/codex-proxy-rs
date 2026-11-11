@@ -420,6 +420,7 @@ pub trait ExecutionService: Send + Sync {
         _client: &'a AuthenticatedClient,
         _protocol: &'a str,
         _client_version: &'a str,
+        _peer_route: Option<&'a http::HeaderValue>,
     ) -> BoxFuture<'a, Result<Vec<PublicModelDescriptor>, ProviderCatalogUnavailable>> {
         Box::pin(async { Err(ProviderCatalogUnavailable) })
     }

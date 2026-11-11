@@ -463,6 +463,7 @@ const {
 
             <template #status="{ row }">
               <AccountStatusBadge
+                :quota="row.quota"
                 :status="row.status"
                 :error-reason="row.errorReason"
                 :error-message="row.errorMessage"

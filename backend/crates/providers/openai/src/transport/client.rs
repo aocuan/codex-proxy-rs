@@ -683,6 +683,7 @@ pub struct CodexBackendJsonResponse {
 pub(super) enum OpenAiUpstreamProtocol {
     Codex,
     ResponsesApi,
+    MessagesApi,
 }
 
 impl OpenAiUpstreamProtocol {
@@ -690,6 +691,7 @@ impl OpenAiUpstreamProtocol {
         match self {
             Self::Codex => super::endpoints::CODEX_RESPONSES_PATH,
             Self::ResponsesApi => "/responses",
+            Self::MessagesApi => "/messages",
         }
     }
 }
@@ -697,6 +699,7 @@ impl OpenAiUpstreamProtocol {
 /// Codex HTTP/SSE 上游客户端
 #[derive(Clone)]
 pub struct CodexBackendClient {
+    pub(crate) peer_route: Option<reqwest::header::HeaderValue>,
     pub(super) routing_affinity: Option<super::routing_affinity::ChatGptRoutingAffinity>,
     pub(super) privacy: Option<(
         Arc<dyn gateway_core::settings::privacy::CompiledPrivacyPolicy>,
@@ -738,6 +741,7 @@ impl CodexBackendClient {
     ) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         Self {
+            peer_route: None,
             routing_affinity: None,
             privacy: None,
             timezone: Default::default(),
@@ -872,6 +876,12 @@ impl CodexBackendClient {
             );
         }
         self
+    }
+
+    pub(crate) fn with_messages_api_base_url(self, base_url: &str) -> Self {
+        let mut client = self.with_responses_api_base_url(Some(base_url));
+        client.protocol = OpenAiUpstreamProtocol::MessagesApi;
+        client
     }
 
     pub fn for_account(

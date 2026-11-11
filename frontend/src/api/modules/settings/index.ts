@@ -66,8 +66,9 @@ export interface RuntimeSettings {
   auditRetentionDays: number
   accountErrorProtection: AccountErrorProtection
   accountWarmupEnabled: boolean
-  accountWarmupScheduleTime: string
+  accountWarmupCron: string
   accountWarmupModel: string | null
+  resetCreditOnLowWeeklyQuota: boolean
   resetCreditLeadMinutes: number
   resetCreditMaxWeeklyRemainingPercent: number | null
   updatedAt: string

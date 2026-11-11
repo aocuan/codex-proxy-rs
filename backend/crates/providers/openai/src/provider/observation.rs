@@ -5,7 +5,7 @@ use super::*;
 pub(super) fn endpoint_requested_model(
     payload: &gateway_core::operation::RawJsonPayload,
 ) -> Option<gateway_core::routing::PublicModelId> {
-    if payload.protocol() != PROVIDER_NAME {
+    if payload.protocol() != OPENAI_PROTOCOL {
         return None;
     }
     // 选号与观测共用模型提取，跳过编辑请求中的图片且不改写原始正文
@@ -580,8 +580,11 @@ pub(super) fn nonnegative_millis(value: Option<i64>) -> Option<u64> {
 pub(super) fn compile_model_capabilities(model: &CodexCatalogModel) -> ProviderModelCapabilities {
     // 模型进入目录即可发布 Generate 能力，`supported_in_api` 仅作提示
     // 普通请求和诊断请求均以上游响应为准
-    let capabilities = ModelCapabilities::new(BTreeSet::from([OperationKind::Generate]), None)
-        .with_upstream_feature_validation();
+    let capabilities = ModelCapabilities::new(
+        BTreeSet::from([OperationKind::Generate, OperationKind::CountTokens]),
+        None,
+    )
+    .with_upstream_feature_validation();
     ProviderModelCapabilities::new(model.request_model().clone(), capabilities)
         .with_presentation(codex_model_presentation(model))
 }

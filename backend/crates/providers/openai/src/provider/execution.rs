@@ -13,7 +13,7 @@ impl CodexProvider {
         candidate: &ProviderCandidate,
         context: AttemptContext,
     ) -> Result<ProviderStream, ProviderError> {
-        if image.payload().protocol() != PROVIDER_NAME || candidate.upstream_model().is_some() {
+        if image.payload().protocol() != OPENAI_PROTOCOL || candidate.upstream_model().is_some() {
             return Err(provider_error(
                 ProviderErrorKind::InvalidRequest,
                 UpstreamSendState::NotSent,
@@ -112,7 +112,7 @@ impl CodexProvider {
         candidate: &ProviderCandidate,
         context: AttemptContext,
     ) -> Result<ProviderStream, ProviderError> {
-        if search.payload().protocol() != PROVIDER_NAME || candidate.upstream_model().is_some() {
+        if search.payload().protocol() != OPENAI_PROTOCOL || candidate.upstream_model().is_some() {
             return Err(provider_error(
                 ProviderErrorKind::InvalidRequest,
                 UpstreamSendState::NotSent,
@@ -255,7 +255,8 @@ impl CodexProvider {
                         UpstreamSendState::NotSent,
                     ));
                 };
-                if image.kind() != original.kind() || image.payload().protocol() != PROVIDER_NAME {
+                if image.kind() != original.kind() || image.payload().protocol() != OPENAI_PROTOCOL
+                {
                     return Err(provider_error(
                         ProviderErrorKind::InvalidRequest,
                         UpstreamSendState::NotSent,
@@ -271,7 +272,7 @@ impl CodexProvider {
             }
             Operation::Search(search) => {
                 if !matches!(&request.operation, Operation::Search(_))
-                    || search.payload().protocol() != PROVIDER_NAME
+                    || search.payload().protocol() != OPENAI_PROTOCOL
                 {
                     return Err(provider_error(
                         ProviderErrorKind::InvalidRequest,
@@ -330,7 +331,7 @@ impl CodexProvider {
         ));
         // Standalone Provider 端点没有可证明的账号 owner；Images/Search metadata 必须按
         // 跨账号输入收敛到当前 lease，不能沿用下游声明的账号或 installation identity
-        let client = self.client_for_request(&context)?;
+        let client = self.client_for_request(&context, lease.account())?;
         let installation_id = client.profile_state().effective_installation_id(
             context.client_api_key_ref(),
             lease.account_id(),
@@ -538,7 +539,7 @@ pub(super) fn attach_openai_session_update(
 
 pub(super) fn terminal_response_output(event: &ProviderEvent) -> Option<&[Value]> {
     let wire = event.wire_event()?;
-    if wire.protocol() != PROVIDER_NAME {
+    if wire.protocol() != OPENAI_PROTOCOL {
         return None;
     }
     let event_type = wire
@@ -750,7 +751,7 @@ pub(super) fn cold_json_response_stream(request: ColdJsonResponse) -> EventStrea
                 yield ProviderEvent::canonical(GatewayEvent::CalculatedCost(cost));
             }
         }
-        let wire = ProtocolWireEvent::raw_json(PROVIDER_NAME, response.body).map_err(|_| {
+        let wire = ProtocolWireEvent::raw_json(OPENAI_PROTOCOL, response.body).map_err(|_| {
             provider_error(ProviderErrorKind::Protocol, UpstreamSendState::Sent)
         })?;
         yield ProviderEvent::wire(wire);
@@ -943,7 +944,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
             yield ProviderEvent::observation(observation);
         }
         if let Some(etag) = response.response_metadata.models_etag.as_deref()
-            && let Err(error) = catalog.observe_response_etag(etag)
+            && let Err(error) = catalog.observe_response_etag(&active_account,etag)
         {
             tracing::warn!(
                 error = %error,

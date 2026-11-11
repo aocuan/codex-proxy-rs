@@ -220,11 +220,12 @@ watch(section, (value) => {
           <AccountErrorProtectionCard v-model="form.accountErrorProtection" :disabled="disabled" />
           <AccountWarmupCard
             v-model:enabled="form.accountWarmupEnabled"
-            v-model:schedule-time="form.accountWarmupScheduleTime"
+            v-model:cron="form.accountWarmupCron"
             v-model:model="form.accountWarmupModel"
           />
           <ResetCreditCard
             v-model="resetCreditLeadMinutesValue"
+            v-model:on-low-weekly-quota="form.resetCreditOnLowWeeklyQuota"
             v-model:max-weekly-remaining-percent="resetCreditMaxWeeklyRemainingPercentValue"
           />
           <RequestHistoryCard v-model="usageRetentionDaysValue" />

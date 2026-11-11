@@ -13,6 +13,7 @@ export interface AccountPageMeta {
 export interface AccountSummary {
   total: number
   normal: number
+  quotaPaused: number
   quotaExhausted: number
   rateLimited: number
   disabled: number
@@ -57,7 +58,7 @@ interface AccountListParams {
 }
 
 interface AccountUpdateParam {
-  connection?: { baseUrl?: string, transport: ApiKeyConfiguration['transport'], apiKey?: string }
+  connection?: { baseUrl?: string, protocol?: ApiKeyConfiguration['protocol'], transport: ApiKeyConfiguration['transport'], apiKey?: string }
   outboundProxyUrl?: string
   outboundProxyId?: string
   accountId: string
@@ -71,6 +72,7 @@ interface AccountUpdateParam {
 }
 
 interface AccountBatchUpdateParam {
+  quotaLimits?: Record<string, number>
   autoUseQuotaCredits?: boolean
   outboundProxyUrl?: string
   outboundProxyId?: string
@@ -99,6 +101,7 @@ interface AccountConcurrencyParams extends AccountIdParam {
 
 export interface ApiKeyConfiguration {
   base_url: string
+  protocol: 'responses' | 'messages'
   transport: 'http' | 'prefer_websocket'
 }
 

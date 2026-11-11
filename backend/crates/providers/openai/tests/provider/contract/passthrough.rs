@@ -300,3 +300,30 @@ async fn websocket_messages_preserve_text_and_metadata_despite_unrecognized_json
     assert!(completed);
     assert_eq!(&delivered[1..delivered.len() - 1], messages);
 }
+
+#[tokio::test]
+async fn responses_service_tiers_reach_each_upstream_on_both_transports() {
+    for tier in [
+        None,
+        Some(Value::Null),
+        Some(json!("auto")),
+        Some(json!("default")),
+        Some(json!("priority")),
+        Some(json!("flex")),
+    ] {
+        for api_key in [false, true] {
+            for websocket in [false, true] {
+                let mut body = json!({"model":"gpt-5.4","input":"hello"});
+                if let Some(tier) = &tier {
+                    body["service_tier"] = tier.clone();
+                }
+                let sent = capture_downstream_request(body, api_key, websocket, false).await;
+                assert_eq!(
+                    sent.get("service_tier"),
+                    tier.as_ref(),
+                    "api_key={api_key}, websocket={websocket}"
+                );
+            }
+        }
+    }
+}

@@ -61,8 +61,10 @@ pub struct RuntimeSettingsFields {
     pub audit_retention_days: u64,
     pub account_error_protection: gateway_core::account::AccountErrorProtection,
     pub account_warmup_enabled: bool,
-    pub account_warmup_schedule_time: String,
+    pub account_warmup_cron: String,
     pub account_warmup_model: Option<String>,
+    #[serde(default)]
+    pub reset_credit_on_low_weekly_quota: bool,
     pub reset_credit_lead_minutes: u32,
     pub reset_credit_max_weekly_remaining_percent: Option<u32>,
 }
@@ -773,8 +775,9 @@ impl RuntimeSettingsFields {
                 .map_err(|_| WireValidationError::new("settingsAuditRetentionOverflow"))?,
             account_error_protection: self.account_error_protection,
             account_warmup_enabled: self.account_warmup_enabled,
-            account_warmup_schedule_time: self.account_warmup_schedule_time,
+            account_warmup_cron: self.account_warmup_cron,
             account_warmup_model: self.account_warmup_model,
+            reset_credit_on_low_weekly_quota: self.reset_credit_on_low_weekly_quota,
             reset_credit_lead_minutes: self.reset_credit_lead_minutes,
             reset_credit_max_weekly_remaining_percent: self
                 .reset_credit_max_weekly_remaining_percent,
@@ -812,8 +815,9 @@ impl From<gateway_admin::model::settings::RuntimeSettingsValues> for RuntimeSett
             audit_retention_days: u64::from(settings.audit_retention_days),
             account_error_protection: settings.account_error_protection,
             account_warmup_enabled: settings.account_warmup_enabled,
-            account_warmup_schedule_time: settings.account_warmup_schedule_time,
+            account_warmup_cron: settings.account_warmup_cron,
             account_warmup_model: settings.account_warmup_model,
+            reset_credit_on_low_weekly_quota: settings.reset_credit_on_low_weekly_quota,
             reset_credit_lead_minutes: settings.reset_credit_lead_minutes,
             reset_credit_max_weekly_remaining_percent: settings
                 .reset_credit_max_weekly_remaining_percent,
@@ -828,7 +832,7 @@ fn settings_validation_error(field: &'static str) -> WireValidationError {
         "account_warmup_model" => "accountWarmupModel",
         "reset_credit_lead_minutes" => "resetCreditLeadMinutes",
         "reset_credit_max_weekly_remaining_percent" => "resetCreditMaxWeeklyRemainingPercent",
-        "account_warmup_schedule_time" => "accountWarmupScheduleTime",
+        "account_warmup_cron" => "accountWarmupCron",
         "audit_retention_days" => "auditRetentionDays",
         "key_queue_timeout_seconds" => "keyQueueTimeoutSeconds",
         "account_queue_timeout_seconds" => "accountQueueTimeoutSeconds",
