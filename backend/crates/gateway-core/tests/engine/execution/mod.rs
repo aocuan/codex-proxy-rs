@@ -2325,6 +2325,7 @@ impl Provider for PolicySelectingProvider {
                 in_flight: 0,
                 last_started_at: None,
                 quota_reset_at: None,
+                quota_reset_windows: None,
                 quota_remaining_rank: None,
                 cooldown: None,
                 failure_rate_basis_points: None,
@@ -3443,7 +3444,7 @@ fn provider_local_probe_failure_should_remain_distinct_from_upstream() {
 }
 
 #[test]
-fn diagnostic_probe_does_not_apply_data_plane_account_model_policy() {
+fn diagnostic_probe_uses_global_profile_without_data_plane_account_model_policy() {
     let provider = ProviderKind::new("openai").expect("provider");
     let account_id = ProviderAccountId::new("acct_probe").expect("account");
     let snapshot = probe_snapshot().with_account_directory(Arc::new(RuntimeAccountDirectory::new(
@@ -3458,10 +3459,21 @@ fn diagnostic_probe_does_not_apply_data_plane_account_model_policy() {
             ),
         )]),
     )));
+    let profile = gateway_core::account::OpaqueProviderData::new(
+        json!({"identity":"global-probe"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    let settings = snapshot
+        .settings()
+        .clone()
+        .with_request_profiles(BTreeMap::from([(provider.clone(), profile.clone())]));
+    let snapshot = snapshot.with_settings(&settings).unwrap();
     let service = DefaultExecutionService::new(
         RuntimeSnapshotHandle::new(snapshot),
         Arc::new(TrackingExecutionStore::default()),
-        ProviderRegistry::new([Arc::new(LocalFailingProvider) as Arc<dyn Provider>])
+        ProviderRegistry::new([Arc::new(ProfileCheckingProvider(profile)) as Arc<dyn Provider>])
             .expect("providers"),
         Arc::new(UnusedAdmissions),
         Arc::new(UnusedContinuation),
@@ -3861,6 +3873,36 @@ impl Provider for FailingProvider {
 }
 
 struct LocalFailingProvider;
+
+struct ProfileCheckingProvider(gateway_core::account::OpaqueProviderData);
+
+#[async_trait]
+impl Provider for ProfileCheckingProvider {
+    fn name(&self) -> &'static str {
+        "openai"
+    }
+
+    fn catalog_generation(&self) -> ProviderCatalogGeneration {
+        ProviderCatalogGeneration::default()
+    }
+
+    async fn query_model_capabilities(
+        &self,
+    ) -> Result<Vec<ProviderModelCapabilities>, ProviderError> {
+        Ok(Vec::new())
+    }
+
+    async fn execute(
+        self: Arc<Self>,
+        request: ProviderRequest,
+        context: AttemptContext,
+    ) -> Result<ProviderStream, ProviderError> {
+        assert_eq!(context.request_profile(), Some(&self.0));
+        Arc::new(LocalFailingProvider)
+            .execute(request, context)
+            .await
+    }
+}
 
 #[async_trait]
 impl Provider for LocalFailingProvider {

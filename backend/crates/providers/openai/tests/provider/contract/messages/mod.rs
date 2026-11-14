@@ -1,5 +1,7 @@
 //! Messages 原生 wire、跨协议头隔离和本地计数合同
 
+mod affinity;
+
 use super::*;
 use gateway_core::event::ProviderResponseTimings;
 use gateway_core::operation::TokenCountRequest;
@@ -294,6 +296,7 @@ async fn messages_and_responses_translate_with_target_header_boundaries() {
         } else {
             let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
             assert_eq!(body["reasoning"]["effort"], "xhigh");
+            assert!(body.get("max_output_tokens").is_none());
             for name in [
                 "anthropic-version",
                 "anthropic-beta",

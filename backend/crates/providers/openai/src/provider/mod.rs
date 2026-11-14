@@ -67,7 +67,7 @@ use crate::credential::{
     derive_live_session_affinity, derive_previous_response_id_hash, derive_turn_alias,
 };
 use crate::request_identity::{account_session_with_headers, turn_id_with_headers};
-use crate::session_transport::{CodexSessionTransportRecovery, WS_PAYLOAD_LIMIT};
+use crate::session_transport::CodexSessionTransportRecovery;
 use crate::transport::canonical::{
     CodexCanonicalDecoder, CodexCanonicalError, CodexCanonicalOutcome,
 };
@@ -84,7 +84,6 @@ use crate::transport::protocol::responses::{
     CodexResponsesRequest, PREVIOUS_RESPONSE_NOT_FOUND_CODE, PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE,
     PreviousResponseScope, ResponseEventSignals, TransportRequirement, transport_requirement,
 };
-use crate::transport::protocol::websocket::websocket_response_create_payload_len;
 use crate::transport::request::{
     CodexRequestEncodeError, RequestAccountScope, align_structured_location_fields,
     clear_request_turn_state, encode_generate_request, scope_request_to_account,
@@ -674,8 +673,7 @@ impl Provider for CodexProvider {
         {
             return Err(continuation_replay_required_error("scope_unavailable"));
         }
-        // 其他协议必须先取得真实账号，再按固定 attempt 阶段调用转换器；选号前不能
-        // 把未知正文当成 OpenAI wire 解释会话、亲和或传输字段
+        // 跨协议转换必须在选号后执行；选号前只按各自协议读取明确会话身份
         let upstream = (generate.protocol_payload().protocol() == OPENAI_PROTOCOL)
             .then(|| encode_generate_request(generate, upstream_model.as_str(), None))
             .transpose()
@@ -727,10 +725,16 @@ impl Provider for CodexProvider {
                     requires_websocket,
                 )
             });
-        // 内容亲和只交给选号器；中间件复验、轮次关联和原生续接仍只认真实会话
+        let messages_affinity = crate::credential::derive_messages_session_affinity(
+            generate.protocol_payload(),
+            &[],
+            context.client_api_key_ref(),
+        );
+        // Messages 身份与内容亲和仅交给选号器，不建立 OpenAI 轮次或原生续接关联
         let account_affinity = selection_session_affinity
             .as_ref()
-            .or(cache_preference.as_ref());
+            .or(cache_preference.as_ref())
+            .or(messages_affinity.as_ref());
         let selection_started_at = Instant::now();
         let selection = async {
             self.selector
@@ -1069,54 +1073,13 @@ impl CodexProvider {
             && session_transport_key
                 .as_ref()
                 .is_some_and(|key| self.session_transport_recovery.uses_http(key));
-        let mut transport = if requirement.requires_websocket() {
+        let transport = if requirement.requires_websocket() {
             CodexProviderTransport::PreferWebSocket
         } else if context.transport() == AttemptTransport::Fallback || session_http_fallback {
             CodexProviderTransport::HttpOnly
         } else {
             requested_transport
         };
-        let mut oversized_http = false;
-        if codex_oauth
-            && transport == CodexProviderTransport::PreferWebSocket
-            && (matches!(
-                requirement,
-                TransportRequirement::NewChain | TransportRequirement::WebSocketNewChain
-            ) || (requirement == TransportRequirement::ExactWebSocketContinuation
-                && upstream_request
-                    .downstream_websocket_connection_id
-                    .is_some()))
-        {
-            let payload_bytes =
-                websocket_response_create_payload_len(&upstream_request).map_err(|_| {
-                    provider_error(ProviderErrorKind::Protocol, UpstreamSendState::NotSent)
-                })?;
-            if requirement == TransportRequirement::ExactWebSocketContinuation {
-                if payload_bytes >= WS_PAYLOAD_LIMIT {
-                    tracing::info!(
-                        request_id = context.request_id().as_str(),
-                        payload_bytes,
-                        threshold_bytes = WS_PAYLOAD_LIMIT,
-                        continuation_recovery_action = "client_replay_required",
-                        "OpenAI oversized WebSocket continuation requires full client input before send"
-                    );
-                    return Err(continuation_replay_required_error(
-                        "transport_payload_too_large",
-                    ));
-                }
-            } else if self
-                .session_transport_recovery
-                .http_for_full_payload(session_transport_key.as_ref(), payload_bytes)
-            {
-                transport = CodexProviderTransport::HttpOnly;
-                oversized_http = true;
-                tracing::info!(
-                    request_id = context.request_id().as_str(),
-                    payload_bytes,
-                    "OpenAI full request selected HTTP by WebSocket payload size"
-                );
-            }
-        }
         if transport == CodexProviderTransport::PreferWebSocket
             && middleware_headers.iter().any(|header| {
                 match HeaderValue::from_bytes(header.value()) {
@@ -1173,7 +1136,7 @@ impl CodexProvider {
                     )
                     .reasoning_effort_override,
                 response_store,
-                oversized_http,
+                oversized_http: false,
                 continuation_scope: None,
             });
         let allows_account_state_mutation = lease.allows_account_state_mutation();

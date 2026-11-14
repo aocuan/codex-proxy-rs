@@ -15,6 +15,7 @@ use gateway_core::account::{
 };
 use gateway_core::provider_ports::{
     ProviderCatalogCacheKey, ProviderCatalogCachePort, ProviderCatalogScope,
+    ProviderRuntimePolicyPort,
 };
 use gateway_core::routing::{
     FrozenAccountScope, ModelPresentation, ProviderCatalogGeneration, ProviderKind,
@@ -32,8 +33,7 @@ use crate::transport::{CodexBackendClient, CodexCatalogModel, CodexRequestContex
 
 const MAX_RESPONSE_ETAG_BYTES: usize = 256;
 const ACCOUNT_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
-// 调度证据覆盖默认 15 分钟刷新周期及抖动，长期未刷新时恢复上游验证
-const SCHEDULING_CATALOG_MAX_AGE: Duration = Duration::from_secs(30 * 60);
+const CATALOG_REFRESH_AFTER: Duration = Duration::from_secs(30 * 60);
 const MAX_ACCOUNT_CATALOG_MODELS: usize = 2_048;
 const MODEL_CATALOG_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -141,7 +141,6 @@ impl CatalogContent {
 struct AccountEntry {
     observed_at: SystemTime,
     content: Arc<CatalogContent>,
-    invalidated: Arc<std::sync::atomic::AtomicBool>,
     etag: Option<String>,
 }
 
@@ -197,13 +196,7 @@ impl CodexCredentialCatalogSnapshot {
     pub(super) fn excludes(&self, account: &ProviderAccount, model: &str, now: SystemTime) -> bool {
         self.entries
             .get(&CodexCatalogScope::for_account(account))
-            .is_some_and(|e| {
-                !e.invalidated.load(std::sync::atomic::Ordering::Relaxed)
-                    && now
-                        .duration_since(e.observed_at)
-                        .is_ok_and(|age| age < SCHEDULING_CATALOG_MAX_AGE)
-                    && !e.content.ids.iter().any(|id| id == model)
-            })
+            .is_some_and(|e| e.observed_at <= now && !e.content.ids.iter().any(|id| id == model))
     }
 
     pub fn account_models(&self, account: &ProviderAccount) -> Option<&[String]> {
@@ -251,6 +244,8 @@ pub enum CodexCredentialCatalogError {
     InvalidEtag,
     #[error("Codex model catalog changed during refresh")]
     ConcurrentUpdate,
+    #[error("Codex model catalog client profile is unavailable")]
+    Profile(#[source] gateway_core::error::ErrorSource),
 }
 
 #[derive(Default)]
@@ -281,6 +276,7 @@ pub struct CodexCredentialCatalogService {
     http: reqwest::Client,
     base_url: String,
     account_catalog_cache: Arc<dyn ProviderCatalogCachePort>,
+    runtime_policy: Arc<dyn ProviderRuntimePolicyPort>,
     cache: Arc<RwLock<CatalogCacheState>>,
     refresh_notification: Arc<Notify>,
     refresh_lock: Arc<tokio::sync::Mutex<()>>,
@@ -294,6 +290,7 @@ impl CodexCredentialCatalogService {
         http: reqwest::Client,
         base_url: String,
         account_catalog_cache: Arc<dyn ProviderCatalogCachePort>,
+        runtime_policy: Arc<dyn ProviderRuntimePolicyPort>,
     ) -> Self {
         Self {
             repository,
@@ -301,11 +298,27 @@ impl CodexCredentialCatalogService {
             http,
             base_url,
             account_catalog_cache,
+            runtime_policy,
             cache: Arc::new(RwLock::new(CatalogCacheState::default())),
             refresh_notification: Arc::new(Notify::new()),
             refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
             publication: Default::default(),
         }
+    }
+
+    /// 每轮发现冻结一次全局画像，使目录的版本参数与请求头使用同一身份
+    async fn discovery_client(&self) -> Result<CodexBackendClient, CodexCredentialCatalogError> {
+        let profile = self
+            .profile
+            .resolve_global_request_profile(self.runtime_policy.as_ref())
+            .await
+            .map_err(CodexCredentialCatalogError::Profile)?;
+        let client = CodexBackendClient::new(
+            self.http.clone(),
+            self.base_url.clone(),
+            self.profile.clone(),
+        );
+        Ok(client.with_request_profile(profile))
     }
 
     /// 原生条目取自后台发现的账号目录；用当前账号版本和冻结的 Key 政策双重过滤
@@ -466,14 +479,7 @@ impl CodexCredentialCatalogService {
         if ids.len() < MIN_CATALOG_PUSHDOWN {
             return None;
         }
-        let cache = self.cache.read().ok()?;
-        let snapshot = cache.snapshot.as_ref()?.clone();
-        let pending = cache
-            .pending
-            .keys()
-            .map(|s| s.account_id.clone())
-            .collect::<BTreeSet<_>>();
-        drop(cache);
+        let snapshot = self.cached().ok()??;
         let documents = snapshot
             .sources
             .iter()
@@ -483,16 +489,10 @@ impl CodexCredentialCatalogService {
         if documents.is_empty() {
             return None;
         }
-        let as_of = SystemTime::now();
         Some(gateway_core::account::AccountCatalogOmissions {
             documents,
-            exceptions: ids
-                .iter()
-                .filter(|id| pending.contains(*id) || exempt(id))
-                .cloned()
-                .collect(),
-            observed_after: as_of.checked_sub(SCHEDULING_CATALOG_MAX_AGE)?,
-            as_of,
+            exceptions: ids.iter().filter(|id| exempt(id)).cloned().collect(),
+            as_of: SystemTime::now(),
         })
     }
 
@@ -521,11 +521,7 @@ impl CodexCredentialCatalogService {
             .filter(|account| account.provider().as_str() == "openai")
             .ok_or(CodexCredentialCatalogError::NoEligibleCredential)?;
         let scope = CodexCatalogScope::for_account(&account);
-        let client = CodexBackendClient::new(
-            self.http.clone(),
-            self.base_url.clone(),
-            self.profile.clone(),
-        );
+        let client = self.discovery_client().await?;
         let revision = self.state_revision()?;
         let (catalog, entry) = self
             .fetch_observation(&client, &account, &scope, None)
@@ -582,7 +578,6 @@ impl CodexCredentialCatalogService {
                 observed_at,
                 content,
                 etag: observed.etag,
-                invalidated: Default::default(),
             },
         ))
     }
@@ -595,11 +590,7 @@ impl CodexCredentialCatalogService {
         &self,
         account: &ProviderAccount,
     ) -> Result<(Vec<CodexCatalogModel>, SystemTime), CodexCredentialCatalogError> {
-        let client = CodexBackendClient::new(
-            self.http.clone(),
-            self.base_url.clone(),
-            self.profile.clone(),
-        );
+        let client = self.discovery_client().await?;
         let fetched = self.fetch_account_models(&client, account).await?;
         if fetched.models.is_empty() {
             return Err(CodexCredentialCatalogError::NoEligibleCredential);

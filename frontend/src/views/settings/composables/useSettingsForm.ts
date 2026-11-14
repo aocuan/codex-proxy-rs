@@ -1,6 +1,6 @@
 import type { ProtectionDraft } from '../components/error-protection/form'
 import type { rotationOptions } from '../constants'
-import type { AccountAffinity, CodexPrivacyPolicy, SmartSchedulingConfig } from '@/api'
+import type { AccountAffinity, CodexPrivacyPolicy, ResetWindowWeights, SmartSchedulingConfig } from '@/api'
 import type { ProviderRequestProfiles, ProviderRequestProfileUpdates } from '@/api/modules/settings/profiles'
 import { cloneDeep, isEqual } from 'es-toolkit'
 import { computed, reactive, ref, shallowRef } from 'vue'
@@ -27,9 +27,11 @@ export function useSettingsForm() {
   const error = shallowRef('')
   const mappings = ref<Array<{ requestedModel: string, upstreamModel: string }>>([])
   const smartSchedulingDefaults = shallowRef<SmartSchedulingConfig>()
+  const quotaResetWindowWeightsDefaults = shallowRef<ResetWindowWeights>()
   const form = reactive({
     configRevision: 0,
     smartScheduling: undefined as SmartSchedulingConfig | undefined,
+    quotaResetWindowWeights: undefined as ResetWindowWeights | undefined,
     providerRequestProfiles: {} as ProviderRequestProfiles,
     codexPrivacyPolicy: { enabled: false, onError: 'skip_rule', rules: [] } as CodexPrivacyPolicy,
     requestLocationEnabled: false,
@@ -71,7 +73,7 @@ export function useSettingsForm() {
       probeModel: '',
     } as ProtectionDraft,
     accountWarmupEnabled: false,
-    accountWarmupCron: '',
+    accountWarmupCron: [] as string[],
     accountWarmupModel: '',
     resetCreditOnLowWeeklyQuota: false,
     resetCreditLeadMinutes: 10 as number | null,
@@ -149,6 +151,8 @@ export function useSettingsForm() {
     form.responsesMaxDecompressedBodyMiB = data.responsesMaxDecompressedBodyBytes / MIB
 
     form.smartScheduling = { ...data.smartScheduling }
+    form.quotaResetWindowWeights = { ...data.quotaResetWindowWeights }
+    quotaResetWindowWeightsDefaults.value = { ...data.quotaResetWindowWeightsDefaults }
     smartSchedulingDefaults.value = { ...data.smartSchedulingDefaults }
     form.rotationStrategy = data.rotationStrategy
     form.minCodexDesktopVersion = data.minCodexDesktopVersion ?? ''
@@ -162,7 +166,9 @@ export function useSettingsForm() {
       probeModel: data.accountErrorProtection.probeModel ?? '',
     }
     form.accountWarmupEnabled = data.accountWarmupEnabled
-    form.accountWarmupCron = data.accountWarmupCron ?? ''
+    form.accountWarmupCron = data.accountWarmupCron
+      ? data.accountWarmupCron.split(';')
+      : []
     form.accountWarmupModel = data.accountWarmupModel ?? ''
     form.resetCreditOnLowWeeklyQuota = data.resetCreditOnLowWeeklyQuota
     form.resetCreditLeadMinutes = data.resetCreditLeadMinutes
@@ -240,7 +246,8 @@ export function useSettingsForm() {
 
   async function saveSettings() {
     const smartScheduling = form.smartScheduling
-    if (!smartScheduling)
+    const quotaResetWindowWeights = form.quotaResetWindowWeights
+    if (!smartScheduling || !quotaResetWindowWeights)
       return
     const savedSettings = saved.value
     if (saving.value || loading.value || detectingLocation.value || !savedSettings)
@@ -281,6 +288,7 @@ export function useSettingsForm() {
         responsesMaxDecompressedBodyBytes: responsesMaxDecompressedBodyMiB! * MIB,
         rotationStrategy: rotationStrategy as RotationStrategy,
         smartScheduling: { ...smartScheduling },
+        quotaResetWindowWeights: { ...quotaResetWindowWeights },
         minCodexDesktopVersion: form.minCodexDesktopVersion.trim() || null,
         minCodexCliVersion: form.minCodexCliVersion.trim() || null,
         usageRetentionDays: usageRetentionDays!,
@@ -294,7 +302,7 @@ export function useSettingsForm() {
           probeModel: trimProtectionText(form.accountErrorProtection.probeModel) || null,
         },
         accountWarmupEnabled: form.accountWarmupEnabled,
-        accountWarmupCron: form.accountWarmupCron.trim(),
+        accountWarmupCron: form.accountWarmupCron.join(';'),
         accountWarmupModel: form.accountWarmupModel.trim() || null,
         resetCreditOnLowWeeklyQuota: form.resetCreditOnLowWeeklyQuota,
         resetCreditLeadMinutes: (form.resetCreditOnLowWeeklyQuota ? savedSettings.form.resetCreditLeadMinutes : resetCreditLeadMinutes)!,
@@ -325,6 +333,7 @@ export function useSettingsForm() {
     error,
     form,
     smartSchedulingDefaults,
+    quotaResetWindowWeightsDefaults,
     mappings,
     addMapping,
     updateMapping,

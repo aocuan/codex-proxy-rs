@@ -154,6 +154,7 @@ pub struct RuntimeSettings {
     pub openai_session_affinity_ttl_hours: u32,
     pub responses_max_decompressed_body_bytes: u64,
     pub smart_scheduling: SmartSchedulingConfig,
+    pub quota_reset_window_weights: ResetWindowWeights,
     pub min_codex_desktop_version: Option<String>,
     pub min_codex_cli_version: Option<String>,
     pub usage_retention_days: u32,
@@ -194,6 +195,7 @@ pub struct ReplaceRuntimeSettings {
     pub openai_session_affinity_ttl_hours: u32,
     pub responses_max_decompressed_body_bytes: u64,
     pub smart_scheduling: SmartSchedulingConfig,
+    pub quota_reset_window_weights: ResetWindowWeights,
     pub min_codex_desktop_version: Option<String>,
     pub min_codex_cli_version: Option<String>,
     pub usage_retention_days: u32,
@@ -256,6 +258,15 @@ pub struct SmartSchedulingConfig {
     pub latency_weight: f64,
     pub reset_weight: f64,
     pub queue_weight: f64,
+    #[serde(default)]
+    pub reset_window_weights: ResetWindowWeights,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResetWindowWeights {
+    pub five_hour: f64,
+    pub weekly: f64,
+    pub monthly: f64,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -396,6 +407,7 @@ impl From<RuntimeSettings> for ReplaceRuntimeSettings {
             openai_session_affinity_ttl_hours: settings.openai_session_affinity_ttl_hours,
             responses_max_decompressed_body_bytes: settings.responses_max_decompressed_body_bytes,
             smart_scheduling: settings.smart_scheduling,
+            quota_reset_window_weights: settings.quota_reset_window_weights,
             min_codex_desktop_version: settings.min_codex_desktop_version,
             min_codex_cli_version: settings.min_codex_cli_version,
             usage_retention_days: settings.usage_retention_days,
