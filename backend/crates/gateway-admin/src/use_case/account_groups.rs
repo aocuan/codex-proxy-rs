@@ -209,8 +209,16 @@ impl AccountGroupService for DefaultAccountGroupService {
         context: &MutationContext,
         command: DeleteAccountGroup,
     ) -> Result<AccountGroupMutation, AdminError> {
-        self.publish(self.store.delete_account_group(command, context).await)
-            .await
+        match self.store.delete_account_group(command, context).await {
+            Err(error) if error.kind() == crate::ports::store::AdminStoreErrorKind::Conflict => {
+                Err(AdminError::new(
+                    crate::model::AdminErrorKind::Conflict,
+                    "分组仍被 API Key 或测评计划引用，请先修改对应绑定，停用 Key 不会解除绑定",
+                )
+                .with_source(error))
+            }
+            result => self.publish(result).await,
+        }
     }
 }
 

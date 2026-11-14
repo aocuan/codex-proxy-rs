@@ -8,6 +8,7 @@ use super::{db_error, rows};
 #[derive(sqlx::FromRow)]
 struct PointRow {
     plan_version: String,
+    diagnostic: Option<sqlx::types::Json<TurnStateDiagnostic>>,
     #[sqlx(flatten)]
     history: rows::HistoryRow,
     connection_revision: Option<String>,
@@ -42,7 +43,8 @@ pub(super) async fn load(pool: &PgPool) -> AdminStoreResult<EvaluationMonitoring
                        'none'::text as grader_type, null::text as judgment_status, i.duration_ms,
                        i.observation_json #>> '{turnState,outcome}' as turn_state,
                        i.observation_json #>> '{turnState,connectionRevision}' as connection_revision,
-                       i.observation_json->>'requestProfileRevision' as request_profile_revision
+                       i.observation_json->>'requestProfileRevision' as request_profile_revision,
+                       nullif(i.observation_json#>'{turnState,diagnostic}', 'null'::jsonb) as diagnostic
                 from evaluation_items i join evaluation_runs r on r.id=i.run_id
                 where i.account_id=a.id and r.parameters_json->>'kind'='turnstate'
                   and r.profile_json#>>'{monitoring,id}' = $1), picked as (
@@ -63,6 +65,7 @@ pub(super) async fn load(pool: &PgPool) -> AdminStoreResult<EvaluationMonitoring
         for point in records {
             points.push(EvaluationMonitoringPoint {
                 plan_version: point.plan_version,
+                diagnostic: point.diagnostic.map(|value| value.0),
                 history: point.history.decode()?,
                 connection_revision: point.connection_revision,
                 request_profile_revision: point.request_profile_revision,
@@ -154,6 +157,13 @@ pub(super) async fn cleanup(
                 .await
                 .map_err(db_error)?;
                 if current_signal != last_signal_id {
+                    continue;
+                }
+                let connection = super::accounts::current_connection(&mut tx, id).await?;
+                let signal_connection: Option<String> = sqlx::query_scalar("select observation_json#>>'{turnState,connectionRevision}' from evaluation_items where id=$1")
+                    .bind(current_signal.as_deref()).fetch_optional(&mut *tx).await.map_err(db_error)?.flatten();
+                // 新授权和代理变更后的旧信号不能撤销初始优选资格
+                if connection.is_none() || signal_connection != connection {
                     continue;
                 }
                 "expiration"

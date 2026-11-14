@@ -70,7 +70,7 @@ export function useAccountGroups() {
   const disabling = disablingAction.loading
   const updatingStatusGroupIds = updatingStatusGroups.ids
   const referencedKeyNames = computed(() => {
-    const groupId = pendingDisableGroup.value?.id
+    const groupId = showDeleteModal.value ? pendingDeleteGroup.value?.id : pendingDisableGroup.value?.id
     if (!groupId)
       return []
     return referenceKeyNamesFor(groupId)
@@ -215,6 +215,7 @@ export function useAccountGroups() {
   function requestDelete(group: AccountGroup) {
     pendingDeleteGroup.value = group
     showDeleteModal.value = true
+    void loadReferenceKeys()
   }
 
   async function confirmDelete() {

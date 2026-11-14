@@ -104,6 +104,7 @@ impl PgAccountGroupRepository {
     async fn mutate<F>(
         &self,
         audit: super::AdminAuditEvent,
+        lock_evaluations: bool,
         mutation: F,
     ) -> AdminStoreResult<gateway_admin::model::Revision>
     where
@@ -112,6 +113,9 @@ impl PgAccountGroupRepository {
         let mut transaction = self.pool.begin().await.map_err(|source| {
             admin_store_error(ENTITY, unavailable("begin account group mutation", source))
         })?;
+        if lock_evaluations {
+            super::evaluation::lock_queue(&mut transaction).await?;
+        }
         let result: StoreResult<_> = async {
             let revision = bump_config_revision_in_transaction(&mut transaction).await?;
             mutation(&mut transaction).await?;
@@ -321,7 +325,7 @@ impl AccountGroupStore for PgAccountGroupRepository {
             ],
         );
         let revision = self
-            .mutate(audit, |transaction| {
+            .mutate(audit, false, |transaction| {
                 Box::pin(async move {
                     insert_account_group_in_transaction(transaction, &command).await?;
                     Ok(())
@@ -354,7 +358,7 @@ impl AccountGroupStore for PgAccountGroupRepository {
             ],
         );
         let revision = self
-            .mutate(audit, |transaction| {
+            .mutate(audit, false, |transaction| {
                 Box::pin(async move {
                     let result = sqlx::query(
                         "update account_groups
@@ -396,7 +400,7 @@ impl AccountGroupStore for PgAccountGroupRepository {
             vec!["enabled".to_owned()],
         );
         let revision = self
-            .mutate(audit, |transaction| {
+            .mutate(audit, false, |transaction| {
                 Box::pin(async move {
                     let result = sqlx::query(
                         "update account_groups set enabled = $2, updated_at = now() where id = $1",
@@ -430,13 +434,19 @@ impl AccountGroupStore for PgAccountGroupRepository {
             Vec::new(),
         );
         let revision = self
-            .mutate(audit, |transaction| {
+            .mutate(audit, true, |transaction| {
                 Box::pin(async move {
                     let result = sqlx::query(
                         "delete from account_groups g
                          where g.id = $1
                            and not exists (
                              select 1 from client_api_key_groups k where k.account_group_id = g.id
+                           )
+                           and not exists (
+                             select 1 from evaluation_plans p
+                             where p.settings_json#>>'{accountPreference,groupId}' = g.id
+                                or p.settings_json#>>'{accountPreference,fallbackGroupId}' = g.id
+                                or (p.settings_json#>'{accountSelection,groupIds}') ? g.id
                            )",
                     )
                     .bind(command.id.as_str())

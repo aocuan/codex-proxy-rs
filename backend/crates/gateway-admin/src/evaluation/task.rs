@@ -339,10 +339,7 @@ impl EvaluationTask {
                 for account in view.accounts.into_iter().filter(|account| {
                     account.monitored
                         && members.contains(&account.account_id)
-                        && matches!(
-                            account.freshness,
-                            EvaluationFreshness::Expired | EvaluationFreshness::EnvironmentChanged
-                        )
+                        && matches!(account.freshness, EvaluationFreshness::Expired)
                 }) {
                     let last_signal_id = last_signals.remove(&account.account_id);
                     targets

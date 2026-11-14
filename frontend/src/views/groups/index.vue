@@ -226,6 +226,7 @@ const { allSelected, indeterminate, selectedRowKeys, toggleSelection, toggleAll 
 
     <ZConfirmDialog
       v-model="showDeleteModal"
+      :confirm-disabled="(pendingDeleteGroup?.clientKeyCount ?? 0) > 0"
       :title="t('groups.page.deleteAccountGroup')"
       :description="t('groups.page.deleteWarning')"
       destructive
@@ -235,6 +236,12 @@ const { allSelected, indeterminate, selectedRowKeys, toggleSelection, toggleAll 
     >
       <p class="m-0">
         {{ t('groups.page.deleteAccountsWillBeKept', { name: pendingDeleteGroup?.name || t('groups.page.unnamedGroup') }) }}
+      </p>
+      <p v-if="pendingDeleteGroup?.clientKeyCount" class="mt-2 mb-0 text-z-warning-text">
+        {{ t('groups.page.deleteBlockedByKeys', { count: pendingDeleteGroup.clientKeyCount }) }}
+      </p>
+      <p v-if="referencedKeyNames.length" class="mt-2 mb-0 text-z-text-secondary">
+        {{ t('groups.page.boundApiKeys', { value: referencedKeyNames.join('、') }) }}
       </p>
     </ZConfirmDialog>
   </div>

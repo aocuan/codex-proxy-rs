@@ -71,6 +71,8 @@
       "deleteAccountGroup": "刪除賬號分組",
       "deleteWarning": "刪除後該分組將立即失效，此操作不可撤銷",
       "unnamedGroup": "該分組",
+      "boundApiKeys": "綁定的 API Key：{value}",
+      "deleteBlockedByKeys": "仍有 {count} 個 API Key 綁定此組，請先到 API金鑰修改分組，停用 Key 不會解除綁定",
       "deleteAccountsWillBeKept": "確定刪除“{name}”嗎？賬號本身不會被刪除"
     }
   }

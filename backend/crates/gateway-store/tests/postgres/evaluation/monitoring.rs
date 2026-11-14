@@ -212,36 +212,54 @@ async fn expired_membership_is_audited_once_and_new_results_fence_stale_cleanup(
         .await
         .unwrap();
     let observed_at = Utc::now();
-    let mut seed = EvaluationRunSeed::new(probe(&["acct_b"]), "test", Utc::now());
+    let mut seed = EvaluationRunSeed::new(probe(&["acct_a", "acct_b"]), "test", observed_at);
     seed.profile.monitoring = Some(formal.monitoring_reference());
     repository
         .enqueue_manual(uuid::Uuid::new_v4(), seed, &context())
         .await
         .unwrap();
-    let claim = repository.claim_next(Utc::now()).await.unwrap().unwrap();
-    repository
-        .save_output(
-            &claim.item.id,
-            EvaluationOutput {
-                response_text: "new observation".into(),
-                artifact_html: None,
-            },
-        )
-        .await
-        .unwrap();
-    let mut finished = completion(EvaluationItemStatus::Succeeded);
-    finished.completed_at = observed_at - chrono::Duration::seconds(1);
-    finished.observation.turn_state = Some(TurnStateProbeResult {
-        diagnostic: None,
-        connection_revision: None,
-        outcome: TurnStateOutcome::Accepted,
-        steps: vec![],
-        error: None,
-    });
-    repository
-        .finish_item(&claim.item.id, finished)
-        .await
-        .unwrap();
+    let states = repository.account_states().await.unwrap();
+    let mut old_signal = String::new();
+    for _ in 0..2 {
+        let claim = repository.claim_next(Utc::now()).await.unwrap().unwrap();
+        repository
+            .save_output(
+                &claim.item.id,
+                EvaluationOutput {
+                    response_text: "observation".into(),
+                    artifact_html: None,
+                },
+            )
+            .await
+            .unwrap();
+        let mut finished = completion(EvaluationItemStatus::Succeeded);
+        finished.completed_at = if claim.item.account_id == "acct_a" {
+            observed_at - chrono::Duration::minutes(31)
+        } else {
+            observed_at - chrono::Duration::seconds(1)
+        };
+        finished.observation.turn_state = Some(TurnStateProbeResult {
+            diagnostic: None,
+            connection_revision: Some(
+                states
+                    .iter()
+                    .find(|a| a.id == claim.item.account_id)
+                    .unwrap()
+                    .connection_revision
+                    .clone(),
+            ),
+            outcome: TurnStateOutcome::Accepted,
+            steps: vec![],
+            error: None,
+        });
+        if claim.item.account_id == "acct_a" {
+            old_signal = claim.item.id.clone();
+        }
+        repository
+            .finish_item(&claim.item.id, finished)
+            .await
+            .unwrap();
+    }
     let current: i64 =
         sqlx::query_scalar("select config_revision from runtime_settings where id=1")
             .fetch_one(&db.pool)
@@ -254,7 +272,7 @@ async fn expired_membership_is_audited_once_and_new_results_fence_stale_cleanup(
             .map(|id| EvaluationPreferenceCleanupTarget {
                 account_id: id.into(),
                 reason: EvaluationPreferenceCleanupReason::Expired {
-                    last_signal_id: None,
+                    last_signal_id: (id == "acct_a").then(|| old_signal.clone()),
                 },
             })
             .collect(),
@@ -284,5 +302,40 @@ async fn expired_membership_is_audited_once_and_new_results_fence_stale_cleanup(
     .await
     .unwrap();
     assert_eq!(audits, 2);
+    sqlx::query(
+        "update provider_accounts set credential_revision=credential_revision+1 where id='acct_a'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query("insert into account_group_accounts values($1,'acct_a',now())")
+        .bind(&group)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let revision: i64 =
+        sqlx::query_scalar("select config_revision from runtime_settings where id=1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert!(
+        repository
+            .cleanup_preference(EvaluationPreferenceCleanup {
+                plan: formal.monitoring_reference(),
+                accounts: vec![EvaluationPreferenceCleanupTarget {
+                    account_id: "acct_a".into(),
+                    reason: EvaluationPreferenceCleanupReason::Expired {
+                        last_signal_id: Some(old_signal)
+                    }
+                }],
+                expected_revision: Revision::new(revision as u64).unwrap()
+            })
+            .await
+            .unwrap()
+            .is_none(),
+        "旧连接到期结果不能移出新授权默认优选账号"
+    );
+    let retained:bool=sqlx::query_scalar("select exists(select 1 from account_group_accounts where account_group_id=$1 and provider_account_id='acct_a')").bind(&group).fetch_one(&db.pool).await.unwrap();
+    assert!(retained);
     db.close().await;
 }

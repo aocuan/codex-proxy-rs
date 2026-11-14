@@ -97,6 +97,7 @@ fn monitoring_fixture(
             .into_iter()
             .map(|history| EvaluationMonitoringPoint {
                 plan_version: version.clone(),
+                diagnostic: None,
                 history,
                 connection_revision: None,
                 request_profile_revision: None,

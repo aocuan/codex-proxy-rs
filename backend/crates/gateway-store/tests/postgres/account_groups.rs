@@ -921,3 +921,64 @@ async fn committed_group_mutations_succeed_when_the_usage_query_budget_is_exhaus
     holder.await.unwrap().unwrap();
     database.close().await;
 }
+
+#[tokio::test]
+async fn group_deletion_preserves_preference_and_selection_references() {
+    let Some(db) = TestDatabase::create("group_plan_references").await else {
+        return;
+    };
+    let store = PgAccountGroupRepository::new(
+        db.pool.clone(),
+        ObservabilityQueryBudget::try_new(4, Duration::from_secs(10), Duration::from_secs(10))
+            .unwrap(),
+    );
+    let id = AccountGroupId::new(MIXED_GROUP).unwrap();
+    store
+        .create_account_group(
+            NewAccountGroup {
+                id: id.clone(),
+                name: "保留组".into(),
+                description: None,
+                color: group_color("#FFFFFFFF"),
+                fast_mode: FastMode::Default,
+                allow_image_generation: true,
+            },
+            &context("create-reference-group"),
+        )
+        .await
+        .unwrap();
+    for reference in [
+        serde_json::json!({"accountPreference":{"groupId":MIXED_GROUP}}),
+        serde_json::json!({"accountPreference":{"groupId":EMPTY_GROUP,"fallbackGroupId":MIXED_GROUP}}),
+        serde_json::json!({"accountSelection":{"mode":"groups","groupIds":[MIXED_GROUP]}}),
+    ] {
+        let mut settings = serde_json::json!({"name":"引用方案","enabled":false,"intervalMinutes":10,"timezone":"UTC","parameters":{"kind":"turnstate","clientKeyId":"","accountIds":[],"model":"test-model","reasoningEffort":"low","repetitions":1,"timeoutSeconds":30}});
+        settings
+            .as_object_mut()
+            .unwrap()
+            .extend(reference.as_object().unwrap().clone());
+        sqlx::query("insert into evaluation_plans(id,settings_json,created_at,updated_at) values('eval_plan_ref',$1,now(),now())").bind(settings).execute(&db.pool).await.unwrap();
+        let before = current_revision(&db.pool).await;
+        let error = store
+            .delete_account_group(
+                DeleteAccountGroup { id: id.clone() },
+                &context("delete-reference-group"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), AdminStoreErrorKind::Conflict);
+        assert_eq!(current_revision(&db.pool).await, before);
+        sqlx::query("delete from evaluation_plans where id='eval_plan_ref'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+    store
+        .delete_account_group(
+            DeleteAccountGroup { id },
+            &context("delete-unreferenced-group"),
+        )
+        .await
+        .unwrap();
+    db.close().await;
+}

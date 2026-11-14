@@ -1250,6 +1250,10 @@ config 返回 `{ name, plaintextKey }`，仅读取服务端会话绑定的当前
 `monitoring` 包含 `observedAt`、可空的正式 `plan` 和本页 `accounts`：每项包含 `accountId`、`status`、`monitored`、
 `freshness`（`fresh`、`expired`、`environment_changed`、`unmeasured`）、最近有效 `signal`、
 `signalAtDisplay`、`expiresAtDisplay`、`latestAttempt`、`consecutive` 和 `required`。
+可选 `authentication` 是当前凭据、代理、检测身份和方案版本下的新鲜授权证据，独立于票据信号的 `freshness`。
+它包含 `status`（`valid` 或 `rejected`）、`errorCode`、`observedAt`、`confirmationStartedAt`、`connectionRevision`、`itemId`、`confirmed`、`consecutive` 和 `required`。
+明确拒绝按方案连续异常次数确认；成功请求解除先前拒绝，网络、过载、取消和等待不构成授权结论。
+凭据或检测身份变化、证据过期时不返回旧授权结论，运维不能用账号主状态 `normal` 覆盖已确认的授权拒绝。
 未配置正式方案时 `plan=null`，历史为空；预取不可用时省略监测字段，目录仍可返回，客户端重试整个列表。
 指定 `evaluationStatus` 时监测不可用会返回错误，不把读取失败解释为空名单
 
@@ -2016,6 +2020,8 @@ HTTP 返回 `403` 和 `image_generation_disabled`，WebSocket 每个 `response.c
 不提供独立的分组成员路由；账号的 Provider 不代表整个分组的 Provider。
 `capacity.totalSlots` 为 `number | null`：`null` 表示可用成员中存在继承无限并发的账号，`0` 表示没有可用槽位。
 分组容量只统计普通池，`capacity.usedSlots` 返回其实际在途数；Redis 不可用时为 `null`
+
+仍被 API Key 或测评计划引用的分组不可删除，停用 Key 不会解除绑定。请先修改对应 Key 的分组，以及计划的优选、退出或检测范围配置。
 
 分组费用按当前组成员实际完成请求的费用汇总，不按 Client Key 绑定的分组分摊。
 账号属于多个组时，各组均包含该账号的请求费用；调整账号分组后，留存窗口内费用随当前成员关系重新汇总
@@ -3668,11 +3674,10 @@ Cron 为 5 段，时区由 `host.timezone` 决定，不接受调用方指定。
 
 正式方案可选设置 `accountPreference: {groupId, fallbackGroupId?}`，优选及退出分组须存在、启用且不同。
 未配置退出分组时只移出优选；配置后，退出优选时转入退出组，恢复优选时移出退出组，其他业务分组保留。
-达到连续稳定次数后加入，达到连续变化次数后移出。正式测票明确返回授权拒绝、额度耗尽或模型不可用时，按连续异常次数确认后移出；计数要求相同连接环境、检测参数和异常分类。
+达到连续稳定次数后加入，达到连续变化次数后移出。正式测票明确返回授权拒绝、额度耗尽或模型不可用时，按连续异常次数确认后移出；计数只使用相同连接环境和检测参数的明确异常。
 明确停用的成员由后台核对后移出；凭据异常不绕过正式检测次数。恢复可用后仍按连续稳定次数重新加入。
 过载、超时和未判定不立即改组；失败或未判定中断连续确认，取消和跳过不消耗确认次数。
-`removeExpired=true` 时，已过期或环境变化的
-受监测账号会退出目标组；到期检查后已有新观测的账号保留到下一轮重新核对
+`removeExpired=true` 时，同一连接下的检测结果过期会退出目标组。授权或代理变化后等待新检测，旧连接的过期结果不能移出新授权账号；到期检查后已有新观测的账号保留到下一轮重新核对
 
 检测范围不能包含优选或退出分组，确保转组后仍可复检。业务 Key 的分组绑定不影响管理员测票。
 分组变化影响关联 Key 的调度。计划暂停、删除、切换或修订后旧结果不再改组，两个托管组之外的分组不受影响。

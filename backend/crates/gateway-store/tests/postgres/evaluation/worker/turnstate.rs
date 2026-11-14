@@ -10,6 +10,7 @@ use gateway_admin::{
 use gateway_core::{account::ProviderAccountId, routing::ProviderKind};
 
 struct ProbeProvider {
+    authorization_failure: bool,
     kind: ProviderKind,
     pending: bool,
     calls: Arc<AtomicUsize>,
@@ -35,6 +36,7 @@ async fn formal_rechecks_confirm_twice_while_diagnostics_never_drive_membership(
     sqlx::query("insert into account_groups (id,name,color,created_at,updated_at) values ($1,'preferred','#FFFFFFFF',now(),now())")
         .bind(&target).execute(&db.pool).await.unwrap();
     let provider = Arc::new(ProbeProvider {
+        authorization_failure: false,
         kind: ProviderKind::new("openai").unwrap(),
         pending: false,
         calls: Arc::default(),
@@ -256,6 +258,7 @@ async fn scheduled_monitoring_queues_all_accounts_beyond_the_manual_twenty_accou
         .unwrap(),
     );
     let providers = ProviderAdminRegistry::new([Arc::new(ProbeProvider {
+        authorization_failure: false,
         kind: provider,
         pending: false,
         calls: Arc::default(),
@@ -334,6 +337,7 @@ async fn account_result_filters_share_history_conditions_and_apply_before_direct
     .await
     .unwrap();
     let provider = Arc::new(ProbeProvider {
+        authorization_failure: false,
         kind: ProviderKind::new("openai").unwrap(),
         pending: false,
         calls: Arc::default(),
@@ -644,7 +648,7 @@ impl ProviderAdmin for ProbeProvider {
             completed: true,
         };
         let mut steps = vec![step.clone(), step];
-        let diagnostic =
+        let mut diagnostic =
             self.preference_fixture
                 .as_ref()
                 .and_then(|recovered| match account.as_str() {
@@ -666,6 +670,15 @@ impl ProviderAdmin for ProbeProvider {
                     }
                     _ => None,
                 });
+        if self.authorization_failure {
+            diagnostic = Some(TurnStateDiagnostic {
+                stage: "request".into(),
+                http_status: 401,
+                error_code: Some("token_revoked".into()),
+                error_type: None,
+                unavailable: Some(TurnStateUnavailable::Authorization),
+            });
+        }
         if let Some(recovered) = &self.preference_fixture
             && account.as_str() == "acct_wrong"
             && !recovered.load(Ordering::SeqCst)
@@ -875,6 +888,7 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_after_consecut
         .bind(&source).bind(&target).execute(&db.pool).await.unwrap();
     let recovered = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let provider = Arc::new(ProbeProvider {
+        authorization_failure: false,
         kind: ProviderKind::new("openai").unwrap(),
         pending: false,
         calls: Arc::default(),
@@ -1123,6 +1137,7 @@ async fn preference_continues_when_business_key_is_disabled_during_probe() {
     let gate = Arc::new(tokio::sync::Notify::new());
     let calls = Arc::new(AtomicUsize::new(0));
     let provider = Arc::new(ProbeProvider {
+        authorization_failure: false,
         kind: ProviderKind::new("openai").unwrap(),
         pending: false,
         calls: calls.clone(),
@@ -1554,6 +1569,7 @@ async fn ticket_probe_filters_api_keys_before_manual_and_fixed_work() {
         .unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let provider = Arc::new(ProbeProvider {
+        authorization_failure: false,
         kind: ProviderKind::new("openai").unwrap(),
         pending: false,
         calls: calls.clone(),
@@ -1619,6 +1635,7 @@ async fn api_key_only_ticket_requests_do_not_create_runs_or_enabled_plans() {
     };
     let (repository, _, _, service) = setup(&db, Reply::Answer).await;
     let provider = Arc::new(ProbeProvider {
+        authorization_failure: false,
         kind: ProviderKind::new("openai").unwrap(),
         pending: false,
         calls: Arc::default(),
@@ -1687,6 +1704,7 @@ async fn scheduled_ticket_ranges_and_available_counts_use_provider_capabilities(
     sqlx::query("insert into account_groups (id,name,color,created_at,updated_at) values ($1,'probe','#FFFFFFFF',now(),now())").bind(&group).execute(&db.pool).await.unwrap();
     sqlx::query("insert into account_group_accounts (account_group_id,provider_account_id,created_at) values ($1,'acct_right',now()),($1,'acct_wrong',now())").bind(&group).execute(&db.pool).await.unwrap();
     let provider = Arc::new(ProbeProvider {
+        authorization_failure: false,
         kind: ProviderKind::new("openai").unwrap(),
         pending: false,
         calls: Arc::default(),
@@ -1781,6 +1799,7 @@ async fn ticket_probe_keeps_route_results_out_of_ability_scores_and_billing() {
     let calls = Arc::new(AtomicUsize::new(0));
     let cleaned = Arc::new(AtomicUsize::new(0));
     let provider = Arc::new(ProbeProvider {
+        authorization_failure: false,
         kind: ProviderKind::new("openai").unwrap(),
         pending: false,
         calls: calls.clone(),
@@ -1833,6 +1852,7 @@ async fn stopping_ticket_probe_awaits_network_cleanup_and_does_not_replay_it() {
     let calls = Arc::new(AtomicUsize::new(0));
     let cleaned = Arc::new(AtomicUsize::new(0));
     let provider = Arc::new(ProbeProvider {
+        authorization_failure: false,
         kind: ProviderKind::new("openai").unwrap(),
         pending: true,
         calls: calls.clone(),
@@ -1865,5 +1885,100 @@ async fn stopping_ticket_probe_awaits_network_cleanup_and_does_not_replay_it() {
     assert_eq!(detail.items[0].status, EvaluationItemStatus::Cancelled);
     assert_eq!(cleaned.load(Ordering::SeqCst), 1);
     assert!(repository.claim_next(Utc::now()).await.unwrap().is_none());
+    db.close().await;
+}
+
+#[tokio::test]
+async fn formal_revocation_is_projected_for_normal_accounts_and_cleared_by_new_credentials() {
+    let Some(db) = TestDatabase::create("formal_auth_recovery").await else {
+        return;
+    };
+    let (repository, execution, _, service) = setup(&db, Reply::Answer).await;
+    sqlx::query("update provider_accounts set authentication_kind='oauth' where id='acct_target'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let provider = Arc::new(ProbeProvider {
+        authorization_failure: true,
+        kind: ProviderKind::new("openai").unwrap(),
+        pending: false,
+        calls: Arc::default(),
+        cleaned: Arc::default(),
+        preference_fixture: None,
+        gate: None,
+    });
+    let registry = ProviderAdminRegistry::new([provider as Arc<dyn ProviderAdmin>]).unwrap();
+    let service = service.with_turnstate(registry.clone());
+    let task = EvaluationTask::new(
+        repository.clone(),
+        execution,
+        Arc::new(admin_observability_store(&db.pool)),
+        "test".into(),
+        Default::default(),
+        gateway_core::runtime::RuntimeSnapshotHandle::new(preference_snapshot(1, true)),
+    )
+    .with_turnstate(registry);
+    let mut params = parameters(&["acct_target"], 1);
+    params.kind = EvaluationKind::Turnstate;
+    params.reasoning_effort = Some("low".into());
+    let plan = service
+        .save_plan(
+            None,
+            None,
+            EvaluationPlanSettings {
+                monitoring: Some(Default::default()),
+                account_preference: None,
+                account_selection: EvaluationAccountSelection::Fixed,
+                name: "授权复核".into(),
+                parameters: params,
+                enabled: true,
+                interval_minutes: Some(10),
+                cron_expression: String::new(),
+                timezone: Default::default(),
+            },
+            &context(),
+        )
+        .await
+        .unwrap();
+    let (cancel, handle) = start(task);
+    for confirmed in [false, true] {
+        let run = service
+            .recheck(
+                uuid::Uuid::new_v4(),
+                vec!["acct_target".into()],
+                plan.monitoring_reference(),
+                &context(),
+            )
+            .await
+            .unwrap();
+        wait_finished(&repository, &run.id).await;
+        let snapshot = service.monitoring_snapshot().await.unwrap();
+        let proof = snapshot
+            .accounts
+            .iter()
+            .find(|a| a.account_id == "acct_target")
+            .unwrap()
+            .authentication
+            .as_ref()
+            .unwrap();
+        assert_eq!(proof.confirmed, confirmed);
+        assert_eq!(proof.status, "rejected");
+        assert_eq!(proof.error_code.as_deref(), Some("token_revoked"));
+    }
+    sqlx::query("update provider_accounts set credential_revision=credential_revision+1 where id='acct_target'").execute(&db.pool).await.unwrap();
+    assert!(
+        service
+            .monitoring_snapshot()
+            .await
+            .unwrap()
+            .accounts
+            .iter()
+            .find(|a| a.account_id == "acct_target")
+            .unwrap()
+            .authentication
+            .is_none()
+    );
+    cancel.cancel();
+    handle.await.unwrap().unwrap();
     db.close().await;
 }

@@ -62,6 +62,7 @@ pub struct EvaluationPlanReference {
 #[derive(Debug, Clone)]
 pub struct EvaluationMonitoringPoint {
     pub plan_version: String,
+    pub diagnostic: Option<TurnStateDiagnostic>,
     pub history: EvaluationHistoryItem,
     pub connection_revision: Option<String>,
     pub request_profile_revision: Option<String>,
@@ -84,10 +85,27 @@ pub enum EvaluationFreshness {
     Unmeasured,
 }
 
+/// 当前凭据与检测身份下的明确授权证据，票据质量与授权有效性分别判断
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvaluationAuthentication {
+    pub status: &'static str,
+    pub error_code: Option<String>,
+    pub observed_at: DateTime<Utc>,
+    pub confirmation_started_at: DateTime<Utc>,
+    pub connection_revision: String,
+    pub item_id: String,
+    pub confirmed: bool,
+    pub consecutive: usize,
+    pub required: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EvaluationAccountMonitoring {
     pub account_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<EvaluationAuthentication>,
     pub status: EvaluationAccountStatus,
     pub monitored: bool,
     pub freshness: EvaluationFreshness,
@@ -202,6 +220,9 @@ impl EvaluationAccountMonitoring {
         };
         Self {
             account_id: account.id.clone(),
+            authentication: monitored
+                .then(|| authentication_evidence(account, points, profile_revision, policy, now))
+                .flatten(),
             status,
             monitored,
             freshness,
@@ -215,6 +236,67 @@ impl EvaluationAccountMonitoring {
             }),
         }
     }
+}
+
+fn authentication_evidence(
+    account: &EvaluationAccountState,
+    points: &[&EvaluationMonitoringPoint],
+    profile: &str,
+    policy: &EvaluationMonitoringPolicy,
+    now: DateTime<Utc>,
+) -> Option<EvaluationAuthentication> {
+    let rejected = |point: &EvaluationMonitoringPoint| {
+        point.history.status == EvaluationItemStatus::Failed
+            && point
+                .diagnostic
+                .as_ref()
+                .is_some_and(|d| d.unavailable == Some(TurnStateUnavailable::Authorization))
+    };
+    // 网络、过载、取消与排队没有授权结论，不清除已确认的拒绝，也不算成功
+    let mut decisive = points.iter().copied().filter(|point| {
+        point.connection_revision.as_deref() == Some(account.connection_revision.as_str())
+            && point.request_profile_revision.as_deref() == Some(profile)
+            && point.history.completed_at.is_some_and(|at| {
+                at <= now && at + chrono::Duration::minutes(i64::from(policy.valid_minutes)) > now
+            })
+            && (point.history.status == EvaluationItemStatus::Succeeded || rejected(point))
+    });
+    let latest = decisive.next()?;
+    let failed = rejected(latest);
+    let required = if failed {
+        usize::from(policy.changed_count)
+    } else {
+        1
+    };
+    let mut consecutive = 1;
+    let mut confirmation_started_at = latest.history.completed_at?;
+    if failed {
+        for point in decisive.take_while(|point| rejected(point)) {
+            consecutive += 1;
+            if consecutive <= required {
+                confirmation_started_at = point.history.completed_at?;
+            }
+        }
+    }
+    Some(EvaluationAuthentication {
+        status: if failed { "rejected" } else { "valid" },
+        error_code: if failed {
+            latest
+                .diagnostic
+                .as_ref()
+                .and_then(|d| d.error_code.as_ref())
+                .map(|value| value.chars().take(100).collect())
+        } else {
+            None
+        },
+        observed_at: latest.history.completed_at?,
+        confirmation_started_at,
+        connection_revision: account.connection_revision.clone(),
+        item_id: latest.history.id.clone(),
+        confirmed: consecutive >= required,
+        consecutive,
+        required,
+    })
 }
 
 impl EvaluationPlan {

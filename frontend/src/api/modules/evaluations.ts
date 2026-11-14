@@ -219,6 +219,17 @@ export interface EvaluationMonitoringPolicy {
 
 export interface EvaluationAccountMonitoring {
   accountId: string
+  authentication?: {
+    status: 'valid' | 'rejected'
+    errorCode: string | null
+    observedAt: string
+    confirmationStartedAt: string
+    connectionRevision: string
+    itemId: string
+    confirmed: boolean
+    consecutive: number
+    required: number
+  }
   status: 'stable' | 'changed' | 'unknown' | 'failed' | 'pending' | 'no_record' | 'not_applicable' | 'stale'
   monitored: boolean
   freshness: 'fresh' | 'expired' | 'environment_changed' | 'unmeasured'

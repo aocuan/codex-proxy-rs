@@ -233,7 +233,7 @@ watch(open, (value) => {
             <ZInputNumber v-model="monitoringPolicy.validMinutes" :min="1" :max="10080" :disabled="saving" unit="分钟" aria-label="结果有效期" />
           </ZFormItem>
         </div>
-        <ZCheckbox v-if="target !== 'none'" v-model="monitoringPolicy.removeExpired" :disabled="saving" label="结果过期或账号环境变化后移出优选组" />
+        <ZCheckbox v-if="target !== 'none'" v-model="monitoringPolicy.removeExpired" :disabled="saving" label="结果过期后移出优选组，授权或代理变化时等待复测" />
       </template>
       <p v-if="timingError" class="m-0 text-z-sm text-z-warning-text" role="alert">
         {{ timingError }}

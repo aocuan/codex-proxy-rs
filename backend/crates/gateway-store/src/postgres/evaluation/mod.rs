@@ -242,7 +242,9 @@ impl EvaluationRepository for PgEvaluationRepository {
 }
 
 /// 队列事务很短；同一部署内串行核对容量与账号占用，不把模型调用放进锁
-async fn lock_queue(transaction: &mut Transaction<'_, Postgres>) -> AdminStoreResult<()> {
+pub(super) async fn lock_queue(
+    transaction: &mut Transaction<'_, Postgres>,
+) -> AdminStoreResult<()> {
     sqlx::query(
         "select pg_advisory_xact_lock(hashtextextended(current_schema() || ':evaluation_queue', 0))",
     )

@@ -71,6 +71,8 @@
       "deleteAccountGroup": "Delete account group",
       "deleteWarning": "This group will stop working immediately, deletion cannot be undone",
       "unnamedGroup": "This group",
+      "boundApiKeys": "Referenced API keys: {value}",
+      "deleteBlockedByKeys": "Still referenced by {count} API keys. Change their groups in API Keys first. Disabling a key does not remove its group binding",
       "deleteAccountsWillBeKept": "Delete “{name}”? Accounts will be kept"
     }
   }

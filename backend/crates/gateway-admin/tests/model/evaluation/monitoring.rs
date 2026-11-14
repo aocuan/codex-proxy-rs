@@ -11,6 +11,7 @@ fn point(
     let at = Utc::now() - Duration::minutes(minutes);
     EvaluationMonitoringPoint {
         plan_version: "v1".into(),
+        diagnostic: None,
         connection_revision: Some("connection".into()),
         request_profile_revision: Some("profile".into()),
         history: EvaluationHistoryItem {
@@ -147,4 +148,68 @@ fn changed_and_unknown_signals_interrupt_confirmation_without_becoming_healthy()
     assert_eq!(result.status, EvaluationAccountStatus::Unknown);
     assert_eq!(result.signal, Some(TurnStateOutcome::Accepted));
     assert_eq!(result.consecutive, 0);
+}
+
+#[test]
+fn authentication_evidence_tracks_revocation_and_resets_on_new_credentials_or_success() {
+    let mut denied = point(EvaluationItemStatus::Failed, None, 1);
+    denied.diagnostic = Some(TurnStateDiagnostic {
+        stage: "request".into(),
+        http_status: 401,
+        error_code: Some("token_revoked".into()),
+        error_type: None,
+        unavailable: Some(TurnStateUnavailable::Authorization),
+    });
+    let older = {
+        let mut p = denied.clone();
+        p.history.completed_at = Some(Utc::now() - Duration::minutes(2));
+        p
+    };
+    let first = state(&[denied.clone()], "connection", "profile")
+        .authentication
+        .unwrap();
+    assert!(!first.confirmed);
+    let points = [
+        point(EvaluationItemStatus::Failed, None, 0),
+        denied.clone(),
+        older,
+    ];
+    let observed = state(&points, "connection", "profile")
+        .authentication
+        .unwrap();
+    assert!(observed.confirmed);
+    assert_eq!(observed.status, "rejected");
+    assert_eq!(observed.error_code.as_deref(), Some("token_revoked"));
+    assert!(
+        state(&points, "new-connection", "profile")
+            .authentication
+            .is_none()
+    );
+    assert!(
+        state(&points, "connection", "new-profile")
+            .authentication
+            .is_none()
+    );
+    let recovered = state(
+        &[
+            point(
+                EvaluationItemStatus::Succeeded,
+                Some(TurnStateOutcome::Refreshed),
+                0,
+            ),
+            denied,
+        ],
+        "connection",
+        "profile",
+    )
+    .authentication
+    .unwrap();
+    assert_eq!(recovered.status, "valid", "票据变化不等于授权失效");
+    let mut expired = points[1].clone();
+    expired.history.completed_at = Some(Utc::now() - Duration::minutes(31));
+    assert!(
+        state(&[expired], "connection", "profile")
+            .authentication
+            .is_none()
+    );
 }
