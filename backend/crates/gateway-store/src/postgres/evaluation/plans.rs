@@ -57,14 +57,14 @@ pub(super) async fn save(
         && command.settings.monitoring.is_some()
         && let Some(preference) = &command.settings.account_preference
     {
-        let enabled: Option<bool> =
-            sqlx::query_scalar("select enabled from account_groups where id = $1 for key share")
-                .bind(&preference.group_id)
-                .fetch_optional(&mut *transaction)
-                .await
-                .map_err(db_error)?;
-        if enabled != Some(true) {
-            return Err(invalid("优选分组不存在或已停用"));
+        if !super::preference::groups_enabled(
+            &mut transaction,
+            &preference.group_id,
+            preference.fallback_group_id.as_deref(),
+        )
+        .await?
+        {
+            return Err(invalid("优选或退出分组不存在或已停用"));
         }
         let occupied: bool = sqlx::query_scalar(
             "select exists(select 1 from evaluation_plans where id <> $1

@@ -237,6 +237,7 @@ impl EvaluationTask {
                 .filter(|_| plan.settings.monitoring.is_some())
                 .map(|rule| EvaluationPreferenceSnapshot {
                     group_id: rule.group_id.clone(),
+                    fallback_group_id: rule.fallback_group_id.clone(),
                     plan_revision: plan.revision,
                 });
             self.runner

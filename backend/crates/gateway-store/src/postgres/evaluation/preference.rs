@@ -30,6 +30,7 @@ pub(super) async fn apply(
 ) -> AdminStoreResult<PreferenceApplication> {
     let mut result = EvaluationPreferenceResult {
         group_id: decision.rule.group_id.clone(),
+        fallback_group_id: decision.rule.fallback_group_id.clone(),
         status: EvaluationPreferenceStatus::Skipped,
         reason: None,
     };
@@ -66,10 +67,10 @@ pub(super) async fn apply(
     if revision != decision.rule.plan_revision
         || !settings.enabled
         || settings.monitoring.is_none()
-        || !settings
-            .account_preference
-            .as_ref()
-            .is_some_and(|rule| rule.group_id == decision.rule.group_id)
+        || !settings.account_preference.as_ref().is_some_and(|rule| {
+            rule.group_id == decision.rule.group_id
+                && rule.fallback_group_id == decision.rule.fallback_group_id
+        })
     {
         result.reason = Some("计划已暂停或配置已变化".into());
         return Ok(PreferenceApplication::Applied(result, None));
@@ -90,14 +91,14 @@ pub(super) async fn apply(
         return Ok(PreferenceApplication::Stale(current));
     }
     let account = super::accounts::lock_preference_account(tx, &account_id).await?;
-    let group: Option<bool> =
-        sqlx::query_scalar("select enabled from account_groups where id = $1 for update")
-            .bind(&decision.rule.group_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(db_error)?;
-    let Some((available, groups)) = account.filter(|_| group == Some(true)) else {
-        result.reason = Some("账号或优选分组已删除或停用".into());
+    let enabled = groups_enabled(
+        tx,
+        &decision.rule.group_id,
+        decision.rule.fallback_group_id.as_deref(),
+    )
+    .await?;
+    let Some((available, groups)) = account.filter(|_| enabled) else {
+        result.reason = Some("账号、优选或退出分组已删除或停用".into());
         return Ok(PreferenceApplication::Applied(result, None));
     };
     if desired && !available {
@@ -152,47 +153,43 @@ pub(super) async fn apply(
             result.reason = Some("检测失败后已有更新结果或已过期".into());
             return Ok(PreferenceApplication::Applied(result, None));
         }
-        let confirmed = recent
-            .iter()
-            .take_while(|row| {
-                let observed = &row.observation_json.0;
-                row.status == "failed"
-                    && row.completed_at.is_some_and(|at| at > cutoff)
-                    && observed.request_profile_revision == observation.request_profile_revision
-                    && observed.turn_state.as_ref().is_some_and(|probe| {
-                        probe.connection_revision == connection
-                            && probe
-                                .diagnostic
-                                .as_ref()
-                                .is_some_and(|diagnostic| diagnostic.unavailable == Some(reason))
-                    })
-            })
-            .count();
-        if confirmed < required {
-            result.reason = Some(format!("连续确认 {confirmed}/{required} 次，保留当前分组"));
-            return Ok(PreferenceApplication::Applied(result, None));
-        }
         result.reason = Some(reason.reason().into());
-    } else {
-        let confirmed = recent
-            .iter()
-            .take_while(|row| {
-                let observed = &row.observation_json.0;
-                row.status == "succeeded"
-                    && row.completed_at.is_some_and(|at| at > cutoff)
-                    && observed.request_profile_revision == observation.request_profile_revision
-                    && observed.turn_state.as_ref().is_some_and(|probe| {
-                        probe.outcome == outcome && probe.connection_revision == connection
-                    })
-            })
-            .count();
-        if confirmed < required {
-            result.reason = Some(format!("连续确认 {confirmed}/{required} 次，保留当前分组"));
-            return Ok(PreferenceApplication::Applied(result, None));
-        }
     }
-    let revision =
-        write_membership(tx, &account_id, &decision.rule.group_id, desired, item_id).await?;
+    let confirmed = recent
+        .iter()
+        .take_while(|row| {
+            let observed = &row.observation_json.0;
+            row.completed_at.is_some_and(|at| at > cutoff)
+                && observed.request_profile_revision == observation.request_profile_revision
+                && observed.turn_state.as_ref().is_some_and(|probe| {
+                    probe.connection_revision == connection
+                        && if desired {
+                            row.status == "succeeded" && probe.outcome == TurnStateOutcome::Accepted
+                        } else {
+                            (row.status == "succeeded"
+                                && probe.outcome == TurnStateOutcome::Refreshed)
+                                || (row.status == "failed"
+                                    && probe
+                                        .diagnostic
+                                        .as_ref()
+                                        .is_some_and(|diagnostic| diagnostic.unavailable.is_some()))
+                        }
+                })
+        })
+        .count();
+    if confirmed < required {
+        result.reason = Some(format!("连续确认 {confirmed}/{required} 次，保留当前分组"));
+        return Ok(PreferenceApplication::Applied(result, None));
+    }
+    let revision = write_memberships(
+        tx,
+        &account_id,
+        &decision.rule.group_id,
+        decision.rule.fallback_group_id.as_deref(),
+        desired,
+        item_id,
+    )
+    .await?;
     result.status = match (revision.is_some(), desired) {
         (false, _) => EvaluationPreferenceStatus::Unchanged,
         (true, true) => EvaluationPreferenceStatus::Joined,
@@ -201,7 +198,44 @@ pub(super) async fn apply(
     Ok(PreferenceApplication::Applied(result, revision))
 }
 
-pub(super) async fn write_membership(
+pub(super) async fn groups_enabled(
+    tx: &mut Transaction<'_, Postgres>,
+    group_id: &str,
+    fallback_group_id: Option<&str>,
+) -> AdminStoreResult<bool> {
+    for id in std::iter::once(group_id).chain(fallback_group_id) {
+        let enabled: Option<bool> =
+            sqlx::query_scalar("select enabled from account_groups where id=$1 for update")
+                .bind(id)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(db_error)?;
+        if enabled != Some(true) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+// 两组成员与审计共用调用方事务，避免移出成功但转入失败
+pub(super) async fn write_memberships(
+    tx: &mut Transaction<'_, Postgres>,
+    account_id: &str,
+    group_id: &str,
+    fallback_group_id: Option<&str>,
+    desired: bool,
+    request_id: &str,
+) -> AdminStoreResult<Option<Revision>> {
+    let mut revision = write_membership(tx, account_id, group_id, desired, request_id).await?;
+    if let Some(fallback) = fallback_group_id {
+        revision = write_membership(tx, account_id, fallback, !desired, request_id)
+            .await?
+            .or(revision);
+    }
+    Ok(revision)
+}
+
+async fn write_membership(
     tx: &mut Transaction<'_, Postgres>,
     account_id: &str,
     group_id: &str,

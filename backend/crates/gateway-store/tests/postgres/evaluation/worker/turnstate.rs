@@ -77,6 +77,7 @@ async fn formal_rechecks_confirm_twice_while_diagnostics_never_drive_membership(
             EvaluationPlanSettings {
                 monitoring: Some(Default::default()),
                 account_preference: Some(EvaluationAccountPreference {
+                    fallback_group_id: None,
                     group_id: target.clone(),
                 }),
                 account_selection: EvaluationAccountSelection::Fixed,
@@ -851,20 +852,21 @@ impl gateway_core::runtime::SnapshotControl for PreferencePublisher {
 }
 
 #[tokio::test]
-async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_round() {
+async fn preference_plan_moves_only_explicit_results_and_recovers_after_consecutive_stability() {
     let Some(db) = TestDatabase::create("eval_preference_worker").await else {
         return;
     };
     let (repository, execution, _, service) = setup(&db, Reply::Answer).await;
     let source = format!("grp_{}", "a".repeat(32));
     let target = format!("grp_{}", "b".repeat(32));
+    let fallback = format!("grp_{}", "c".repeat(32));
     sqlx::query("update provider_accounts set authentication_kind='oauth' where id in ('acct_right','acct_wrong','acct_pending','acct_target')")
         .execute(&db.pool).await.unwrap();
     sqlx::query("insert into provider_accounts (id,provider_kind,name,authentication_kind,provider_credentials_json,has_refresh_token,credential_observed_at,created_at,updated_at,enabled)
         values ('acct_disabled','openai','disabled','oauth','{}',false,now(),now(),now(),false)")
         .execute(&db.pool).await.unwrap();
-    sqlx::query("insert into account_groups (id,name,color,created_at,updated_at) values ($1,'source','#FFFFFFFF',now(),now()),($2,'preferred','#FFFFFFFF',now(),now())")
-        .bind(&source).bind(&target).execute(&db.pool).await.unwrap();
+    sqlx::query("insert into account_groups (id,name,color,created_at,updated_at) values ($1,'source','#FFFFFFFF',now(),now()),($2,'preferred','#FFFFFFFF',now(),now()),($3,'waiting','#FFFFFFFF',now(),now())")
+        .bind(&source).bind(&target).bind(&fallback).execute(&db.pool).await.unwrap();
     sqlx::query("insert into client_api_keys (id,name,key,enabled,created_at,updated_at) values ('key_evaluation','test','evaluation-test-key',true,now(),now())")
         .execute(&db.pool).await.unwrap();
     sqlx::query("insert into account_group_accounts (account_group_id,provider_account_id,created_at) values ($1,'acct_right',now()),($1,'acct_wrong',now()),($1,'acct_pending',now()),($1,'acct_target',now()),($2,'acct_wrong',now()),($2,'acct_pending',now()),($2,'acct_target',now())")
@@ -907,11 +909,12 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
             None,
             EvaluationPlanSettings {
                 monitoring: Some(EvaluationMonitoringPolicy {
-                    stable_count: 1,
+                    stable_count: 2,
                     changed_count: 2,
                     ..Default::default()
                 }),
                 account_preference: Some(EvaluationAccountPreference {
+                    fallback_group_id: Some(fallback.clone()),
                     group_id: target.clone(),
                 }),
                 account_selection: EvaluationAccountSelection::Groups {
@@ -977,7 +980,7 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
         .collect();
     assert_eq!(
         outcomes.get("acct_right"),
-        Some(&EvaluationPreferenceStatus::Unchanged)
+        Some(&EvaluationPreferenceStatus::Joined)
     );
     assert_eq!(
         outcomes.get("acct_wrong"),
@@ -1009,6 +1012,18 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
     let members: Vec<String> = sqlx::query_scalar("select provider_account_id from account_group_accounts where account_group_id=$1 order by provider_account_id")
         .bind(&target).fetch_all(&db.pool).await.unwrap();
     assert_eq!(members, ["acct_pending", "acct_right"]);
+    let waiting: Vec<String> = sqlx::query_scalar("select provider_account_id from account_group_accounts where account_group_id=$1 order by provider_account_id")
+        .bind(&fallback).fetch_all(&db.pool).await.unwrap();
+    assert_eq!(waiting, ["acct_disabled", "acct_target", "acct_wrong"]);
+    assert!(detail.items.iter().all(|item| {
+        item.observation
+            .account_preference
+            .as_ref()
+            .unwrap()
+            .fallback_group_id
+            .as_ref()
+            == Some(&fallback)
+    }));
     let source_count: i64 =
         sqlx::query_scalar("select count(*) from account_group_accounts where account_group_id=$1")
             .bind(&source)
@@ -1018,7 +1033,7 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
     assert_eq!(source_count, 5);
     let audit_count: i64 = sqlx::query_scalar("select count(*) from admin_audit_events where action in ('auto_group_join','auto_group_remove') and config_revision is not null")
         .fetch_one(&db.pool).await.unwrap();
-    assert_eq!(audit_count, 8);
+    assert_eq!(audit_count, 14);
     let paired_audits: i64 = sqlx::query_scalar(
         "select count(*) from (select admin_request_id, action from admin_audit_events
          where action in ('auto_group_join','auto_group_remove')
@@ -1027,7 +1042,7 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
     .fetch_one(&db.pool)
     .await
     .unwrap();
-    assert_eq!(paired_audits, 4);
+    assert_eq!(paired_audits, 7);
     assert!(publisher.revisions.lock().unwrap().len() >= 2);
 
     recovered.store(true, Ordering::SeqCst);
@@ -1061,8 +1076,25 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
             .as_ref()
             .unwrap()
             .status,
-        EvaluationPreferenceStatus::Joined
+        EvaluationPreferenceStatus::Skipped
     );
+    let recovery = service
+        .recheck(
+            uuid::Uuid::new_v4(),
+            vec!["acct_wrong".into(), "acct_target".into()],
+            plan.monitoring_reference(),
+            &context(),
+        )
+        .await
+        .unwrap();
+    let recovery = wait_finished(&repository, &recovery.id).await;
+    assert!(recovery.items.iter().all(|item| {
+        item.observation.account_preference.as_ref().unwrap().status
+            == EvaluationPreferenceStatus::Joined
+    }));
+    let remaining: Vec<String> = sqlx::query_scalar("select provider_account_id from account_group_accounts where account_group_id=$1 order by provider_account_id")
+        .bind(&fallback).fetch_all(&db.pool).await.unwrap();
+    assert_eq!(remaining, ["acct_disabled"]);
     let restored: i64 = sqlx::query_scalar("select count(*) from account_group_accounts where account_group_id=$1 and provider_account_id in ('acct_wrong','acct_target')")
         .bind(&target).fetch_one(&db.pool).await.unwrap();
     assert_eq!(restored, 2);
@@ -1130,6 +1162,7 @@ async fn preference_continues_when_business_key_is_disabled_during_probe() {
                     ..Default::default()
                 }),
                 account_preference: Some(EvaluationAccountPreference {
+                    fallback_group_id: None,
                     group_id: target.clone(),
                 }),
                 account_selection: EvaluationAccountSelection::Fixed,
@@ -1191,6 +1224,8 @@ async fn stale_stopped_or_out_of_scope_preference_results_preserve_group_members
         "stopped",
         "configuration_changed",
         "group_disabled",
+        "fallback_disabled",
+        "fallback_deleted",
         "source_removed",
         "audit_failure",
     ] {
@@ -1200,12 +1235,13 @@ async fn stale_stopped_or_out_of_scope_preference_results_preserve_group_members
         let (repository, _, _, _) = setup(&db, Reply::Answer).await;
         let source = format!("grp_{}", "c".repeat(32));
         let target = format!("grp_{}", "d".repeat(32));
-        sqlx::query("insert into account_groups (id,name,color,created_at,updated_at) values ($1,'source','#FFFFFFFF',now(),now()),($2,'preferred','#FFFFFFFF',now(),now())")
-            .bind(&source).bind(&target).execute(&db.pool).await.unwrap();
+        let fallback = format!("grp_{}", "e".repeat(32));
+        sqlx::query("insert into account_groups (id,name,color,created_at,updated_at) values ($1,'source','#FFFFFFFF',now(),now()),($2,'preferred','#FFFFFFFF',now(),now()),($3,'waiting','#FFFFFFFF',now(),now())")
+            .bind(&source).bind(&target).bind(&fallback).execute(&db.pool).await.unwrap();
         sqlx::query("insert into client_api_keys (id,name,key,enabled,created_at,updated_at) values ('key_evaluation','test','evaluation-test-key',true,now(),now())")
             .execute(&db.pool).await.unwrap();
-        sqlx::query("insert into account_group_accounts (account_group_id,provider_account_id,created_at) values ($1,'acct_right',now())")
-            .bind(&source).execute(&db.pool).await.unwrap();
+        sqlx::query("insert into account_group_accounts (account_group_id,provider_account_id,created_at) values ($1,'acct_right',now()),($2,'acct_right',now())")
+            .bind(&source).bind(&fallback).execute(&db.pool).await.unwrap();
         let mut params = parameters(&[], 1);
         params.kind = EvaluationKind::Turnstate;
         params.reasoning_effort = Some("low".into());
@@ -1216,6 +1252,7 @@ async fn stale_stopped_or_out_of_scope_preference_results_preserve_group_members
                 ..Default::default()
             }),
             account_preference: Some(EvaluationAccountPreference {
+                fallback_group_id: Some(fallback.clone()),
                 group_id: target.clone(),
             }),
             account_selection: EvaluationAccountSelection::Groups {
@@ -1246,6 +1283,7 @@ async fn stale_stopped_or_out_of_scope_preference_results_preserve_group_members
         seed.profile.monitoring = Some(plan.monitoring_reference());
         seed.profile.account_selection = settings.account_selection.clone();
         seed.profile.account_preference = Some(EvaluationPreferenceSnapshot {
+            fallback_group_id: Some(fallback.clone()),
             group_id: target.clone(),
             plan_revision: plan.revision,
         });
@@ -1306,6 +1344,20 @@ async fn stale_stopped_or_out_of_scope_preference_results_preserve_group_members
             "group_disabled" => {
                 sqlx::query("update account_groups set enabled=false where id=$1")
                     .bind(&target)
+                    .execute(&db.pool)
+                    .await
+                    .unwrap();
+            }
+            "fallback_disabled" => {
+                sqlx::query("update account_groups set enabled=false where id=$1")
+                    .bind(&fallback)
+                    .execute(&db.pool)
+                    .await
+                    .unwrap();
+            }
+            "fallback_deleted" => {
+                sqlx::query("delete from account_groups where id=$1")
+                    .bind(&fallback)
                     .execute(&db.pool)
                     .await
                     .unwrap();
@@ -1393,6 +1445,13 @@ async fn stale_stopped_or_out_of_scope_preference_results_preserve_group_members
                 .fetch_one(&db.pool).await.unwrap();
             assert_eq!(audit_count, 0);
         }
+        let waiting: bool = sqlx::query_scalar("select exists(select 1 from account_group_accounts where account_group_id=$1 and provider_account_id='acct_right')")
+            .bind(&fallback).fetch_one(&db.pool).await.unwrap();
+        assert_eq!(
+            waiting,
+            scenario != "fallback_deleted",
+            "未完成改组不能只移出退出组"
+        );
         db.close().await;
     }
 }
@@ -1415,7 +1474,10 @@ async fn selecting_a_formal_plan_replaces_the_previous_owner_atomically() {
             changed_count: 1,
             ..Default::default()
         }),
-        account_preference: Some(EvaluationAccountPreference { group_id: target }),
+        account_preference: Some(EvaluationAccountPreference {
+            fallback_group_id: None,
+            group_id: target,
+        }),
         account_selection: EvaluationAccountSelection::Fixed,
         name: "优选".into(),
         parameters: params,

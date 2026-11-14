@@ -104,13 +104,13 @@ pub(super) async fn cleanup(
     if u64::try_from(revision).ok() != Some(command.expected_revision.get()) {
         return Ok(None);
     }
-    let group_enabled: bool =
-        sqlx::query_scalar("select exists(select 1 from account_groups where id=$1 and enabled)")
-            .bind(&rule.group_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(db_error)?;
-    if !group_enabled {
+    if !super::preference::groups_enabled(
+        &mut tx,
+        &rule.group_id,
+        rule.fallback_group_id.as_deref(),
+    )
+    .await?
+    {
         return Ok(None);
     }
     let mut committed = None;
@@ -161,9 +161,15 @@ pub(super) async fn cleanup(
             _ => continue,
         };
         let request_id = format!("evaluation_{source}_{}", uuid::Uuid::new_v4().simple());
-        if let Some(revision) =
-            super::preference::write_membership(&mut tx, id, &rule.group_id, false, &request_id)
-                .await?
+        if let Some(revision) = super::preference::write_memberships(
+            &mut tx,
+            id,
+            &rule.group_id,
+            rule.fallback_group_id.as_deref(),
+            false,
+            &request_id,
+        )
+        .await?
         {
             committed = Some(revision);
         }

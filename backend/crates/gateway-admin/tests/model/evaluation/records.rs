@@ -64,6 +64,7 @@ fn preference_requires_a_ticket_plan_and_an_independent_source_group() {
     let mut settings = EvaluationPlanSettings {
         monitoring: None,
         account_preference: Some(EvaluationAccountPreference {
+            fallback_group_id: None,
             group_id: target.clone(),
         }),
         account_selection: EvaluationAccountSelection::Fixed,
@@ -74,6 +75,29 @@ fn preference_requires_a_ticket_plan_and_an_independent_source_group() {
         cron_expression: String::new(),
         timezone: Default::default(),
     };
+    assert!(settings.validate_parameters().is_ok());
+    let legacy = serde_json::json!({"groupId":target});
+    let rule: EvaluationAccountPreference = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(rule).unwrap(), legacy);
+    settings
+        .account_preference
+        .as_mut()
+        .unwrap()
+        .fallback_group_id = Some(target.clone());
+    assert!(settings.validate_parameters().is_err());
+    let fallback = format!("grp_{}", "b".repeat(32));
+    settings
+        .account_preference
+        .as_mut()
+        .unwrap()
+        .fallback_group_id = Some(fallback.clone());
+    assert!(settings.validate_parameters().is_ok());
+    settings.parameters.account_ids.clear();
+    settings.account_selection = EvaluationAccountSelection::Groups {
+        group_ids: vec![fallback],
+    };
+    assert!(settings.validate_parameters().is_err());
+    settings.account_selection = EvaluationAccountSelection::All;
     assert!(settings.validate_parameters().is_ok());
     settings.parameters.kind = EvaluationKind::Candy;
     assert!(settings.validate_parameters().is_err());

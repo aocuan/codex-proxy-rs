@@ -70,7 +70,7 @@ const preferenceLabels = {
             {{ row.observation.turnState ? turnStateLabels[row.observation.turnState.outcome] : row.judgment?.status === 'queued' ? '等待判题' : row.judgment?.status === 'running' ? '正在判题' : verdictLabels[row.verdict] }}
           </ZTag>
           <span v-if="row.judgment" class="mt-1 block text-z-xs text-z-text-tertiary">AI 评审</span>
-          <span v-if="row.observation.accountPreference" class="mt-1 block text-z-xs text-z-text-secondary" :title="row.observation.accountPreference.reason ?? undefined">{{ groupName(row.observation.accountPreference.groupId) }} · {{ preferenceLabels[row.observation.accountPreference.status] }}{{ row.observation.accountPreference.reason ? `（${row.observation.accountPreference.reason}）` : '' }}</span>
+          <span v-if="row.observation.accountPreference" class="mt-1 block text-z-xs text-z-text-secondary" :title="row.observation.accountPreference.reason ?? undefined">{{ groupName(row.observation.accountPreference.groupId) }} · {{ preferenceLabels[row.observation.accountPreference.status] }}<template v-if="row.observation.accountPreference.fallbackGroupId && row.observation.accountPreference.status === 'removed'"> → {{ groupName(row.observation.accountPreference.fallbackGroupId) }}</template>{{ row.observation.accountPreference.reason ? `（${row.observation.accountPreference.reason}）` : '' }}</span>
         </template>
         <template #duration="{ row }">
           {{ durationText(row.durationMs) }}

@@ -25,6 +25,8 @@ const saving = computed(() => editor.saving.value || groupAction.loading.value)
 const advanced = shallowRef(false)
 const target = shallowRef('create')
 const groupName = shallowRef('优选账号')
+const fallback = shallowRef('none')
+const fallbackName = shallowRef('待复检')
 const selectionMode = computed({
   get: () => accountSelection.value.mode,
   set: (mode: 'all' | 'groups' | 'fixed') => {
@@ -41,7 +43,19 @@ const targetOptions = computed(() => [
     ? ''
     : target.value),
 ])
-const sourceConflict = computed(() => accountSelection.value.mode === 'groups' && accountSelection.value.groupIds.includes(target.value))
+const fallbackOptions = computed(() => [
+  { value: 'none', label: '仅移出优选，不转入其他组' },
+  { value: 'create', label: '新建退出分组' },
+  ...catalog.preferenceGroupOptions(fallback.value === 'create' || fallback.value === 'none'
+    ? ''
+    : fallback.value)
+    .map(option => ({ ...option, disabled: option.disabled || option.value === target.value })),
+])
+const groupConflict = computed(() => target.value !== 'none' && fallback.value !== 'none'
+  && ((target.value !== 'create' && target.value === fallback.value)
+    || (target.value === 'create' && fallback.value === 'create' && groupName.value.trim() === fallbackName.value.trim())))
+const sourceConflict = computed(() => accountSelection.value.mode === 'groups'
+  && accountSelection.value.groupIds.some(id => id === target.value || (target.value !== 'none' && id === fallback.value)))
 const timingError = computed(() => {
   const interval = Number(intervalMinutes.value)
   if (!Number.isInteger(interval) || interval < 1 || interval > 525600)
@@ -51,6 +65,8 @@ const timingError = computed(() => {
   return ''
 })
 const invalid = computed(() => !parameters.value.model.trim() || sourceConflict.value || !!timingError.value
+  || groupConflict.value
+  || (target.value !== 'none' && fallback.value === 'create' && !fallbackName.value.trim())
   || (target.value === 'create' && !groupName.value.trim())
   || (accountSelection.value.mode === 'fixed' && (!parameters.value.accountIds.length || parameters.value.accountIds.length > 20
     || parameters.value.accountIds.some(id => accountOptions.value.find(option => option.value === id)?.disabled)))
@@ -88,6 +104,8 @@ async function load() {
     }
     target.value = plan?.settings.accountPreference?.groupId ?? (plan?.settings.monitoring ? 'none' : 'create')
     groupName.value = '优选账号'
+    fallback.value = plan?.settings.accountPreference?.fallbackGroupId ?? 'none'
+    fallbackName.value = '待复检'
     advanced.value = !parameters.value.model
   }
   catch (cause) { request.fail(id, cause) }
@@ -108,6 +126,18 @@ async function save() {
       target.value = group.id
       await catalog.load({ keys: false })
     }
+    if (target.value !== 'none' && fallback.value === 'create') {
+      const group = await createAccountGroup({
+        name: fallbackName.value.trim(),
+        description: null,
+        color: '#F59E0BFF',
+      })
+      fallback.value = group.id
+      await catalog.load({ keys: false })
+    }
+    editor.fallbackGroupId.value = target.value === 'none' || fallback.value === 'none'
+      ? ''
+      : fallback.value
     editor.preferenceEnabled.value = target.value !== 'none'
     editor.preferenceGroupId.value = target.value === 'none'
       ? ''
@@ -152,13 +182,23 @@ watch(open, (value) => {
         <ZSelect v-model="target" :options="targetOptions" :disabled="saving" :loading="catalog.loadingGroups.value" remote filterable aria-label="优选结果分组" @query-change="catalog.searchGroups" />
         <ZInput v-if="target === 'create'" v-model="groupName" class="mt-2" :disabled="saving" maxlength="128" placeholder="优选分组名称" aria-label="新分组名称" />
         <p v-if="sourceConflict" class="mt-2 mb-0 text-z-sm text-z-warning-text" role="alert">
-          来源分组不能包含优选结果组，否则移出的账号无法继续复检
+          来源分组不能包含优选或退出分组，确保转组后仍能继续复检
         </p>
         <p v-else-if="target !== 'none'" class="mt-2 mb-0 text-z-sm text-z-text-secondary">
-          连续 {{ monitoringPolicy.stableCount }} 次票据稳定后加入，连续 {{ monitoringPolicy.changedCount }} 次变化后移出，仅调整这个分组
+          连续 {{ monitoringPolicy.stableCount }} 次正常后恢复优选，连续 {{ monitoringPolicy.changedCount }} 次明确异常后退出
         </p>
         <p v-else class="mt-2 mb-0 text-z-sm text-z-text-secondary">
           只更新账号列表的票据状态，现有分组成员保持不变
+        </p>
+      </ZFormItem>
+      <ZFormItem v-if="target !== 'none'" label="退出优选后转入">
+        <ZSelect v-model="fallback" :options="fallbackOptions" :disabled="saving" :loading="catalog.loadingGroups.value" remote filterable aria-label="退出优选后转入" @query-change="catalog.searchGroups" />
+        <ZInput v-if="fallback === 'create'" v-model="fallbackName" class="mt-2" :disabled="saving" maxlength="128" placeholder="退出分组名称" aria-label="退出分组名称" />
+        <p v-if="groupConflict" class="mt-2 mb-0 text-z-sm text-z-warning-text" role="alert">
+          优选与退出分组不能相同
+        </p>
+        <p v-else-if="fallback !== 'none'" class="mt-2 mb-0 text-z-sm text-z-text-secondary">
+          恢复优选时自动退出此组，其他业务分组保持不变
         </p>
       </ZFormItem>
       <ZCheckbox v-model="enabled" :disabled="saving" label="启用定时检测" />
@@ -186,8 +226,8 @@ watch(open, (value) => {
           <ZFormItem label="连续稳定后加入">
             <ZInputNumber v-model="monitoringPolicy.stableCount" :min="1" :max="10" :disabled="saving" unit="次" aria-label="连续稳定次数" />
           </ZFormItem>
-          <ZFormItem label="连续变化后移出">
-            <ZInputNumber v-model="monitoringPolicy.changedCount" :min="1" :max="10" :disabled="saving" unit="次" aria-label="连续变化次数" />
+          <ZFormItem label="连续异常后移出">
+            <ZInputNumber v-model="monitoringPolicy.changedCount" :min="1" :max="10" :disabled="saving" unit="次" aria-label="连续异常次数" />
           </ZFormItem>
           <ZFormItem label="结果有效期">
             <ZInputNumber v-model="monitoringPolicy.validMinutes" :min="1" :max="10080" :disabled="saving" unit="分钟" aria-label="结果有效期" />
@@ -200,7 +240,7 @@ watch(open, (value) => {
       </p>
       <p class="m-0 text-z-sm text-z-text-secondary">
         {{ enabled ? '保存后按间隔检测，也可从账号列表立即复测' : '暂停后停止检测与自动改组，现有成员保持不变' }}
-        <span v-if="target !== 'none'" class="block">停用、授权失效、额度耗尽或模型不可用时移出，过载和超时保留成员</span>
+        <span v-if="target !== 'none'" class="block">授权失效、额度耗尽和模型不可用也需连续确认，过载和超时保留成员，手动停用立即退出</span>
         <span v-if="editing?.settings.cronExpression" class="block">保存后使用分钟间隔执行</span>
       </p>
     </ZForm>

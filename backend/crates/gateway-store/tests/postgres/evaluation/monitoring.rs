@@ -200,6 +200,7 @@ async fn expired_membership_is_audited_once_and_new_results_fence_stale_cleanup(
                         ..Default::default()
                     }),
                     account_preference: Some(EvaluationAccountPreference {
+                        fallback_group_id: None,
                         group_id: group.clone(),
                     }),
                     ..settings()

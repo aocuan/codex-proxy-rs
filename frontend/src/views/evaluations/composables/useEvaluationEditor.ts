@@ -23,6 +23,7 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
   })
   const preferenceEnabled = shallowRef(false)
   const preferenceGroupId = shallowRef('')
+  const fallbackGroupId = shallowRef('')
   const accountSelection = ref<EvaluationAccountSelection>({ mode: 'fixed' })
   const action = useAsyncAction()
   let submission: { fingerprint: string, id: string } | undefined
@@ -60,6 +61,7 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
     })
     preferenceEnabled.value = !!plan?.settings.accountPreference
     preferenceGroupId.value = plan?.settings.accountPreference?.groupId ?? ''
+    fallbackGroupId.value = plan?.settings.accountPreference?.fallbackGroupId ?? ''
     submission = undefined
     open.value = true
   }
@@ -99,8 +101,12 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
         ZNotification.warning({ message: '账号优选仅支持快速测票，请选择目标分组' })
         return
       }
-      if (accountSelection.value.mode === 'groups' && accountSelection.value.groupIds.includes(preferenceGroupId.value)) {
-        ZNotification.warning({ message: '检测范围不能包含优选分组' })
+      if (fallbackGroupId.value && fallbackGroupId.value === preferenceGroupId.value) {
+        ZNotification.warning({ message: '退出分组不能与优选分组相同' })
+        return
+      }
+      if (accountSelection.value.mode === 'groups' && accountSelection.value.groupIds.some(id => id === preferenceGroupId.value || id === fallbackGroupId.value)) {
+        ZNotification.warning({ message: '检测范围不能包含优选或退出分组' })
         return
       }
     }
@@ -136,7 +142,7 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
           enabled: enabled.value,
           accountSelection: accountSelection.value,
           accountPreference: preferenceEnabled.value
-            ? { groupId: preferenceGroupId.value }
+            ? { groupId: preferenceGroupId.value, fallbackGroupId: fallbackGroupId.value || undefined }
             : undefined,
           parameters: params,
         }
@@ -176,6 +182,7 @@ export function useEvaluationEditor(onSaved: (run?: EvaluationRun) => Promise<un
     monitoringPolicy,
     preferenceEnabled,
     preferenceGroupId,
+    fallbackGroupId,
     accountSelection,
     saving: action.loading,
     show,

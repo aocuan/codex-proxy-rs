@@ -84,7 +84,7 @@ export interface EvaluationParameters {
 
 export interface EvaluationProfile {
   monitoring?: { id: string, revision: number }
-  accountPreference?: { groupId: string, planRevision: number }
+  accountPreference?: { groupId: string, fallbackGroupId?: string, planRevision: number }
   definition?: EvaluationDefinition
   prompt: string
   promptVersion: string
@@ -112,6 +112,7 @@ export interface EvaluationRun {
 export interface EvaluationObservation {
   accountPreference?: {
     groupId: string
+    fallbackGroupId?: string
     status: 'joined' | 'removed' | 'unchanged' | 'skipped'
     reason: string | null
   }
@@ -239,7 +240,7 @@ export interface EvaluationMonitoringSnapshot {
 export interface EvaluationPlanSettings {
   monitoring?: EvaluationMonitoringPolicy
   accountSelection?: EvaluationAccountSelection
-  accountPreference?: { groupId: string }
+  accountPreference?: { groupId: string, fallbackGroupId?: string }
   name: string
   parameters: EvaluationParameters
   enabled: boolean

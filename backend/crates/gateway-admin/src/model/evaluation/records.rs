@@ -388,11 +388,13 @@ pub struct EvaluationCompletion {
     pub account_preference: Option<EvaluationPreferenceDecision>,
 }
 
-/// 测评计划针对一个目标分组的自动维护规则
+/// 正式监测计划管理优选与退出后的分组去向
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvaluationAccountPreference {
     pub group_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_group_id: Option<String>,
 }
 
 /// 本轮冻结的规则和计划版本，过期结果不能改变分组
@@ -400,6 +402,8 @@ pub struct EvaluationAccountPreference {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvaluationPreferenceSnapshot {
     pub group_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_group_id: Option<String>,
     pub plan_revision: i64,
 }
 
@@ -431,6 +435,8 @@ pub enum EvaluationPreferenceStatus {
 #[serde(rename_all = "camelCase")]
 pub struct EvaluationPreferenceResult {
     pub group_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_group_id: Option<String>,
     pub status: EvaluationPreferenceStatus,
     pub reason: Option<String>,
 }
@@ -556,10 +562,21 @@ impl EvaluationPlanSettings {
             if self.parameters.kind != EvaluationKind::Turnstate {
                 return Err(AdminError::invalid("账号优选目前仅支持快速测票"));
             }
+            if let Some(fallback) = &preference.fallback_group_id {
+                gateway_core::account::scope::AccountGroupId::new(fallback.clone())
+                    .map_err(|_| AdminError::invalid("退出分组 ID 无效"))?;
+                if fallback == &preference.group_id {
+                    return Err(AdminError::invalid("退出分组不能与优选分组相同"));
+                }
+            }
             if let EvaluationAccountSelection::Groups { group_ids } = &self.account_selection
-                && group_ids.contains(&preference.group_id)
+                && (group_ids.contains(&preference.group_id)
+                    || preference
+                        .fallback_group_id
+                        .as_ref()
+                        .is_some_and(|id| group_ids.contains(id)))
             {
-                return Err(AdminError::invalid("检测范围不能包含优选分组"));
+                return Err(AdminError::invalid("检测范围不能包含优选或退出分组"));
             }
         }
         if self.account_selection.is_fixed() {

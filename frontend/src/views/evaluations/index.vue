@@ -212,7 +212,7 @@ async function confirmDelete() {
             <template #name="{ row }">
               {{ row.settings.name }}<span v-if="row.settings.monitoring" class="ml-2 text-z-xs text-z-primary-text">正式监测</span>
               <span class="mt-1 block text-z-xs text-z-text-tertiary">{{ row.settings.accountSelection?.mode === 'all' ? '自动跟随全部账号' : row.settings.accountSelection?.mode === 'groups' ? '自动跟随指定分组' : `${row.settings.parameters.accountIds.length} 个固定账号` }} · 每账号 {{ row.settings.parameters.repetitions }} 次</span>
-              <span v-if="row.settings.accountPreference" class="mt-1 block text-z-xs text-z-text-secondary">账号优选 · {{ catalog.groupName(row.settings.accountPreference.groupId) }}</span>
+              <span v-if="row.settings.accountPreference" class="mt-1 block text-z-xs text-z-text-secondary">账号优选 · {{ catalog.groupName(row.settings.accountPreference.groupId) }}<template v-if="row.settings.accountPreference.fallbackGroupId"> ↔ {{ catalog.groupName(row.settings.accountPreference.fallbackGroupId) }}</template></span>
             </template>
             <template #test="{ row }">
               {{ row.settings.parameters.definition?.name ?? kindLabels[row.settings.parameters.kind] }}
