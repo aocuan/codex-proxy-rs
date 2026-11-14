@@ -908,7 +908,7 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
             EvaluationPlanSettings {
                 monitoring: Some(EvaluationMonitoringPolicy {
                     stable_count: 1,
-                    changed_count: 1,
+                    changed_count: 2,
                     ..Default::default()
                 }),
                 account_preference: Some(EvaluationAccountPreference {
@@ -933,7 +933,38 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
         .unwrap();
     let run = repository.list_runs(100, 0).await.unwrap().remove(0);
     let (cancel, handle) = start(task);
-    let detail = wait_finished(&repository, &run.id).await;
+    let first = wait_finished(&repository, &run.id).await;
+    for id in ["acct_wrong", "acct_target"] {
+        assert_eq!(
+            first
+                .items
+                .iter()
+                .find(|item| item.account_id == id)
+                .unwrap()
+                .observation
+                .account_preference
+                .as_ref()
+                .unwrap()
+                .status,
+            EvaluationPreferenceStatus::Skipped,
+            "首次明确异常仍保留优选"
+        );
+    }
+    let second = service
+        .recheck(
+            uuid::Uuid::new_v4(),
+            vec![
+                "acct_wrong".into(),
+                "acct_target".into(),
+                "acct_right".into(),
+                "acct_pending".into(),
+            ],
+            plan.monitoring_reference(),
+            &context(),
+        )
+        .await
+        .unwrap();
+    let detail = wait_finished(&repository, &second.id).await;
     let outcomes: std::collections::BTreeMap<_, _> = detail
         .items
         .iter()
@@ -946,7 +977,7 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
         .collect();
     assert_eq!(
         outcomes.get("acct_right"),
-        Some(&EvaluationPreferenceStatus::Joined)
+        Some(&EvaluationPreferenceStatus::Unchanged)
     );
     assert_eq!(
         outcomes.get("acct_wrong"),
@@ -1008,7 +1039,10 @@ async fn preference_plan_moves_only_explicit_results_and_recovers_on_the_next_ro
     let next = tokio::time::timeout(Duration::from_secs(40), async {
         loop {
             let runs = repository.list_runs(100, 0).await.unwrap();
-            if let Some(next) = runs.into_iter().find(|item| item.id != run.id) {
+            if let Some(next) = runs
+                .into_iter()
+                .find(|item| item.id != run.id && item.id != second.id)
+            {
                 break next;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;

@@ -132,7 +132,7 @@ pub(super) async fn apply(
         Action::RemoveUnavailable(reason) => Some(reason),
         _ => None,
     };
-    let required = unavailable.map_or_else(|| policy.required_count(outcome), |_| 1);
+    let required = policy.required_count(outcome);
     let recent: Vec<PreferenceHistoryRow> = sqlx::query_as(
         "select i.id, i.status, i.observation_json, i.completed_at from evaluation_items i join evaluation_runs r on r.id=i.run_id
          where i.account_id=$1 and r.profile_json#>>'{monitoring,id}'=$2 and r.profile_json#>>'{monitoring,version}'=$3
@@ -150,6 +150,26 @@ pub(super) async fn apply(
                 && row.completed_at.is_some_and(|at| at > cutoff)
         }) {
             result.reason = Some("检测失败后已有更新结果或已过期".into());
+            return Ok(PreferenceApplication::Applied(result, None));
+        }
+        let confirmed = recent
+            .iter()
+            .take_while(|row| {
+                let observed = &row.observation_json.0;
+                row.status == "failed"
+                    && row.completed_at.is_some_and(|at| at > cutoff)
+                    && observed.request_profile_revision == observation.request_profile_revision
+                    && observed.turn_state.as_ref().is_some_and(|probe| {
+                        probe.connection_revision == connection
+                            && probe
+                                .diagnostic
+                                .as_ref()
+                                .is_some_and(|diagnostic| diagnostic.unavailable == Some(reason))
+                    })
+            })
+            .count();
+        if confirmed < required {
+            result.reason = Some(format!("连续确认 {confirmed}/{required} 次，保留当前分组"));
             return Ok(PreferenceApplication::Applied(result, None));
         }
         result.reason = Some(reason.reason().into());

@@ -125,7 +125,19 @@ pub(super) async fn cleanup(
             continue;
         }
         let source = match target.reason {
-            EvaluationPreferenceCleanupReason::AccountUnavailable if !available => "unavailable",
+            EvaluationPreferenceCleanupReason::AccountUnavailable if !available => {
+                // 凭据失败仍需正式检测连续确认；后台仅处理明确停用的账号
+                let enabled: bool =
+                    sqlx::query_scalar("select enabled from provider_accounts where id=$1")
+                        .bind(id)
+                        .fetch_one(&mut *tx)
+                        .await
+                        .map_err(db_error)?;
+                if enabled {
+                    continue;
+                }
+                "unavailable"
+            }
             EvaluationPreferenceCleanupReason::Expired { last_signal_id }
                 if policy.remove_expired =>
             {

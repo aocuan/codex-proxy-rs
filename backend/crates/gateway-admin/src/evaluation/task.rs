@@ -270,7 +270,7 @@ impl EvaluationTask {
         };
         let mut targets = std::collections::BTreeMap::new();
         for account in accounts.iter().filter(|account| {
-            !preference_account_available(account.enabled, account.credential_state)
+            !account.enabled
                 && account.group_ids.contains(&rule.group_id)
                 && plan
                     .settings
