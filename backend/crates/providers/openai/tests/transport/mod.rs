@@ -14,7 +14,7 @@ use futures::{SinkExt, StreamExt};
 use gateway_protocol::openai::events::{
     TokenUsage, extract_sse_usage, rate_limits_to_header_pairs,
 };
-use provider_openai::transport::profile::{
+use provider_openai::profile::{
     CodexBundledReleaseProfile, CodexWireProfile, CodexWireProfileState,
 };
 use provider_openai::transport::protocol::responses::{
@@ -58,7 +58,6 @@ mod headers;
 mod http_client;
 mod latency;
 pub(crate) mod privacy;
-mod profile;
 mod profile_avatar;
 mod profile_contract;
 mod protocol;
@@ -128,7 +127,7 @@ where
 
 pub(crate) fn test_wire_profile() -> CodexWireProfileState {
     CodexWireProfileState::new(CodexWireProfile {
-        client_kind: provider_openai::transport::profile::selection::ClientKind::Desktop,
+        client_kind: provider_openai::profile::selection::ClientKind::Desktop,
         originator: "codex_cli_rs".to_owned(),
         codex_version: "1.2.3".to_owned(),
         desktop_version: "1.2.3".to_owned(),
@@ -157,8 +156,6 @@ pub(crate) fn request_context<'a>(
         request_id,
         turn_state: None,
         turn_metadata: None,
-        beta_features: None,
-        include_timing_metrics: None,
         version: None,
         codex_window_id: None,
         parent_thread_id: None,
@@ -167,7 +164,6 @@ pub(crate) fn request_context<'a>(
         session_id: None,
         thread_id: None,
         client_request_id: None,
-        turn_id: None,
         account_selection: Default::default(),
     }
 }
@@ -355,6 +351,33 @@ fn codex_request_with_prompt_cache_key(
         Value::String(prompt_cache_key.into()),
     );
     CodexResponsesRequest::from_body(body)
+}
+
+fn encode_request_with_headers(
+    body: Map<String, Value>,
+    headers: &[(&str, &str)],
+) -> CodexResponsesRequest {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use gateway_core::operation::{GenerateRequest, ProtocolPayload};
+    use provider_openai::transport::request::encode_generate_request;
+
+    let headers: Vec<_> = headers
+        .iter()
+        .map(|(name, value)| json!([name, STANDARD.encode(value)]))
+        .collect();
+    let model = body["model"].as_str().unwrap().to_owned();
+    let payload = ProtocolPayload::json_object("openai", body)
+        .unwrap()
+        .with_context(Map::from_iter([(
+            "opaque_request_headers".to_owned(),
+            json!(headers),
+        )]));
+    encode_generate_request(
+        &GenerateRequest::from_protocol_payload(payload),
+        &model,
+        None,
+    )
+    .unwrap()
 }
 
 fn codex_request_body(

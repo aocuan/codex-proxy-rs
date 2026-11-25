@@ -407,6 +407,7 @@ pub struct QuotaState {
     evidence: Option<QuotaEvidence>,
     observed_at: Option<SystemTime>,
     reset_at: Option<SystemTime>,
+    limit_window_minutes: Option<u16>,
 }
 
 impl Default for QuotaState {
@@ -423,6 +424,7 @@ impl QuotaState {
             evidence: None,
             observed_at: None,
             reset_at: None,
+            limit_window_minutes: None,
         }
     }
 
@@ -433,6 +435,7 @@ impl QuotaState {
             evidence: None,
             observed_at: Some(observed_at),
             reset_at: None,
+            limit_window_minutes: None,
         }
     }
 
@@ -443,6 +446,7 @@ impl QuotaState {
             evidence: None,
             observed_at: Some(observed_at),
             reset_at: None,
+            limit_window_minutes: None,
         }
     }
 
@@ -457,6 +461,7 @@ impl QuotaState {
             evidence: Some(evidence),
             observed_at: Some(observed_at),
             reset_at,
+            limit_window_minutes: None,
         }
     }
 
@@ -468,6 +473,7 @@ impl QuotaState {
             evidence: Some(QuotaEvidence::CreditsAvailable),
             observed_at: Some(observed_at),
             reset_at,
+            limit_window_minutes: None,
         }
     }
 
@@ -495,6 +501,7 @@ impl QuotaState {
                 evidence,
                 observed_at,
                 reset_at,
+                limit_window_minutes: None,
             })
         } else {
             None
@@ -519,6 +526,20 @@ impl QuotaState {
     #[must_use]
     pub const fn reset_at(self) -> Option<SystemTime> {
         self.reset_at
+    }
+
+    /// 本次上游用量拒绝明确指出的窗口时长
+    #[must_use]
+    pub const fn limit_window_minutes(self) -> Option<u16> {
+        self.limit_window_minutes
+    }
+
+    #[must_use]
+    pub fn with_limit_window_minutes(mut self, minutes: Option<u16>) -> Self {
+        if self.evidence == Some(QuotaEvidence::UsageLimitReached) {
+            self.limit_window_minutes = minutes.filter(|minutes| *minutes > 0);
+        }
+        self
     }
 
     /// 返回当前已确认的额度耗尽结论
@@ -1292,6 +1313,7 @@ pub struct CredentialCasUpdateParts {
     pub expected_revision: CredentialRevision,
     pub profile: ProviderAccountUpdate,
     pub preserve_profile: bool,
+    pub preserve_access_token_expiry: bool,
     pub credential: PlaintextCredential,
     pub has_refresh_token: bool,
     pub access_token_expires_at: Option<SystemTime>,
@@ -1306,6 +1328,7 @@ pub struct CredentialCasUpdate {
     expected_revision: CredentialRevision,
     profile: ProviderAccountUpdate,
     preserve_profile: bool,
+    preserve_access_token_expiry: bool,
     credential: PlaintextCredential,
     has_refresh_token: bool,
     access_token_expires_at: Option<SystemTime>,
@@ -1321,6 +1344,10 @@ impl fmt::Debug for CredentialCasUpdate {
             .field("expected_revision", &self.expected_revision)
             .field("profile", &self.profile)
             .field("preserve_profile", &self.preserve_profile)
+            .field(
+                "preserve_access_token_expiry",
+                &self.preserve_access_token_expiry,
+            )
             .field("credential", &self.credential)
             .field("has_refresh_token", &self.has_refresh_token)
             .field("access_token_expires_at", &self.access_token_expires_at)
@@ -1356,6 +1383,7 @@ impl CredentialCasUpdate {
             expected_revision,
             profile,
             preserve_profile: false,
+            preserve_access_token_expiry: false,
             credential,
             has_refresh_token,
             access_token_expires_at,
@@ -1368,6 +1396,13 @@ impl CredentialCasUpdate {
     #[must_use]
     pub const fn preserving_profile(mut self) -> Self {
         self.preserve_profile = true;
+        self
+    }
+
+    /// 沿用同一访问令牌时，保留提交时的有效期，避免覆盖在途收到的撤销事实
+    #[must_use]
+    pub const fn preserving_access_token_expiry(mut self) -> Self {
+        self.preserve_access_token_expiry = true;
         self
     }
 
@@ -1437,6 +1472,7 @@ impl CredentialCasUpdate {
             expected_revision: self.expected_revision,
             profile: self.profile,
             preserve_profile: self.preserve_profile,
+            preserve_access_token_expiry: self.preserve_access_token_expiry,
             credential: self.credential,
             has_refresh_token: self.has_refresh_token,
             access_token_expires_at: self.access_token_expires_at,

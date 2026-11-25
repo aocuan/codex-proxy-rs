@@ -140,12 +140,10 @@ async fn initialize_inner(
     .with_typesafe(typesafe)
     .with_turnstate(providers.clone())
     .with_snapshot_control(snapshot.clone());
-    let system_preflight = Arc::new(
-        use_case::system_preflight::PluginSystemUpdatePreflight::new(
-            store.plugins(),
-            plugin_inspector.clone(),
-        ),
-    );
+    let system_preflight = Arc::new(use_case::system::PluginSystemUpdatePreflight::new(
+        store.plugins(),
+        plugin_inspector.clone(),
+    ));
     let system = Arc::new(DefaultSystemService::new(system, system_preflight));
     let observations: Arc<dyn ports::store::ObservabilityStore> = Arc::new(
         use_case::observability::CachedObservabilityStore::new(store.observability()),
@@ -206,7 +204,7 @@ async fn initialize_inner(
             PluginDistributionPorts::new(plugin_distribution, store.proxies()),
             snapshot.clone(),
             plugin_preparation,
-            published_snapshot,
+            published_snapshot.clone(),
             store.plugin_state(),
         )),
         key_usage,
@@ -224,6 +222,7 @@ async fn initialize_inner(
             store.account_groups(),
             store.account_runtime(),
             snapshot.clone(),
+            published_snapshot,
         )),
         client_keys: Arc::new(DefaultClientKeyService::new(
             store.client_keys(),

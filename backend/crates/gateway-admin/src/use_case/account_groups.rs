@@ -9,8 +9,8 @@ use std::{
 use async_trait::async_trait;
 use gateway_core::{
     account::{AccountStatus, resolve_account_status},
-    routing::AccountGroupId,
-    runtime::SnapshotControl,
+    routing::{AccountGroupId, UpstreamModelId},
+    runtime::{RuntimeSnapshotHandle, SnapshotControl},
 };
 use uuid::Uuid;
 
@@ -24,7 +24,7 @@ use crate::{
             NewAccountGroup, SetAccountGroupEnabled, UpdateAccountGroup,
         },
     },
-    ports::store::{AccountGroupStore, AccountRuntimeStore},
+    ports::store::{AccountGroupStore, AccountRuntimeStore, AdminStoreErrorKind},
 };
 
 use super::{map_store_error, publish_committed};
@@ -32,6 +32,7 @@ use super::{map_store_error, publish_committed};
 /// 面向 API 的账号分组管理服务
 #[async_trait]
 pub trait AccountGroupService: Send + Sync {
+    fn models(&self, group: &AccountGroupId) -> Result<Vec<UpstreamModelId>, AdminError>;
     async fn list(&self, query: AccountGroupListQuery) -> Result<AccountGroupPage, AdminError>;
     async fn list_options(
         &self,
@@ -64,6 +65,7 @@ pub(crate) struct DefaultAccountGroupService {
     store: Arc<dyn AccountGroupStore>,
     runtime: Arc<dyn AccountRuntimeStore>,
     snapshot: Arc<dyn SnapshotControl>,
+    published_snapshot: RuntimeSnapshotHandle,
 }
 
 impl DefaultAccountGroupService {
@@ -73,12 +75,14 @@ impl DefaultAccountGroupService {
         store: Arc<dyn AccountGroupStore>,
         runtime: Arc<dyn AccountRuntimeStore>,
         snapshot: Arc<dyn SnapshotControl>,
+        published_snapshot: RuntimeSnapshotHandle,
     ) -> Self {
         Self {
             upstream_info,
             store,
             runtime,
             snapshot,
+            published_snapshot,
         }
     }
 
@@ -131,6 +135,14 @@ impl DefaultAccountGroupService {
 
 #[async_trait]
 impl AccountGroupService for DefaultAccountGroupService {
+    fn models(&self, group: &AccountGroupId) -> Result<Vec<UpstreamModelId>, AdminError> {
+        let snapshot = self
+            .published_snapshot
+            .acquire()
+            .map_err(|_| AdminError::unavailable("模型目录尚未就绪"))?;
+        Ok(snapshot.upstream_models_for_group(group))
+    }
+
     async fn list(&self, query: AccountGroupListQuery) -> Result<AccountGroupPage, AdminError> {
         let mut page = self
             .store
@@ -159,8 +171,7 @@ impl AccountGroupService for DefaultAccountGroupService {
         crate::model::account_groups::validate_group_fields(
             &command.name,
             command.description.as_deref(),
-        )
-        .map_err(|_| AdminError::invalid("账号组请求不合法"))?;
+        )?;
         let id = AccountGroupId::new(format!("grp_{}", Uuid::now_v7().simple()))
             .map_err(|_| AdminError::internal("创建账号组 ID 失败"))?;
         self.publish(
@@ -168,6 +179,8 @@ impl AccountGroupService for DefaultAccountGroupService {
                 .create_account_group(
                     NewAccountGroup {
                         allow_image_generation: command.allow_image_generation,
+                        allow_subagents: command.allow_subagents,
+                        model_access: command.model_access,
                         id,
                         name: command.name,
                         description: command.description,
@@ -189,8 +202,7 @@ impl AccountGroupService for DefaultAccountGroupService {
         crate::model::account_groups::validate_group_fields(
             &command.name,
             command.description.as_deref(),
-        )
-        .map_err(|_| AdminError::invalid("账号组请求不合法"))?;
+        )?;
         self.publish(self.store.update_account_group(command, context).await)
             .await
     }
@@ -210,9 +222,8 @@ impl AccountGroupService for DefaultAccountGroupService {
         command: DeleteAccountGroup,
     ) -> Result<AccountGroupMutation, AdminError> {
         match self.store.delete_account_group(command, context).await {
-            Err(error) if error.kind() == crate::ports::store::AdminStoreErrorKind::Conflict => {
-                Err(AdminError::new(
-                    crate::model::AdminErrorKind::Conflict,
+            Err(error) if error.kind() == AdminStoreErrorKind::Conflict => {
+                Err(AdminError::conflict(
                     "分组仍被 API Key 或测评计划引用，请先修改对应绑定，停用 Key 不会解除绑定",
                 )
                 .with_source(error))

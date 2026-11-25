@@ -425,7 +425,7 @@ impl ProviderConnectionObservation {
 
 /// 只供当前客户端请求使用的 HTTP 失败响应
 ///
-/// 通常保留原始上游响应；Provider 也可为明确的恢复流程准备客户端投影
+/// Provider 可透传上游 HTTP 响应，也可按客户端协议构造错误正文
 /// 投影不能覆盖 [`ProviderError`] 中用于诊断和记账的真实上游事实
 ///
 /// 该值不属于稳定诊断事实，不能进入日志或持久化
@@ -508,6 +508,7 @@ impl fmt::Debug for ClientVisibleUpstreamResponse {
 /// Core 会在任何持久化或日志记录前取走
 /// 这些事件，不能把它们当作诊断上下文使用
 pub struct ProviderError {
+    denied_group_feature: Option<DeniedGroupFeature>,
     kind: ProviderErrorKind,
     send_state: UpstreamSendState,
     upstream_status: Option<u16>,
@@ -556,6 +557,7 @@ impl ProviderError {
         Self {
             kind,
             send_state,
+            denied_group_feature: None,
             upstream_status: None,
             upstream_values: None,
             retry_after: None,
@@ -577,6 +579,16 @@ impl ProviderError {
             client_visible_upstream_response: None,
             atomic_client_events: None,
         }
+    }
+
+    pub(crate) fn group_feature_denied(feature: DeniedGroupFeature) -> Self {
+        let mut error = Self::new(
+            ProviderErrorKind::RequestPolicyDenied,
+            UpstreamSendState::NotSent,
+        )
+        .with_retry_prohibited();
+        error.denied_group_feature = Some(feature);
+        error
     }
 
     /// 附加合法上游状态码
@@ -833,7 +845,7 @@ impl ProviderError {
         self
     }
 
-    /// 附加仅可返回给当前请求方的原始上游 HTTP 失败响应
+    /// 附加仅可返回给当前请求方的 HTTP 失败响应
     #[must_use]
     pub fn with_client_visible_upstream_response(
         mut self,
@@ -1018,7 +1030,7 @@ impl ProviderError {
         self.client_visible_upstream_error.as_deref()
     }
 
-    /// 返回只供当前协议响应使用的原始上游 HTTP 失败响应
+    /// 返回仅供当前请求方使用的 HTTP 失败响应
     #[must_use]
     pub fn client_visible_upstream_response(&self) -> Option<&ClientVisibleUpstreamResponse> {
         self.client_visible_upstream_response.as_deref()
@@ -1026,6 +1038,9 @@ impl ProviderError {
 
     /// 绑定迁移完成后仅替换客户端恢复投影，保留原始失败的诊断与计费事实
     pub(crate) fn with_client_recovery_from(mut self, recovery: Self) -> Self {
+        if let Some(reason) = recovery.continuation_unavailable_reason() {
+            self = self.with_continuation_unavailable_reason(reason);
+        }
         self.client_visible_upstream_error = recovery.client_visible_upstream_error;
         self.client_visible_upstream_response = recovery.client_visible_upstream_response;
         self.continuation_failure = recovery.continuation_failure;
@@ -1057,6 +1072,7 @@ impl ProviderError {
     pub fn stable_snapshot(&self) -> Self {
         Self {
             kind: self.kind,
+            denied_group_feature: self.denied_group_feature,
             send_state: self.send_state,
             upstream_status: self.upstream_status,
             upstream_values: self.upstream_values.clone(),
@@ -1241,6 +1257,28 @@ impl GatewayErrorKind {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum DeniedGroupFeature {
+    ImageGeneration,
+    CollaborativeSubagents,
+}
+
+impl From<DeniedGroupFeature> for GatewayError {
+    fn from(feature: DeniedGroupFeature) -> Self {
+        let (code, message) = match feature {
+            DeniedGroupFeature::ImageGeneration => (
+                "image_generation_disabled",
+                "Image generation is not allowed by the API key's account groups.",
+            ),
+            DeniedGroupFeature::CollaborativeSubagents => (
+                "subagents_disabled",
+                "Collaborative subagents are not allowed by the API key's account groups.",
+            ),
+        };
+        Self::new(GatewayErrorKind::PolicyDenied, message).with_client_code(code)
+    }
+}
+
 /// 协议无关、可安全暴露的网关错误
 #[derive(Clone, Error)]
 #[error("{message}")]
@@ -1342,9 +1380,10 @@ impl GatewayError {
                 GatewayErrorKind::UpstreamUnavailable,
                 "The upstream account cannot access the service.",
             ),
-            ProviderErrorKind::RequestPolicyDenied => {
-                Self::new(GatewayErrorKind::PolicyDenied, "Request blocked by policy.")
-            }
+            ProviderErrorKind::RequestPolicyDenied => error.denied_group_feature.map_or_else(
+                || Self::new(GatewayErrorKind::PolicyDenied, "Request blocked by policy."),
+                Self::from,
+            ),
             ProviderErrorKind::RateLimited | ProviderErrorKind::QuotaExhausted => Self::new(
                 GatewayErrorKind::RateLimited,
                 "Upstream capacity is temporarily unavailable.",

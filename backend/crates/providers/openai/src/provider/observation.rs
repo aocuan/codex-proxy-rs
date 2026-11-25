@@ -643,8 +643,16 @@ pub(super) fn codex_model_presentation(model: &CodexCatalogModel) -> ModelPresen
     .with_hidden(hidden)
 }
 
-pub(super) fn selected_transport(request: &CodexResponsesRequest) -> CodexProviderTransport {
-    if request.force_http_sse {
+pub(super) fn selected_transport(
+    request: &CodexResponsesRequest,
+    guardian_role: Option<CodexGuardianRole>,
+) -> CodexProviderTransport {
+    // 专用 sampler 的 HTTP 请求可能没有传输标记。显式 WS 和物理入站连接仍沿用原合同
+    let dedicated_http = guardian_role.is_some_and(CodexGuardianRole::uses_sampler_transport)
+        && !request.use_websocket
+        && !request.websocket_frame
+        && request.downstream_websocket_connection_id.is_none();
+    if request.force_http_sse || dedicated_http {
         CodexProviderTransport::HttpOnly
     } else {
         CodexProviderTransport::PreferWebSocket
@@ -701,8 +709,6 @@ pub(super) fn codex_request_context<'a>(
         request_id,
         turn_state: request.turn_state.as_deref(),
         turn_metadata: request.turn_metadata.as_deref(),
-        beta_features: request.beta_features.as_deref(),
-        include_timing_metrics: request.include_timing_metrics.as_deref(),
         version: request.version.as_deref(),
         codex_window_id: request.codex_window_id.as_deref(),
         parent_thread_id: request.parent_thread_id.as_deref(),
@@ -711,7 +717,6 @@ pub(super) fn codex_request_context<'a>(
         session_id: request.client_session_id.as_deref(),
         thread_id: request.client_thread_id.as_deref(),
         client_request_id: request.client_request_id.as_deref(),
-        turn_id: request.client_turn_id.as_deref(),
         account_selection,
     }
 }

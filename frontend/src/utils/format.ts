@@ -1,4 +1,4 @@
-import { locale } from '@/i18n'
+import { locale, t } from '@/i18n'
 
 // 仅用于界面展示，更新比较与安装继续使用完整版本号
 export function formatVersionLabel(value?: string | null) {
@@ -98,4 +98,18 @@ export function formatUsd(value?: string | number | null, precise = false) {
     minimumFractionDigits: fractionDigits,
     maximumFractionDigits: fractionDigits,
   }).format(parsed)
+}
+
+export function formatUsageCost(value: string | number | null) {
+  if (value === null)
+    return t('usage.metrics.notPriced')
+  const amount = Number(value)
+  if (!Number.isFinite(amount))
+    return '—'
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6,
+  }).format(amount)
 }

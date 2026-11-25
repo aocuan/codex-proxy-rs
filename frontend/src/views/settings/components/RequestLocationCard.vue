@@ -17,15 +17,21 @@ const enabled = defineModel<boolean>('enabled', { required: true })
 </script>
 
 <template>
-  <ZCard :title="t('settings.location.requestLocationOverride')" :description="t('settings.location.description')">
-    <template #body>
-      <div class="flex max-w-6xl items-center justify-between gap-3">
-        <ZSwitch v-model="enabled" :label="t('settings.location.enableLocationOverlay')" :disabled="disabled" />
+  <ZCard :title="t('settings.location.requestLocationOverride')" :description="t('settings.location.description')" class="@container">
+    <template #actions>
+      <div class="flex flex-wrap items-center gap-3">
         <RequestLocationDetectButton :loading="detectingLocation" :disabled="disabled" @detect="emit('detectLocation')" />
-      </div>
-      <div class="grid min-w-0 gap-4.5 mt-4 max-w-6xl">
-        <RequestLocationFields v-model="location" :form-prop="enabled ? 'requestLocation' : undefined" :disabled="disabled || !enabled" />
+        <ZSwitch
+          v-model="enabled"
+          :aria-label="t('settings.location.enableLocationOverlay')"
+          :active-text="t('common.values.on')"
+          :inactive-text="t('common.values.off')"
+          inline-prompt
+          :width="56"
+          :disabled="disabled"
+        />
       </div>
     </template>
+    <RequestLocationFields v-model="location" class="@lg:grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.5fr)]" :form-prop="enabled ? 'requestLocation' : undefined" :disabled="disabled || !enabled" />
   </ZCard>
 </template>

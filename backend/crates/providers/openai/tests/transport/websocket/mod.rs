@@ -875,7 +875,6 @@ async fn websocket_execute_response_create_request_should_forward_typed_events_w
         let (stream, _) = listener.accept().await.unwrap();
         let mut websocket = accept_codex_test_websocket(stream).await;
         let _message = websocket.next().await.unwrap().unwrap();
-        // 透明代理：缺官方必需字段的 delta 事件不再被丢弃，原样转发
         websocket
             .send(Message::Text(
                 json!({
@@ -2288,8 +2287,6 @@ async fn codex_backend_client_should_use_websocket_when_previous_response_id_is_
                 request_id: "req_ws_client",
                 turn_state: None,
                 turn_metadata: None,
-                beta_features: None,
-                include_timing_metrics: None,
                 version: None,
                 codex_window_id: None,
                 parent_thread_id: None,
@@ -2298,7 +2295,6 @@ async fn codex_backend_client_should_use_websocket_when_previous_response_id_is_
                 session_id: None,
                 thread_id: None,
                 client_request_id: None,
-                turn_id: None,
                 account_selection: Default::default(),
             },
         )

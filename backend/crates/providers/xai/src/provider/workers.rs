@@ -14,7 +14,7 @@ pub(super) const EXHAUSTED_QUOTA_FALLBACK_RECHECK_INTERVAL: Duration = Duration:
 pub(super) const EXHAUSTED_QUOTA_REFRESH_RETRY_INTERVAL: Duration = QUOTA_CATALOG_INTERVAL;
 pub(super) const CLI_RELEASE_WORKER_OWNER: &str = "xai-cli-release";
 
-pub(crate) fn worker_contributions(
+pub(crate) fn contributions(
     refresh: Arc<GrokCredentialRefreshService>,
     quota: Arc<GrokCredentialQuotaService>,
     catalog: Arc<GrokCredentialCatalogService>,
@@ -106,9 +106,11 @@ impl ScheduledTask for XaiOAuthRefreshTask {
             if context.cancellation().is_cancelled() {
                 return Ok(());
             }
-            let outcomes = self.service.refresh_due().await.map_err(|error| {
-                WorkerTaskError::safe("xAI OAuth refresh failed").with_source(error)
-            })?;
+            let outcomes = self
+                .service
+                .refresh_due()
+                .await
+                .map_err(|error| WorkerTaskError::safe("令牌刷新失败").with_source(error))?;
             let failures = outcomes
                 .iter()
                 .filter(|outcome| {
@@ -148,11 +150,9 @@ impl ScheduledTask for XaiQuotaCatalogTask {
         Box::pin(async move {
             let accounts = self
                 .accounts
-                .list_for_provider(&self.provider_kind)
+                .list_for_provider(&self.provider_kind, true)
                 .await
-                .map_err(|source| {
-                    WorkerTaskError::safe("xAI Provider accounts unavailable").with_source(source)
-                })?;
+                .map_err(|source| WorkerTaskError::safe("账号列表读取失败").with_source(source))?;
             let mut failures = QuotaCatalogFailure::default();
             let now = SystemTime::now();
             let accounts = self.reserve_periodic_refreshes(accounts, now);
@@ -175,10 +175,7 @@ impl ScheduledTask for XaiQuotaCatalogTask {
             if failures.quota_failures == 0 && failures.catalog_error.is_none() {
                 Ok(())
             } else {
-                Err(
-                    WorkerTaskError::safe("xAI quota or catalog synchronization failed")
-                        .with_source(failures),
-                )
+                Err(WorkerTaskError::safe("额度或模型目录同步失败").with_source(failures))
             }
         })
     }
@@ -246,10 +243,9 @@ impl XaiQuotaCatalogTask {
 }
 
 pub(super) fn eligible_quota_worker_account(account: &ProviderAccount, now: SystemTime) -> bool {
-    account.enabled()
-        && account
-            .access_token_expires_at()
-            .is_some_and(|expires_at| expires_at > now)
+    account
+        .access_token_expires_at()
+        .is_some_and(|expires_at| expires_at > now)
         && account
             .quota()
             .exhaustion_refresh_due(now, EXHAUSTED_QUOTA_FALLBACK_RECHECK_INTERVAL)

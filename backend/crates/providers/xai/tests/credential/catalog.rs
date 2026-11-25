@@ -27,6 +27,103 @@ use crate::support::{
 const CLI_PROXY_FIXTURE: &[u8] =
     include_bytes!("../transport/catalog/fixtures/cli_proxy_models.json");
 
+#[tokio::test]
+async fn catalog_billing_and_subscription_use_current_global_identity() {
+    use provider_xai::profile::selection::{GrokClientProfileSelection, VersionMode};
+    use provider_xai::{
+        GrokBillingRequest, GrokBillingTransport, GrokBillingTransportFuture,
+        GrokBillingTransportResponse, GrokCredentialCatalogService, GrokCredentialQuotaService,
+    };
+    #[derive(Default)]
+    struct RecordingTransport(Mutex<Vec<Vec<(String, String)>>>);
+    impl RecordingTransport {
+        fn record(&self, headers: &[provider_xai::GrokHeader]) {
+            self.0.lock().unwrap().push(
+                headers
+                    .iter()
+                    .filter(|h| matches!(h.name(), "user-agent" | "x-grok-client-version"))
+                    .map(|h| (h.name().to_owned(), h.value().expose().to_owned()))
+                    .collect(),
+            );
+        }
+    }
+    impl GrokModelCatalogTransport for RecordingTransport {
+        fn execute(&self, request: GrokModelCatalogRequest) -> GrokModelCatalogTransportFuture<'_> {
+            self.record(request.headers());
+            Box::pin(async {
+                Ok(GrokModelCatalogTransportResponse::new(
+                    CLI_PROXY_FIXTURE,
+                    None,
+                ))
+            })
+        }
+    }
+    impl GrokBillingTransport for RecordingTransport {
+        fn execute(&self, request: GrokBillingRequest) -> GrokBillingTransportFuture<'_> {
+            self.record(request.headers());
+            Box::pin(async {
+                Ok(GrokBillingTransportResponse::new(
+                    br#"{"config":{"creditUsagePercent":25},"subscriptionTier":"SuperGrokPro"}"#,
+                ))
+            })
+        }
+    }
+    let store = MemoryProviderAccountStore::shared();
+    seed_input(&store, &create_input("global_profile", "global-subject"))
+        .await
+        .unwrap();
+    let repository = GrokCredentialRepository::new(store);
+    let selected = |version: &str| {
+        GrokClientProfileSelection {
+            version_mode: VersionMode::Fixed,
+            client_version: Some(version.into()),
+            target_os: "windows".into(),
+            target_arch: "arm64".into(),
+            ..Default::default()
+        }
+        .document()
+        .unwrap()
+    };
+    let policy = Arc::new(crate::support::RequestProfileRuntimePolicy(Mutex::new(
+        selected("9.8.7"),
+    )));
+    let transport = Arc::new(RecordingTransport::default());
+    let catalog = GrokCredentialCatalogService::new(
+        repository.clone(),
+        transport.clone(),
+        Arc::new(MemoryGrokCatalogCache::default()),
+        crate::support::xai_wire_profile(),
+        policy.clone(),
+    );
+    let quota = GrokCredentialQuotaService::new(
+        repository,
+        transport.clone(),
+        crate::support::xai_wire_profile(),
+        policy.clone(),
+    );
+    for version in ["9.8.7", "9.8.8"] {
+        *policy.0.lock().unwrap() = selected(version);
+        catalog
+            .refresh_account_catalog(&account_id("global_profile"))
+            .await
+            .unwrap();
+        quota
+            .refresh_account(&account_id("global_profile"))
+            .await
+            .unwrap();
+        let mut requests = transport.0.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        for headers in requests.drain(..) {
+            let header = |name| headers.iter().find(|h| h.0 == name).unwrap().1.as_str();
+            assert_eq!(
+                header("user-agent"),
+                format!("grok-shell/{version} (windows; aarch64)")
+            );
+            assert_eq!(header("x-grok-client-version"), version);
+        }
+    }
+}
+
 struct QueueCatalogTransport {
     calls: AtomicUsize,
     responses:
@@ -140,9 +237,23 @@ async fn catalog_query_caches_each_plan_and_returns_strict_union() {
     assert_eq!(service.catalog_generation().get(), 1);
     service.query_models().await.expect("same catalog sync");
     assert_eq!(service.catalog_generation().get(), 1);
+    store
+        .set_enabled(&account_id("catalog-b"), false)
+        .await
+        .unwrap();
+    let remaining = service
+        .query_models()
+        .await
+        .expect("same model, one remaining source");
+    assert_eq!(service.catalog_generation().get(), 2);
+    assert_eq!(remaining[0].1, [account_id("catalog-a")].into());
+    assert_eq!(
+        models[0].1,
+        [account_id("catalog-a"), account_id("catalog-b")].into()
+    );
 
     assert_eq!(models.len(), 1);
-    assert_eq!(models[0].request_model().as_str(), "grok-4.5");
+    assert_eq!(models[0].0.request_model().as_str(), "grok-4.5");
     let account = store
         .account(&account_id("catalog-a"))
         .expect("created account");
@@ -467,7 +578,7 @@ async fn failed_plan_scope_is_skipped_and_surviving_plans_still_cache() {
         .expect("surviving plan still refreshes the catalog");
 
     assert_eq!(models.len(), 1);
-    assert_eq!(models[0].request_model().as_str(), "grok-4.5");
+    assert_eq!(models[0].0.request_model().as_str(), "grok-4.5");
     assert_eq!(transport.calls(), 2);
     let standard = store
         .account(&account_id("plan-standard"))

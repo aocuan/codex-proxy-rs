@@ -22,6 +22,8 @@ pub(super) fn settings_with_margin(refresh_margin_seconds: u64) -> RuntimeSettin
             ("grok-latest".to_owned(), "grok-4.5".to_owned()),
         ]),
         values: gateway_admin::model::settings::RuntimeSettingsValues {
+            openai_oauth_guardian_review_model: true,
+            openai_request_country: Default::default(),
             codex_privacy_policy: Default::default(),
             request_location_enabled: false,
             request_location: Default::default(),
@@ -35,9 +37,9 @@ pub(super) fn settings_with_margin(refresh_margin_seconds: u64) -> RuntimeSettin
             switch_account_on_queue_failure: false,
             max_retry_after_seconds: 240,
             openai_guardian_reserved_concurrency: 0,
-            openai_account_affinity: gateway_core::account::AccountAffinity::Relaxed,
+            account_affinity: gateway_core::account::AccountAffinity::Relaxed,
             max_account_rotations: 3,
-            openai_session_affinity_ttl_hours: 24,
+            session_affinity_ttl_hours: 24,
             responses_max_decompressed_body_bytes: 64 * 1024 * 1024,
             smart_scheduling: gateway_core::account::SmartSchedulingConfig::default(),
             quota_reset_window_weights: gateway_core::account::ResetWindowWeights::default(),
@@ -566,6 +568,67 @@ async fn retry_after_limit_defaults_and_updates_reach_the_runtime_snapshot() {
                 .execute(&database.pool)
                 .await
                 .is_err()
+        );
+    }
+    database.close().await;
+}
+
+#[tokio::test]
+async fn openai_request_settings_round_trip_into_snapshot() {
+    use gateway_core::account::OpenAiRequestCountry;
+    use gateway_store::postgres::{PgRuntimeSnapshotRepository, RuntimeSnapshotRepository};
+    let Some(database) = TestDatabase::create("openai_request_settings").await else {
+        return;
+    };
+    let repository = PgRuntimeSettingsRepository::new(database.pool.clone());
+    let snapshots = PgRuntimeSnapshotRepository::new(database.pool.clone());
+    let initial = snapshots.load_runtime_snapshot().await.unwrap();
+    assert!(initial.settings.openai_oauth_guardian_review_model());
+    assert_eq!(
+        initial.settings.openai_request_country(),
+        &OpenAiRequestCountry::FollowLocation {}
+    );
+
+    for (enabled, country) in [
+        (
+            true,
+            OpenAiRequestCountry::Custom {
+                country: "CA".into(),
+            },
+        ),
+        (true, OpenAiRequestCountry::FollowLocation {}),
+        (false, OpenAiRequestCountry::Passthrough {}),
+        (false, OpenAiRequestCountry::Default {}),
+    ] {
+        let mut update = settings_with_margin(600);
+        update.values.openai_oauth_guardian_review_model = enabled;
+        update.values.openai_request_country = country.clone();
+        repository.update_runtime_settings(update).await.unwrap();
+        let saved = repository.load_runtime_settings().await.unwrap();
+        assert_eq!(saved.values.openai_oauth_guardian_review_model, enabled);
+        assert_eq!(saved.values.openai_request_country, country);
+        let snapshot = snapshots.load_runtime_snapshot().await.unwrap();
+        assert_eq!(
+            snapshot.settings.openai_oauth_guardian_review_model(),
+            enabled
+        );
+        assert_eq!(snapshot.settings.openai_request_country(), &country);
+        assert_eq!(snapshot.config_revision, saved.config_revision);
+    }
+    for invalid in [
+        serde_json::json!({"mode":"custom","country":"ca"}),
+        serde_json::json!({"mode":"custom","country":null}),
+        serde_json::json!({"mode":"custom","country":"CA","extra":1}),
+        serde_json::json!({"mode":"follow_location","country":"CA"}),
+    ] {
+        assert!(
+            sqlx::query(
+                "update runtime_settings set openai_request_country_json = $1 where id = 1"
+            )
+            .bind(sqlx::types::Json(invalid))
+            .execute(&database.pool)
+            .await
+            .is_err()
         );
     }
     database.close().await;
@@ -1195,26 +1258,23 @@ async fn account_affinity_defaults_and_updates_reach_the_snapshot() {
     };
     let repository = PgRuntimeSettingsRepository::new(database.pool.clone());
     let before = repository.load_runtime_settings().await.unwrap();
-    assert_eq!(
-        before.values.openai_account_affinity,
-        AccountAffinity::Strict
-    );
+    assert_eq!(before.values.account_affinity, AccountAffinity::Strict);
     assert_eq!(before.values.max_account_rotations, 3);
-    assert_eq!(before.values.openai_session_affinity_ttl_hours, 24);
+    assert_eq!(before.values.session_affinity_ttl_hours, 24);
     for (mode, budget, ttl) in [
         (AccountAffinity::Preferred, 3, 24),
         (AccountAffinity::Strict, 31, 168),
         (AccountAffinity::Relaxed, 0, 720),
     ] {
         let mut update = settings_with_margin(3600);
-        update.values.openai_account_affinity = mode;
+        update.values.account_affinity = mode;
         update.values.max_account_rotations = budget;
-        update.values.openai_session_affinity_ttl_hours = ttl;
+        update.values.session_affinity_ttl_hours = ttl;
         repository.update_runtime_settings(update).await.unwrap();
         let loaded = repository.load_runtime_settings().await.unwrap();
         assert_eq!(
             (
-                loaded.values.openai_account_affinity,
+                loaded.values.account_affinity,
                 loaded.values.max_account_rotations
             ),
             (mode, budget)
@@ -1227,7 +1287,7 @@ async fn account_affinity_defaults_and_updates_reach_the_snapshot() {
         assert_eq!(
             (
                 serde_json::from_value::<AccountAffinity>(
-                    snapshot_values["openai_account_affinity"].clone()
+                    snapshot_values["account_affinity"].clone()
                 )
                 .unwrap(),
                 snapshot_values["max_account_rotations"].as_u64().unwrap()
@@ -1235,18 +1295,18 @@ async fn account_affinity_defaults_and_updates_reach_the_snapshot() {
             (mode, u64::from(budget))
         );
         assert!(snapshot.config_revision > before.config_revision);
-        assert_eq!(loaded.values.openai_session_affinity_ttl_hours, ttl);
-        assert_eq!(snapshot_values["openai_session_affinity_ttl_hours"], ttl);
+        assert_eq!(loaded.values.session_affinity_ttl_hours, ttl);
+        assert_eq!(snapshot_values["session_affinity_ttl_hours"], ttl);
     }
     let mut invalid = settings_with_margin(3600);
     invalid.values.max_account_rotations = 32;
     assert!(repository.update_runtime_settings(invalid).await.is_err());
     for sql in [
-        "update runtime_settings set openai_session_affinity_ttl_hours = 0 where id = 1",
-        "update runtime_settings set openai_session_affinity_ttl_hours = 721 where id = 1",
+        "update runtime_settings set session_affinity_ttl_hours = 0 where id = 1",
+        "update runtime_settings set session_affinity_ttl_hours = 721 where id = 1",
         "update runtime_settings set max_account_rotations = 32 where id = 1",
         "update runtime_settings set max_account_rotations = -1 where id = 1",
-        "update runtime_settings set openai_account_affinity = 'unknown' where id = 1",
+        "update runtime_settings set account_affinity = 'unknown' where id = 1",
     ] {
         assert!(sqlx::query(sql).execute(&database.pool).await.is_err());
     }

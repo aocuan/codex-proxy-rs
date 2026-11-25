@@ -37,9 +37,46 @@ async fn response_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).expect("parse response JSON")
 }
 
+#[test]
+fn backup_settings_report_secret_presence_without_serializing_the_secret() {
+    use gateway_admin::model::backup::BackupSettings;
+    use gateway_api::admin::backups::BackupSettingsView;
+
+    for configured in [false, true] {
+        let settings = BackupSettings {
+            storage_revision: 1,
+            endpoint: None,
+            region: None,
+            bucket: None,
+            access_key_id: None,
+            secret_access_key: configured.then(|| secrecy::SecretString::from("fixture-secret")),
+            prefix: None,
+            force_path_style: false,
+            schedule_enabled: false,
+            cron_expression: None,
+            schedule_timezone: None,
+            retention_days: 0,
+            retention_count: 0,
+            next_run_at: None,
+            last_verified_at: None,
+            updated_at: chrono::Utc::now(),
+        };
+        let response = serde_json::to_value(BackupSettingsView::from((
+            settings,
+            gateway_api::TimePresenter::new(Default::default()),
+        )))
+        .unwrap();
+        assert_eq!(response["secretConfigured"], configured);
+        assert!(response.get("secretAccessKey").is_none());
+        assert!(!response.to_string().contains("fixture-secret"));
+    }
+}
+
 fn update_body() -> Value {
     json!({
         "configRevision": 7,
+        "openaiOauthGuardianReviewModel": true,
+        "openaiRequestCountry": {"mode": "follow_location"},
         "codexPrivacyPolicy": {"enabled":false,"onError":"skip_rule","rules":[]},
         "requestLocationEnabled": false,
         "requestLocation": {"country":"US", "region":"Ohio", "city":"Piketon", "timezone":"America/New_York"},
@@ -53,9 +90,9 @@ fn update_body() -> Value {
         "maxWaitingPerKey": 0,
         "maxWaitingPerAccount": 0,
         "openaiGuardianReservedConcurrency": 0,
-        "openaiAccountAffinity": "relaxed",
+        "accountAffinity": "relaxed",
         "maxAccountRotations": 3,
-        "openaiSessionAffinityTtlHours": 24,
+        "sessionAffinityTtlHours": 24,
         "keyQueueTimeoutSeconds": 30,
         "accountQueueTimeoutSeconds": 30,
         "switchAccountOnQueueFailure": false,
@@ -73,6 +110,7 @@ fn update_body() -> Value {
         "accountWarmupEnabled": false,
         "accountWarmupCron": "0 8 * * *",
         "accountWarmupModel": null,
+        "resetCreditOnLowWeeklyQuota": false,
         "resetCreditLeadMinutes": 10,
         "resetCreditMaxWeeklyRemainingPercent": null
     })
@@ -431,7 +469,7 @@ fn settings_request_accepts_unlimited_default_account_concurrency() {
 }
 
 #[test]
-fn settings_request_validates_cron_and_allows_disabled_empty_schedule() {
+fn warmup_cron_is_required_and_may_be_empty_only_when_disabled() {
     for (enabled, cron, valid) in [
         (false, "", true),
         (true, "", false),
@@ -461,10 +499,9 @@ fn settings_request_validates_cron_and_allows_disabled_empty_schedule() {
     let request: UpdateRuntimeSettingsRequest = serde_json::from_value(oversized).unwrap();
     assert_eq!(request.validate().unwrap_err().field(), "accountWarmupCron");
 
-    let mut legacy = update_body();
-    legacy.as_object_mut().unwrap().remove("accountWarmupCron");
-    legacy["accountWarmupScheduleTime"] = json!("08:00");
-    assert!(serde_json::from_value::<UpdateRuntimeSettingsRequest>(legacy).is_err());
+    let mut missing = update_body();
+    missing.as_object_mut().unwrap().remove("accountWarmupCron");
+    assert!(serde_json::from_value::<UpdateRuntimeSettingsRequest>(missing).is_err());
 }
 
 #[test]
@@ -537,6 +574,17 @@ fn settings_service_contract_flattens_values_and_rejects_unknown_fields() {
         serde_json::from_value::<ReplaceRuntimeSettings>(wire.clone()).unwrap(),
         command
     );
+    for field in [
+        "openai_oauth_guardian_review_model",
+        "openai_request_country",
+        "reset_credit_on_low_weekly_quota",
+    ] {
+        let mut incomplete = wire.clone();
+        incomplete.as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<ReplaceRuntimeSettings>(incomplete.clone()).is_err());
+        incomplete[field] = Value::Null;
+        assert!(serde_json::from_value::<ReplaceRuntimeSettings>(incomplete).is_err());
+    }
     wire["unexpected_setting"] = json!(true);
     assert!(serde_json::from_value::<ReplaceRuntimeSettings>(wire).is_err());
 }
@@ -705,8 +753,6 @@ async fn admin_auth_should_accept_a_configured_request_id_header_name() {
 
     let fixture = AdminTestFixture::new().await;
     fixture.auth.insert_session("valid-session");
-    // 部署把 api.request_id_header 改名后，注入的 header 不再叫 x-request-id；
-    // 管理请求仍须拿到请求上下文，而不是退化为 500
     let custom = HeaderName::from_static("x-trace-id");
     let app = app(fixture.state()).layer(SetRequestIdLayer::new(custom, MakeRequestUuid));
     let unlabelled = Request::builder()
@@ -905,33 +951,19 @@ async fn settings_update_rejects_unknown_fields_without_writing() {
     assert_eq!(*fixture.settings.settings.lock().unwrap(), initial);
 }
 
-#[test]
-fn global_profile_can_be_omitted_but_cannot_be_cleared() {
-    for field in ["openaiClientProfile", "xaiClientProfile"] {
-        let mut body = update_body();
-        body.as_object_mut().unwrap().remove(field);
-        assert!(serde_json::from_value::<UpdateRuntimeSettingsRequest>(body.clone()).is_ok());
-        body[field] = json!(null);
-        assert!(serde_json::from_value::<UpdateRuntimeSettingsRequest>(body.clone()).is_err());
-        body[field] = json!({"versionMode":"latest"});
-        assert!(serde_json::from_value::<UpdateRuntimeSettingsRequest>(body).is_ok());
-    }
-}
-
 #[tokio::test]
-async fn generic_global_profiles_decode_native_providers_and_reject_legacy_conflicts() {
-    let mut body = update_body();
-    body["providerRequestProfiles"] = json!({
-        "openai":{"preset":"desktop"},
-        "xai":{"preset":"managed"},
-    });
-    body["openaiClientProfile"] = json!({"preset":"desktop"});
-    let decoded = serde_json::from_value::<UpdateRuntimeSettingsRequest>(body.clone()).unwrap();
-    assert!(decoded.provider_request_profiles.contains_key("xai"));
-
-    body["openaiClientProfile"] = json!({"preset":"cli"});
+async fn global_profiles_map_only_updates_submitted_providers() {
     let fixture = AdminTestFixture::new().await;
     fixture.auth.insert_session("valid-session");
+    {
+        let mut settings = fixture.settings.settings.lock().unwrap();
+        settings.request_profiles = serde_json::from_value(json!({
+            "openai":{"preset":"desktop"}, "xai":{"versionMode":"latest"}
+        }))
+        .unwrap();
+    }
+    let mut body = update_body();
+    body["providerRequestProfiles"] = json!({"xai":null});
     let response = app(fixture.state())
         .oneshot(request(
             Method::POST,
@@ -940,7 +972,12 @@ async fn generic_global_profiles_decode_native_providers_and_reject_legacy_confl
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved = response_json(response).await;
+    assert_eq!(
+        saved["data"]["providerRequestProfiles"],
+        json!({"openai":{"preset":"desktop"}})
+    );
 }
 
 #[tokio::test]
@@ -1024,6 +1061,10 @@ async fn pricing_routes_keep_manual_overrides_during_sync_and_reset_to_source() 
     assert_eq!(
         result["data"]["synced"]["openai"]["gpt-5.4"]["bands"]["standard"]["input"],
         "2.5"
+    );
+    assert_eq!(
+        result["data"]["supportedBands"]["openai"],
+        json!(["standard"])
     );
     assert!(result["data"]["syncedAt"].is_string());
     for _ in 0..2 {
@@ -1420,6 +1461,99 @@ async fn settings_update_rejects_a_stale_version_without_replacing_the_saved_val
 }
 
 #[tokio::test]
+async fn runtime_settings_reject_incomplete_and_stale_replacements() {
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    let read = || app(fixture.state()).oneshot(request(Method::GET, "/api/admin/settings", None));
+    let save = |body| {
+        app(fixture.state()).oneshot(request(
+            Method::POST,
+            "/api/admin/settings/update",
+            Some(body),
+        ))
+    };
+    let initial = response_json(read().await.unwrap()).await["data"].clone();
+    assert_eq!(initial["openaiOauthGuardianReviewModel"], true);
+    assert_eq!(
+        initial["openaiRequestCountry"],
+        json!({"mode":"follow_location"})
+    );
+    let mut body = update_body();
+    body["configRevision"] = initial["configRevision"].clone();
+    body["openaiOauthGuardianReviewModel"] = json!(false);
+    body["openaiRequestCountry"] = json!({"mode":"custom","country":"CA"});
+    body["resetCreditOnLowWeeklyQuota"] = json!(true);
+    let response = save(body.clone()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved = response_json(response).await["data"].clone();
+    assert_eq!(saved["resetCreditOnLowWeeklyQuota"], true);
+    assert_eq!(saved["openaiOauthGuardianReviewModel"], false);
+    assert_eq!(saved["openaiRequestCountry"], body["openaiRequestCountry"]);
+
+    for field in [
+        "openaiOauthGuardianReviewModel",
+        "openaiRequestCountry",
+        "resetCreditOnLowWeeklyQuota",
+    ] {
+        let mut incomplete = update_body();
+        incomplete["configRevision"] = saved["configRevision"].clone();
+        incomplete.as_object_mut().unwrap().remove(field);
+        assert_eq!(
+            save(incomplete.clone()).await.unwrap().status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        incomplete[field] = Value::Null;
+        assert_eq!(
+            save(incomplete).await.unwrap().status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    body["openaiOauthGuardianReviewModel"] = json!(true);
+    body["openaiRequestCountry"] = json!({"mode":"passthrough"});
+    assert_eq!(
+        save(body.clone()).await.unwrap().status(),
+        StatusCode::CONFLICT
+    );
+    let current = response_json(read().await.unwrap()).await["data"].clone();
+    assert_eq!(current, saved);
+    body["configRevision"] = current["configRevision"].clone();
+    let response = save(body).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let changed = response_json(response).await["data"].clone();
+    assert_eq!(changed["openaiOauthGuardianReviewModel"], true);
+    assert_eq!(
+        changed["openaiRequestCountry"],
+        json!({"mode":"passthrough"})
+    );
+}
+
+#[test]
+fn openai_request_settings_validate_modes_and_country_codes() {
+    for invalid in [
+        json!(null),
+        json!({"mode":"custom"}),
+        json!({"mode":"custom","country":"ca"}),
+        json!({"mode":"custom","country":"USA"}),
+        json!({"mode":"custom","country":"国"}),
+        json!({"mode":"follow_location","country":"CA"}),
+        json!({"mode":"passthrough","country":"CA"}),
+        json!({"mode":"default","country":"CA"}),
+        json!({"mode":"unknown"}),
+    ] {
+        let mut body = update_body();
+        body["openaiRequestCountry"] = invalid.clone();
+        if let Ok(request) = serde_json::from_value::<UpdateRuntimeSettingsRequest>(body) {
+            assert!(request.validate().is_err(), "{invalid}");
+        }
+    }
+    for invalid in [json!(null), json!("true"), json!(1)] {
+        let mut body = update_body();
+        body["openaiOauthGuardianReviewModel"] = invalid;
+        assert!(serde_json::from_value::<UpdateRuntimeSettingsRequest>(body).is_err());
+    }
+}
+
+#[tokio::test]
 async fn guardian_reservation_round_trips_and_rejects_invalid_values() {
     let fixture = AdminTestFixture::new().await;
     fixture.auth.insert_session("valid-session");
@@ -1472,9 +1606,9 @@ async fn account_affinity_and_rotation_budget_round_trip_and_reject_invalid_valu
     fixture.auth.insert_session("valid-session");
     let mut body = update_body();
     for (mode, rotations, ttl) in [("relaxed", 0, 1), ("preferred", 3, 24), ("strict", 31, 720)] {
-        body["openaiAccountAffinity"] = json!(mode);
+        body["accountAffinity"] = json!(mode);
         body["maxAccountRotations"] = json!(rotations);
-        body["openaiSessionAffinityTtlHours"] = json!(ttl);
+        body["sessionAffinityTtlHours"] = json!(ttl);
         let response = app(fixture.state())
             .oneshot(request(
                 Method::POST,
@@ -1485,16 +1619,16 @@ async fn account_affinity_and_rotation_budget_round_trip_and_reject_invalid_valu
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let response = response_json(response).await;
-        assert_eq!(response["data"]["openaiAccountAffinity"], mode);
+        assert_eq!(response["data"]["accountAffinity"], mode);
         assert_eq!(response["data"]["maxAccountRotations"], rotations);
-        assert_eq!(response["data"]["openaiSessionAffinityTtlHours"], ttl);
+        assert_eq!(response["data"]["sessionAffinityTtlHours"], ttl);
         body["configRevision"] = response["data"]["configRevision"].clone();
     }
     let saved = fixture.settings.settings.lock().unwrap().clone();
     // 类型错误沿用 AdminJson 的 422，合法类型越界由字段校验返回 400
     for (field, value, expected_status) in [
         (
-            "openaiAccountAffinity",
+            "accountAffinity",
             json!("unknown"),
             StatusCode::UNPROCESSABLE_ENTITY,
         ),
@@ -1509,18 +1643,14 @@ async fn account_affinity_and_rotation_budget_round_trip_and_reject_invalid_valu
             json!(1.5),
             StatusCode::UNPROCESSABLE_ENTITY,
         ),
+        ("sessionAffinityTtlHours", json!(0), StatusCode::BAD_REQUEST),
         (
-            "openaiSessionAffinityTtlHours",
-            json!(0),
-            StatusCode::BAD_REQUEST,
-        ),
-        (
-            "openaiSessionAffinityTtlHours",
+            "sessionAffinityTtlHours",
             json!(721),
             StatusCode::BAD_REQUEST,
         ),
         (
-            "openaiSessionAffinityTtlHours",
+            "sessionAffinityTtlHours",
             json!(1.5),
             StatusCode::UNPROCESSABLE_ENTITY,
         ),

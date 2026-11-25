@@ -34,31 +34,23 @@ fn upstream_error_status(error: &CodexClientError) -> Option<u16> {
     }
 }
 
-/// 从上游错误体提取稳定错误码：优先 `/error/code`，其次 `/code`
-///
-/// 只接受有界的 ASCII 标识，避免把自由文本作为错误码写入诊断
-fn upstream_error_code(error: &CodexClientError) -> Option<String> {
-    let CodexClientError::Upstream { body, .. } = error else {
-        return None;
-    };
-    let value = serde_json::from_str::<Value>(body).ok()?;
-    let code = value
-        .pointer("/error/code")
-        .or_else(|| value.pointer("/code"))
-        .and_then(Value::as_str)?
-        .trim();
-    if code.is_empty()
-        || code.len() > 64
-        || !code
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-    {
-        return None;
-    }
-    Some(code.to_owned())
-}
-
 impl CodexCredentialQuotaService {
+    pub(super) async fn global_profile_client(
+        &self,
+    ) -> Result<CodexBackendClient, CodexCredentialQuotaError> {
+        let profile = self
+            .profile
+            .resolve_global_request_profile(self.runtime_policy.as_ref())
+            .await
+            .map_err(CodexCredentialQuotaError::Profile)?;
+        Ok(CodexBackendClient::new(
+            self.http.clone(),
+            self.base_url.clone(),
+            self.profile.clone(),
+        )
+        .with_request_profile(profile))
+    }
+
     pub fn new(
         repository: CodexCredentialRepository,
         profile: CodexWireProfileState,
@@ -98,16 +90,14 @@ impl CodexCredentialQuotaService {
     pub(crate) async fn record_confirmed_exhaustion(
         &self,
         account: &ProviderAccount,
-        evidence: QuotaEvidence,
-        reset_at: Option<SystemTime>,
-        observed_at: SystemTime,
+        state: QuotaState,
     ) -> Result<(), CodexCredentialQuotaError> {
         let outcome = self
             .store
             .apply_quota_access(QuotaAccessChange {
                 account_id: account.id().clone(),
                 expected_revision: account.revision(),
-                state: QuotaState::exhausted(evidence, observed_at, reset_at),
+                state,
             })
             .await?;
         if outcome == QuotaWriteOutcome::Conflict {
@@ -155,7 +145,7 @@ impl CodexCredentialQuotaService {
         &self,
         now: SystemTime,
     ) -> Result<CodexQuotaSyncSummary, CodexCredentialQuotaError> {
-        let mut accounts = self.repository.list_for_provider().await?;
+        let mut accounts = self.repository.list_for_provider(true).await?;
         accounts.retain(|account| {
             account.authentication_kind() == crate::credential::CODEX_AUTHENTICATION_KIND_OAUTH
         });
@@ -200,11 +190,17 @@ impl CodexCredentialQuotaService {
         if accounts.is_empty() {
             return Ok(summary);
         }
-        let client = CodexBackendClient::new(
-            self.http.clone(),
-            self.base_url.clone(),
-            self.profile.clone(),
-        );
+        let client = match self.global_profile_client().await {
+            Ok(client) => client,
+            Err(error) => {
+                // 身份配置失败尚未发出请求，也需要释放已预留的首查任务
+                self.scheduling.defer_failed_initial_refreshes(
+                    &pending_initial,
+                    self.initial_sync_delays.as_ref(),
+                );
+                return Err(error);
+            }
+        };
         for account in accounts {
             let observed_at = SystemTime::now();
             match self.fetch_usage(&client, &account).await {
@@ -249,7 +245,10 @@ impl CodexCredentialQuotaService {
                         Some(QuotaEndpointFailure::Exhausted(evidence)) => {
                             summary.exhausted += 1;
                             if let Err(write_error) = self
-                                .record_confirmed_exhaustion(&account, evidence, None, observed_at)
+                                .record_confirmed_exhaustion(
+                                    &account,
+                                    QuotaState::exhausted(evidence, observed_at, None),
+                                )
                                 .await
                             {
                                 summary.transient += 1;
@@ -258,6 +257,16 @@ impl CodexCredentialQuotaService {
                                     error = %write_error,
                                     "OpenAI quota exhaustion fact write failed"
                                 );
+                            }
+                        }
+                        Some(QuotaEndpointFailure::AccessTokenRevoked) => {
+                            match self.store.expire_access_token(&account, observed_at).await {
+                                Ok(true) => summary.revoked += 1,
+                                Ok(false) => summary.stale += 1,
+                                Err(error) => {
+                                    summary.transient += 1;
+                                    tracing::warn!(account_id = %account.id(), %error, "OpenAI access token expiry write failed");
+                                }
                             }
                         }
                         Some(QuotaEndpointFailure::Credential { state, reason }) => {
@@ -423,11 +432,7 @@ impl CodexCredentialQuotaService {
         if !access_token_is_current(&account, observed_at) {
             return Err(CodexCredentialQuotaError::CredentialRefreshRequired);
         }
-        let client = CodexBackendClient::new(
-            self.http.clone(),
-            self.base_url.clone(),
-            self.profile.clone(),
-        );
+        let client = self.global_profile_client().await?;
         let FetchedCodexQuota { account, value } = match self.fetch_usage(&client, &account).await {
             Ok(fetched) => fetched,
             Err(CodexQuotaFetchError::InvalidCredential) => {
@@ -436,7 +441,15 @@ impl CodexCredentialQuotaService {
             Err(CodexQuotaFetchError::Upstream { account, error }) => {
                 match classify_quota_endpoint_failure(&error) {
                     Some(QuotaEndpointFailure::Exhausted(evidence)) => {
-                        self.record_confirmed_exhaustion(&account, evidence, None, observed_at)
+                        self.record_confirmed_exhaustion(
+                            &account,
+                            QuotaState::exhausted(evidence, observed_at, None),
+                        )
+                        .await?;
+                    }
+                    Some(QuotaEndpointFailure::AccessTokenRevoked) => {
+                        self.store
+                            .expire_access_token(&account, observed_at)
                             .await?;
                     }
                     Some(QuotaEndpointFailure::Credential { state, reason }) => {

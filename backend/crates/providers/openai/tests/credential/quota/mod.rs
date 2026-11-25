@@ -26,16 +26,84 @@ use provider_openai::OFFICIAL_CODEX_BASE_URL;
 use provider_openai::credential::{
     CodexCredentialQuotaError, CodexCredentialQuotaService, ImportCodexOAuthCredential,
 };
-use provider_openai::transport::profile::{CodexWireProfile, CodexWireProfileState};
+use provider_openai::profile::{CodexWireProfile, CodexWireProfileState};
 use serde_json::json;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::support::{MemoryAccountStore, profile, secret};
 
+#[tokio::test]
+async fn quota_background_operations_use_current_global_identity_and_recover_from_invalid_profile()
+{
+    use gateway_core::account::OpaqueProviderData;
+    let server = MockServer::start().await;
+    for (endpoint, body) in [
+        (
+            "/api/codex/usage",
+            json!({"rate_limit":{"allowed":true,"primary_window":{"used_percent":10}}}),
+        ),
+        (
+            "/api/codex/rate-limit-reset-credits",
+            json!({"available_count":0,"credits":[]}),
+        ),
+        (
+            "/api/codex/rate-limit-reset-credits/consume",
+            json!({"code":"reset","credit":{"id":"test-credit","reset_type":"codex_rate_limits"}}),
+        ),
+    ] {
+        Mock::given(path(endpoint))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+    }
+    let store = Arc::new(MemoryAccountStore::default());
+    create_account(&store, "acct_global_identity").await;
+    let account = store.account("acct_global_identity").unwrap();
+    let document =
+        |value: serde_json::Value| OpaqueProviderData::new(value.as_object().unwrap().clone());
+    let policy = Arc::new(crate::support::RequestProfileRuntimePolicy(
+        std::sync::Mutex::new(document(json!({"mode":"custom","userAgent":"invalid"}))),
+    ));
+    let service = CodexCredentialQuotaService::new(
+        store.repository(),
+        wire_profile(),
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+        server.uri(),
+        Arc::new(crate::support::MemoryCooldownPort::new()),
+        policy.clone(),
+    )
+    .with_initial_sync_delays(Arc::new(|| Duration::ZERO));
+    assert!(matches!(
+        service.synchronize().await,
+        Err(CodexCredentialQuotaError::Profile(_))
+    ));
+    assert!(server.received_requests().await.unwrap().is_empty());
+    for os in ["27.0.1", "27.0.2"] {
+        let ua = format!("codex_cli_rs/0.170.0 (Mac OS {os}; arm64) global-test");
+        *policy.0.lock().unwrap() = document(json!({"mode":"custom","userAgent":ua}));
+        let before = server.received_requests().await.unwrap().len();
+        if os == "27.0.1" {
+            assert_eq!(service.synchronize().await.unwrap().updated, 1);
+        } else {
+            service.refresh_account(account.id()).await.unwrap();
+        }
+        service.list_reset_credits(account.id()).await.unwrap();
+        service
+            .consume_reset_credit(account.id(), Some("test-credit"), uuid::Uuid::new_v4())
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len() - before, 3);
+        for request in &requests[before..] {
+            assert_eq!(request.headers["user-agent"], ua);
+        }
+    }
+}
+
 fn wire_profile() -> CodexWireProfileState {
     CodexWireProfileState::new(CodexWireProfile {
-        client_kind: provider_openai::transport::profile::selection::ClientKind::Desktop,
+        client_kind: provider_openai::profile::selection::ClientKind::Desktop,
         originator: "codex_cli_rs".to_owned(),
         codex_version: "0.144.0".to_owned(),
         desktop_version: "1.0.0".to_owned(),
@@ -849,7 +917,7 @@ async fn quota_endpoint_auth_rejections_do_not_reclassify_credentials_or_quota()
 }
 
 #[tokio::test]
-async fn quota_endpoint_rejection_preserves_details_without_changing_account_facts() {
+async fn manual_quota_revocation_expires_only_the_access_token_and_preserves_diagnostics() {
     let store = Arc::new(MemoryAccountStore::default());
     let account_id = "acct_quota_rejection_detail";
     create_account(&store, account_id).await;
@@ -883,14 +951,18 @@ async fn quota_endpoint_rejection_preserves_details_without_changing_account_fac
         }
         other => panic!("expected upstream rejection, got {other:?}"),
     }
-    // 额度查询诊断不能进入凭据快照，否则会干扰在途 OAuth 刷新的终态提交
-    let current = store.account(account_id).expect("account after refresh");
-    assert_eq!(current, before);
-    store
-        .repository()
-        .load_runtime_credential(&before)
-        .await
-        .expect("unchanged credential");
+    let current = store.account(account_id).expect("account after revocation");
+    assert_eq!(current.revision(), before.revision());
+    assert_eq!(current.quota(), before.quota());
+    assert_eq!(current.credential_state(), before.credential_state());
+    assert_eq!(current.next_refresh_at(), before.next_refresh_at());
+    assert!(current.has_refresh_token());
+    let status = current.status_projection(SystemTime::now(), None);
+    assert_eq!(status.status, AccountStatus::Error);
+    assert_eq!(
+        status.error_reason,
+        Some(gateway_core::account::AccountErrorReason::AccessTokenExpired)
+    );
 }
 
 #[tokio::test]

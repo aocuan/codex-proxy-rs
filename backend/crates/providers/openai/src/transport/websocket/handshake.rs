@@ -1,4 +1,4 @@
-//! Responses WebSocket endpoint、opening handshake 与首帧发送
+//! Responses WebSocket endpoint、opening handshake 与请求发送
 
 use std::{error::Error as _, io, time::Duration};
 
@@ -8,7 +8,7 @@ use gateway_protocol::openai::events;
 use tokio::{io::BufWriter, time::timeout};
 use tokio_tungstenite::{Connector, MaybeTlsStream, client_async_tls_with_config};
 use tungstenite::{
-    self, Message,
+    self,
     extensions::{ExtensionsConfig, compression::deflate::DeflateConfig},
     handshake::client::Request as WsRequest,
     http::Response as WsResponse,
@@ -26,16 +26,17 @@ use crate::{
 };
 
 use super::{
-    error::CodexWebSocketExchangeError,
-    model::{CodexWebSocketConnection, CodexWebSocketRequest, WebSocketContinuationRequirement},
+    error::{CodexWebSocketExchangeError, CodexWebSocketUpstreamError},
+    model::{
+        CodexWebSocketConnection, CodexWebSocketRequest, ResponseCreateOpening,
+        WebSocketContinuationRequirement,
+    },
     pool::CodexWebSocketConnectionMetadata,
     pump::{PumpLogContext, PumpedWebSocket, RawWsStream},
 };
 
-use super::control::WEBSOCKET_SEND_TIMEOUT;
-
 const WEBSOCKET_EXTENSIONS: &str = "permessage-deflate; client_max_window_bits";
-const WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 impl CodexWebSocketConnection {
     /// 复用传输库的握手编码检查，不能在拨号后才发现插件输出不可表示
@@ -95,41 +96,41 @@ impl CodexWebSocketConnection {
         }
     }
 
-    /// 构造 Responses WebSocket opening 与首个 `response.create` 文本帧
+    /// 构造 Responses WebSocket opening 与首条 `response.create` 消息
     pub fn responses_create_request(
         base_url: &str,
         websocket_key: &str,
         business_headers: Vec<(String, String)>,
         request: &CodexResponsesRequest,
     ) -> Result<CodexWebSocketRequest, serde_json::Error> {
-        Self::responses_create_request_for_path(
+        Ok(Self::response_create_opening_for_path(
             base_url,
             CODEX_RESPONSES_PATH,
             websocket_key,
             business_headers,
             request,
         )
+        .with_payload(websocket_response_create_payload_text(request)?))
     }
 
-    pub(crate) fn responses_create_request_for_path(
+    pub(crate) fn response_create_opening_for_path(
         base_url: &str,
         path: &str,
         websocket_key: &str,
         business_headers: Vec<(String, String)>,
         request: &CodexResponsesRequest,
-    ) -> Result<CodexWebSocketRequest, serde_json::Error> {
+    ) -> ResponseCreateOpening {
         let mut connection = Self::responses(base_url, websocket_key, business_headers);
         let endpoint = crate::transport::endpoint_url(base_url, path);
         connection.endpoint = endpoint
             .replacen("https://", "wss://", 1)
             .replacen("http://", "ws://", 1);
-        Ok(CodexWebSocketRequest {
+        ResponseCreateOpening {
             connection,
-            payload_text: websocket_response_create_payload_text(request)?,
             continuation: WebSocketContinuationRequirement::from_request(request),
             codex_search_declared: (path == CODEX_RESPONSES_PATH)
                 .then(|| crate::compat::declares_hosted_search(request.body())),
-        })
+        }
     }
 }
 
@@ -160,21 +161,6 @@ pub(super) async fn connect_pumped_websocket(
 ) -> Result<(PumpedWebSocket, WsResponse<Option<Vec<u8>>>), CodexWebSocketExchangeError> {
     let (raw, response) = connect_websocket(connection, fast_path).await?;
     Ok((PumpedWebSocket::new(raw, context, proxy_permit), response))
-}
-
-pub(super) async fn send_websocket_request(
-    websocket: &PumpedWebSocket,
-    payload_text: &str,
-) -> Result<(), CodexWebSocketExchangeError> {
-    timeout(
-        WEBSOCKET_SEND_TIMEOUT,
-        websocket.send(Message::Text(payload_text.to_string().into())),
-    )
-    .await
-    .map_err(|_| CodexWebSocketExchangeError::SendTimeout {
-        timeout: WEBSOCKET_SEND_TIMEOUT,
-    })??;
-    Ok(())
 }
 
 pub(super) fn websocket_connection_metadata(
@@ -431,11 +417,11 @@ fn websocket_opening_error(
         .and_then(|value| value.to_str().ok())
         .and_then(gateway_protocol::openai::parse_retry_after_seconds)
         .or_else(|| events::retry_after_seconds_from_body(&body));
-    CodexWebSocketExchangeError::upstream(
+    CodexWebSocketExchangeError::Upstream(Box::new(CodexWebSocketUpstreamError {
         status_code,
         retry_after_seconds,
         body,
-        reqwest::StatusCode::from_u16(status_code)
+        client_response: reqwest::StatusCode::from_u16(status_code)
             .ok()
             .map(|status| {
                 Box::new(CodexClientVisibleUpstreamResponse::new(
@@ -445,11 +431,12 @@ fn websocket_opening_error(
                     raw_body,
                 ))
             }),
-        response_meta::set_cookie_headers(response.headers()),
-        response_meta::diagnostics(Some(status_code), response.headers())
+        set_cookie_headers: response_meta::set_cookie_headers(response.headers()),
+        rate_limit_headers: response_meta::rate_limit_headers(response.headers()),
+        diagnostics: response_meta::diagnostics(Some(status_code), response.headers())
             .with_response_origin(websocket_response_origin(connection)),
-        CodexUpstreamSendPhase::BeforePayload,
-    )
+        send_phase: CodexUpstreamSendPhase::BeforePayload,
+    }))
 }
 
 fn websocket_response_origin(connection: &CodexWebSocketConnection) -> Option<reqwest::Url> {

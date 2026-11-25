@@ -1930,6 +1930,7 @@ async fn disabled_account_diagnostic_selects_the_pinned_account_without_state_wr
         Arc::new(DiagnosticLeasePort),
         Arc::new(MemoryCooldownPort::default()),
         Arc::new(AccountFeedbackStats::default()),
+        Arc::new(crate::support::TestSessionAffinity::default()),
     );
     let provider = Arc::new(
         GrokBuildProvider::new(
@@ -4153,6 +4154,10 @@ async fn provider_compiles_realtime_catalog_capabilities() {
         .expect("capabilities");
     assert_eq!(capabilities.len(), 1);
     assert_eq!(capabilities[0].upstream_model().as_str(), MODEL);
+    assert_eq!(
+        capabilities[0].catalog_accounts(),
+        Some(&BTreeSet::from([account_id("catalog-provider")]))
+    );
     assert!(
         capabilities[0]
             .capabilities()
@@ -4303,7 +4308,7 @@ async fn missing_catalog_feature_metadata_keeps_build_responses_routable() {
 
 #[tokio::test]
 async fn configured_request_profile_reaches_inference_headers() {
-    use provider_xai::transport::client_profile::{GrokClientProfileSelection, VersionMode};
+    use provider_xai::profile::selection::{GrokClientProfileSelection, VersionMode};
     let transport = StubInferenceTransport::success();
     let provider = provider(StubSelector::success(), transport.clone()).await;
     let selection = GrokClientProfileSelection {
@@ -4364,9 +4369,8 @@ struct AdapterProbe {
 impl gateway_core::engine::upstream_adapter::UpstreamAdapterPlan for AdapterProbe {
     fn select(
         &self,
-        _: &AttemptContext,
+        _: gateway_core::engine::ModelRouteScope<'_>,
         provider: &ProviderKind,
-        _: &UpstreamModelId,
         account: Option<&ProviderAccountId>,
     ) -> Result<UpstreamAdapterSelection, gateway_core::error::ProviderError> {
         assert_eq!(provider.as_str(), "xai");

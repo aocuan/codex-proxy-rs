@@ -10,6 +10,9 @@ export * from './modules/evaluations'
 // 账号分组
 export * from './modules/groups'
 
+// Key 自助用量查询
+export * from './modules/key-usage'
+
 // API Keys 管理
 export * from './modules/keys'
 
@@ -30,4 +33,5 @@ export * from './modules/usage'
 
 // 跨模块共享的接口类型
 export type { RequestLocation, RequestLocationDetection } from './types/location'
+export type { ProviderRequestProfile, ProviderRequestProfiles, ProviderRequestProfileUpdates } from './types/request-profile'
 export type { RelativeTimeView } from './types/time'

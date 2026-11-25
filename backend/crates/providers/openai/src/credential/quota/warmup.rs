@@ -121,7 +121,7 @@ impl CodexCredentialQuotaService {
         &self,
         model: &str,
     ) -> Result<CodexWarmupSummary, CodexCredentialQuotaError> {
-        let mut accounts = self.repository.list_for_provider().await?;
+        let mut accounts = self.repository.list_for_provider(false).await?;
         accounts.retain(warmup_account_is_available);
         let mut summary = CodexWarmupSummary::default();
         if accounts.is_empty() {
@@ -140,17 +140,7 @@ impl CodexCredentialQuotaService {
             })
             .collect::<BTreeMap<_, _>>();
 
-        let profile = self
-            .profile
-            .resolve_global_request_profile(self.runtime_policy.as_ref())
-            .await
-            .map_err(CodexCredentialQuotaError::Profile)?;
-        let client = CodexBackendClient::new(
-            self.http.clone(),
-            self.base_url.clone(),
-            self.profile.clone(),
-        )
-        .with_request_profile(profile);
+        let client = self.global_profile_client().await?;
 
         for account in accounts {
             if account.quota().is_exhausted() {
@@ -249,7 +239,10 @@ impl CodexCredentialQuotaService {
 
         let upstream_request = CodexResponsesRequest::from_body(body);
         let request_id = format!("warmup_{}", Uuid::now_v7().simple());
-        let client_for_account = match client.for_account(account) {
+        let client_for_account = match credential
+            .authentication
+            .model_client_for_account(client, account)
+        {
             Ok(c) => c,
             Err(error) => {
                 tracing::warn!(account_id = %account.id(), error = %error, "warmup client for account failed");

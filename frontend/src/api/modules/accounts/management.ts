@@ -57,9 +57,15 @@ interface AccountListParams {
   sortDirection?: string
 }
 
+export interface AccountConnectionUpdate {
+  baseUrl?: string
+  protocol?: 'responses' | 'messages'
+  transport: 'http' | 'prefer_websocket'
+  apiKey?: string
+}
+
 interface AccountUpdateParam {
-  connection?: { baseUrl?: string, protocol?: ApiKeyConfiguration['protocol'], transport: ApiKeyConfiguration['transport'], apiKey?: string }
-  outboundProxyUrl?: string
+  connection?: AccountConnectionUpdate
   outboundProxyId?: string
   accountId: string
   name?: string
@@ -74,7 +80,6 @@ interface AccountUpdateParam {
 interface AccountBatchUpdateParam {
   quotaSettings?: Record<string, AccountQuotaBucketSettings>
   autoUseQuotaCredits?: boolean
-  outboundProxyUrl?: string
   outboundProxyId?: string
   accountIds: string[]
   enabled?: boolean
@@ -97,12 +102,6 @@ interface AccountDetailResponse {
 interface AccountConcurrencyParams extends AccountIdParam {
   page: number
   pageSize: number
-}
-
-export interface ApiKeyConfiguration {
-  base_url: string
-  protocol: 'responses' | 'messages'
-  transport: 'http' | 'prefer_websocket'
 }
 
 export interface AccountConcurrencyEntry {

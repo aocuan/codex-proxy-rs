@@ -239,6 +239,10 @@ pub trait NativeResponseTranslator: Send + 'static {
         &mut self,
         event: &crate::event::ProtocolWireEvent,
     ) -> Result<Vec<crate::event::ProtocolWireEvent>, ProviderError>;
+    /// 上游以 EOF 而非原生终态帧结束时，在终结事实交付前刷新协议终态
+    fn finish(&mut self) -> Result<Vec<crate::event::ProtocolWireEvent>, ProviderError> {
+        Ok(Vec::new())
+    }
 }
 
 const MAX_NATIVE_RESPONSE_EVENTS_PER_INPUT: usize = 64;
@@ -250,8 +254,7 @@ const MAX_NATIVE_RESPONSE_EVENTS_PER_INPUT: usize = 64;
 /// 这样 Coordinator 可以先持久化 attempt，再越过发送屏障
 pub struct ProviderStream {
     metadata: ProviderCallMetadata,
-    events: EventStream,
-    _lease: Box<dyn ResourceLease>,
+    source: Option<ProviderStreamSource>,
     native_response_translator: Option<Box<dyn NativeResponseTranslator>>,
     account_feedback: Option<ProviderStreamAccountFeedback>,
     account_protection: Option<super::account_protection::AttemptProtection>,
@@ -259,7 +262,12 @@ pub struct ProviderStream {
         Option<futures::future::BoxFuture<'static, Option<Result<ProviderEvent, ProviderError>>>>,
     validator: Result<EventSequenceValidator, EventSequenceError>,
     strict_canonical_seen: bool,
-    terminated: bool,
+}
+
+// 事件流内部也可能持有同一租约，结束读取时须一并丢弃
+struct ProviderStreamSource {
+    events: EventStream,
+    _lease: Box<dyn ResourceLease>,
 }
 
 struct ProviderStreamAccountFeedback {
@@ -360,16 +368,23 @@ impl ProviderStream {
     {
         Self {
             metadata,
-            events: Box::pin(events),
-            _lease: Box::new(lease),
+            source: Some(ProviderStreamSource {
+                events: Box::pin(events),
+                _lease: Box::new(lease),
+            }),
             native_response_translator: None,
             account_feedback: None,
             account_protection: None,
             protection_feedback: None,
             validator: Ok(EventSequenceValidator::new()),
             strict_canonical_seen: false,
-            terminated: false,
         }
+    }
+
+    pub(super) fn abort(&mut self) {
+        self.source.take();
+        self.account_protection.take();
+        self.protection_feedback.take();
     }
 
     /// 在第一次发送前捕获反馈栅栏，诊断调用由协调器排除
@@ -426,6 +441,15 @@ impl ProviderStream {
     /// 返回错误
     pub fn translate_native_response(
         &mut self,
+        event: ProviderEvent,
+        terminal: bool,
+    ) -> Result<Vec<ProviderEvent>, ProviderError> {
+        self.translate_event(event, terminal)
+            .inspect_err(|_| self.abort())
+    }
+
+    fn translate_event(
+        &mut self,
         mut event: ProviderEvent,
         terminal: bool,
     ) -> Result<Vec<ProviderEvent>, ProviderError> {
@@ -433,15 +457,19 @@ impl ProviderStream {
             return Ok(vec![event]);
         };
         let middleware_transformed = event.middleware_transformed();
-        let Some(wire) = event.wire_event() else {
+        let had_wire = event.wire_event().is_some();
+        let mut translated = if let Some(wire) = event.wire_event() {
+            if wire.protocol() != translator.source_protocol() {
+                return Err(native_response_protocol_error());
+            }
+            translator.translate(wire)?
+        } else if terminal {
+            translator.finish()?
+        } else {
             return Ok(vec![event]);
         };
-        if wire.protocol() != translator.source_protocol() {
-            return Err(native_response_protocol_error());
-        }
-        let mut translated = translator.translate(wire)?;
         if translated.len() > MAX_NATIVE_RESPONSE_EVENTS_PER_INPUT
-            || (terminal && translated.is_empty())
+            || (terminal && had_wire && translated.is_empty())
             || translated
                 .iter()
                 .any(|wire| wire.protocol() != translator.target_protocol())
@@ -980,8 +1008,12 @@ impl Stream for ProviderStream {
             };
         }
         let result = this.poll_event(context);
+        let upstream_finished = matches!(&result, Poll::Ready(Some(Err(_)) | None));
+        if upstream_finished {
+            this.source.take();
+        }
         // 客户端可在成功终态后停止拉取，不能依赖之后的 EOF 才清除保护证据
-        let protection_terminal = matches!(&result, Poll::Ready(Some(Err(_)) | None))
+        let protection_terminal = upstream_finished
             || (matches!(&result, Poll::Ready(Some(Ok(_))))
                 && this
                     .account_protection
@@ -1004,14 +1036,14 @@ impl ProviderStream {
         context: &mut Context<'_>,
     ) -> Poll<Option<Result<ProviderEvent, ProviderError>>> {
         let this = self;
-        if this.terminated {
+        let Some(source) = this.source.as_mut() else {
             return Poll::Ready(None);
-        }
+        };
         if let Some(feedback) = this.account_feedback.as_mut() {
             feedback.start();
         }
 
-        match this.events.as_mut().poll_next(context) {
+        match source.events.as_mut().poll_next(context) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Some(Ok(event))) => {
                 // 纯 wire 流的 facts 仍只是旁路观测；一旦交付 canonical-only
@@ -1026,7 +1058,6 @@ impl ProviderStream {
                     }
                 }
                 if this.strict_canonical_seen && this.validator.is_err() {
-                    this.terminated = true;
                     let error =
                         ProviderError::new(ProviderErrorKind::Protocol, UpstreamSendState::Sent);
                     if let Some(feedback) = this.account_feedback.as_mut() {
@@ -1043,14 +1074,12 @@ impl ProviderStream {
                 Poll::Ready(Some(Ok(event)))
             }
             Poll::Ready(Some(Err(error))) => {
-                this.terminated = true;
                 if let Some(feedback) = this.account_feedback.as_mut() {
                     feedback.report_failure(&error);
                 }
                 Poll::Ready(Some(Err(error)))
             }
             Poll::Ready(None) => {
-                this.terminated = true;
                 let validation = if this.strict_canonical_seen {
                     this.validator
                         .as_ref()
@@ -1152,6 +1181,28 @@ pub trait Provider: Send + Sync {
     /// 声明可用于互联共享的直连认证方式，不执行网络查询
     fn is_direct_account(&self, _authentication_kind: &str) -> bool {
         false
+    }
+
+    /// 请求身份明确时，Provider 可以为自身直连账号声明实际模型。Core 按该模型鉴权并冻结重试范围。
+    fn direct_account_model(
+        &self,
+        _model: &PublicModelId,
+        _operation: &Operation,
+        _previous: Option<&crate::operation::ProviderSessionState>,
+        _settings: &crate::settings::SettingsValues,
+    ) -> Option<UpstreamModelId> {
+        None
+    }
+
+    /// 自动替换模型前校验必须跟随的会话账号是否在候选范围内
+    async fn allows_direct_model_scope(
+        &self,
+        _operation: &Operation,
+        _client_key: &ClientApiKeyId,
+        _scope: &crate::routing::FrozenAccountScope,
+        _policy: crate::account::AccountSelectionPolicy,
+    ) -> Result<bool, ProviderError> {
+        Ok(true)
     }
 
     /// Provider 解释自己的隐私规则，Core 仅冻结编译结果

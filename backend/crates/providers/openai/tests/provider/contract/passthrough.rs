@@ -3,6 +3,45 @@
 use super::*;
 
 #[tokio::test]
+async fn websocket_body_fields_stay_in_the_body_when_using_http_upstream() {
+    let frame = r#"{"request_kind":"turn","tool_namespaces_info":{"workspace":{}}}"#;
+    let body = json!({
+        "model": "gpt-5.4", "input": "hello",
+        "client_metadata": {"x-codex-turn-metadata": frame},
+        "betaFeatures": "only-in-body", "includeTimingMetrics": "true"
+    });
+    let sent = capture_scoped_http_request(
+        "req_frame_only",
+        "acct_scope_same",
+        "acct_scope_same",
+        body.as_object().unwrap().clone(),
+        Map::from_iter([(
+            gateway_protocol::openai::WEBSOCKET_FRAME_CONTEXT_KEY.into(),
+            json!(true),
+        )]),
+    )
+    .await;
+    for header in [
+        "x-codex-turn-metadata",
+        "x-codex-beta-features",
+        "x-responsesapi-include-timing-metrics",
+    ] {
+        assert!(!sent.headers.contains_key(header), "{header}");
+    }
+    let sent_body = captured_request_body(&sent);
+    let sent_frame = sent_body["client_metadata"]["x-codex-turn-metadata"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(sent_frame).unwrap(),
+        serde_json::from_str::<Value>(frame).unwrap()
+    );
+    for key in ["betaFeatures", "includeTimingMetrics"] {
+        assert_eq!(sent_body[key], body[key]);
+    }
+}
+
+#[tokio::test]
 async fn responses_options_follow_the_selected_upstream_on_both_transports() {
     let oauth_omissions = json!({
         "frequency_penalty": 0, "presence_penalty": 0, "top_p": 1,
@@ -47,6 +86,84 @@ async fn responses_options_follow_the_selected_upstream_on_both_transports() {
             }
             assert_eq!(sent["client_metadata"]["user"], "keep");
             assert_eq!(sent["tools"], body["tools"]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn request_country_follows_the_selected_account_across_transports() {
+    use OpenAiRequestCountry::{Custom, Default, FollowLocation, Passthrough};
+    let location = global_request_location();
+    for (policy, location, input, oauth_country) in [
+        (FollowLocation {}, None, None, Some(Value::Null)),
+        (FollowLocation {}, Some(&location), None, Some(json!("NZ"))),
+        (
+            Default {},
+            Some(&location),
+            Some(json!("CA")),
+            Some(Value::Null),
+        ),
+        (Passthrough {}, Some(&location), None, None),
+        (
+            Passthrough {},
+            Some(&location),
+            Some(json!("CA")),
+            Some(json!("CA")),
+        ),
+        (
+            Custom {
+                country: "JP".into(),
+            },
+            Some(&location),
+            Some(Value::Null),
+            Some(json!("JP")),
+        ),
+    ] {
+        let mut body = json!({
+            "model": "gpt-5.4", "input": "hello",
+            "client_metadata": {"request_country": "business"},
+            "tools": [{"type": "web_search"}],
+        });
+        if let Some(country) = &input {
+            body["request_country"] = country.clone();
+        }
+        for api_key in [false, true] {
+            let expected = if api_key { &input } else { &oauth_country };
+            for websocket in [false, true] {
+                let sent = capture_downstream_with_country(
+                    body.clone(),
+                    api_key,
+                    websocket,
+                    false,
+                    location.cloned(),
+                    policy.clone(),
+                )
+                .await;
+                assert_eq!(
+                    sent.get("request_country"),
+                    expected.as_ref(),
+                    "{policy:?}, api_key={api_key}, websocket={websocket}",
+                );
+                assert_eq!(
+                    sent.pointer("/client_metadata/request_country"),
+                    body.pointer("/client_metadata/request_country"),
+                );
+                assert_eq!(
+                    sent.pointer("/tools/0/user_location/country")
+                        .and_then(Value::as_str),
+                    location.map(|location| location.country.as_str()),
+                );
+                assert_eq!(
+                    sent.pointer("/tools/0/user_location/city")
+                        .and_then(Value::as_str),
+                    location.map(|location| location.city.as_str()),
+                );
+                assert_eq!(
+                    sent.pointer("/tools/0/user_location/timezone")
+                        .and_then(Value::as_str),
+                    location.map(|location| location.timezone.name()),
+                );
+            }
         }
     }
 }

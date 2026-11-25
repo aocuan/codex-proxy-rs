@@ -1,18 +1,18 @@
-import type { ProtectionDraft } from '../components/error-protection/form'
+import type { ProtectionDraft } from '../components/error-protection/policy'
 import type { rotationOptions } from '../constants'
-import type { AccountAffinity, CodexPrivacyPolicy, ResetWindowWeights, SmartSchedulingConfig } from '@/api'
-import type { ProviderRequestProfiles, ProviderRequestProfileUpdates } from '@/api/modules/settings/profiles'
+import type { AccountAffinity, CodexPrivacyPolicy, OpenAiRequestCountry, ProviderRequestProfiles, ResetWindowWeights, SmartSchedulingConfig } from '@/api'
 import { cloneDeep, isEqual } from 'es-toolkit'
 import { computed, reactive, ref, shallowRef } from 'vue'
 import { detectRequestLocation, getSettings, updateSettings } from '@/api'
 
 import { ApiError } from '@/api/request'
+import { requestProfileChanges } from '@/components/request-profile/changes'
 import { useAsyncAction } from '@/composables/useAsyncAction'
 import { t } from '@/i18n'
+import { notification as ZNotification } from '@/plugins/notification'
 import { normalizeRequestLocation } from '@/utils/location'
-import { notification as ZNotification } from '@/utils/notification'
 import { errorMessage } from '@/utils/operation'
-import { trimProtectionText } from '../components/error-protection/form'
+import { trimProtectionText } from '../components/error-protection/policy'
 
 type RotationStrategy = (typeof rotationOptions.value)[number]['value']
 
@@ -34,6 +34,8 @@ export function useSettingsForm() {
     quotaResetWindowWeights: undefined as ResetWindowWeights | undefined,
     providerRequestProfiles: {} as ProviderRequestProfiles,
     codexPrivacyPolicy: { enabled: false, onError: 'skip_rule', rules: [] } as CodexPrivacyPolicy,
+    openaiOauthGuardianReviewModel: true,
+    openaiRequestCountry: { mode: 'follow_location' } as OpenAiRequestCountry,
     requestLocationEnabled: false,
     requestLocation: {
       country: '',
@@ -45,9 +47,9 @@ export function useSettingsForm() {
     refreshConcurrency: null as number | null,
     maxConcurrentPerAccount: null as number | null,
     openaiGuardianReservedConcurrency: null as number | null,
-    openaiAccountAffinity: '' as AccountAffinity | '',
+    accountAffinity: '' as AccountAffinity | '',
     maxAccountRotations: null as number | null,
-    openaiSessionAffinityTtlHours: null as number | null,
+    sessionAffinityTtlHours: null as number | null,
     maxWaitingPerKey: null as number | null,
     maxWaitingPerAccount: null as number | null,
     keyQueueTimeoutSeconds: null as number | null,
@@ -96,7 +98,7 @@ export function useSettingsForm() {
     mappings.value = initial.mappings
   }
 
-  function numericModel(key: 'resetCreditMaxWeeklyRemainingPercent' | 'resetCreditLeadMinutes' | 'refreshMarginSeconds' | 'refreshConcurrency' | 'maxConcurrentPerAccount' | 'openaiGuardianReservedConcurrency' | 'maxAccountRotations' | 'openaiSessionAffinityTtlHours' | 'maxWaitingPerKey' | 'maxWaitingPerAccount' | 'keyQueueTimeoutSeconds' | 'accountQueueTimeoutSeconds' | 'maxRetryAfterSeconds' | 'responsesMaxDecompressedBodyMiB' | 'usageRetentionDays') {
+  function numericModel(key: 'resetCreditMaxWeeklyRemainingPercent' | 'resetCreditLeadMinutes' | 'refreshMarginSeconds' | 'refreshConcurrency' | 'maxConcurrentPerAccount' | 'openaiGuardianReservedConcurrency' | 'maxAccountRotations' | 'sessionAffinityTtlHours' | 'maxWaitingPerKey' | 'maxWaitingPerAccount' | 'keyQueueTimeoutSeconds' | 'accountQueueTimeoutSeconds' | 'maxRetryAfterSeconds' | 'responsesMaxDecompressedBodyMiB' | 'usageRetentionDays') {
     return computed({
       get: () => (form[key] === null
         ? ''
@@ -119,7 +121,7 @@ export function useSettingsForm() {
   const maxConcurrentPerAccountValue = numericModel('maxConcurrentPerAccount')
   const openaiGuardianReservedConcurrencyValue = numericModel('openaiGuardianReservedConcurrency')
   const maxAccountRotationsValue = numericModel('maxAccountRotations')
-  const openaiSessionAffinityTtlHoursValue = numericModel('openaiSessionAffinityTtlHours')
+  const sessionAffinityTtlHoursValue = numericModel('sessionAffinityTtlHours')
   const maxWaitingPerKeyValue = numericModel('maxWaitingPerKey')
   const maxWaitingPerAccountValue = numericModel('maxWaitingPerAccount')
   const responsesMaxDecompressedBodyMiBValue = numericModel('responsesMaxDecompressedBodyMiB')
@@ -133,15 +135,17 @@ export function useSettingsForm() {
   function applySettings(data: Awaited<ReturnType<typeof getSettings>>) {
     form.codexPrivacyPolicy = cloneDeep(data.codexPrivacyPolicy)
     form.configRevision = data.configRevision
+    form.openaiOauthGuardianReviewModel = data.openaiOauthGuardianReviewModel
+    form.openaiRequestCountry = data.openaiRequestCountry
     form.requestLocationEnabled = data.requestLocationEnabled
     form.requestLocation = { ...data.requestLocation }
     form.refreshMarginSeconds = data.refreshMarginSeconds
     form.refreshConcurrency = data.refreshConcurrency
     form.maxConcurrentPerAccount = data.maxConcurrentPerAccount
     form.openaiGuardianReservedConcurrency = data.openaiGuardianReservedConcurrency
-    form.openaiAccountAffinity = data.openaiAccountAffinity
+    form.accountAffinity = data.accountAffinity
     form.maxAccountRotations = data.maxAccountRotations
-    form.openaiSessionAffinityTtlHours = data.openaiSessionAffinityTtlHours
+    form.sessionAffinityTtlHours = data.sessionAffinityTtlHours
     form.maxWaitingPerKey = data.maxWaitingPerKey
     form.maxWaitingPerAccount = data.maxWaitingPerAccount
     form.keyQueueTimeoutSeconds = data.keyQueueTimeoutSeconds
@@ -252,7 +256,7 @@ export function useSettingsForm() {
     const savedSettings = saved.value
     if (saving.value || loading.value || detectingLocation.value || !savedSettings)
       return
-    const { refreshMarginSeconds, refreshConcurrency, maxConcurrentPerAccount, openaiGuardianReservedConcurrency, openaiAccountAffinity, maxAccountRotations, openaiSessionAffinityTtlHours, rotationStrategy, maxWaitingPerKey, maxWaitingPerAccount, keyQueueTimeoutSeconds, accountQueueTimeoutSeconds, maxRetryAfterSeconds, responsesMaxDecompressedBodyMiB } = form
+    const { refreshMarginSeconds, refreshConcurrency, maxConcurrentPerAccount, openaiGuardianReservedConcurrency, accountAffinity, maxAccountRotations, sessionAffinityTtlHours, rotationStrategy, maxWaitingPerKey, maxWaitingPerAccount, keyQueueTimeoutSeconds, accountQueueTimeoutSeconds, maxRetryAfterSeconds, responsesMaxDecompressedBodyMiB } = form
     const { resetCreditMaxWeeklyRemainingPercent, resetCreditLeadMinutes, usageRetentionDays } = form
     // 关闭时保留已保存的自定义值，未完成的草稿不阻止停止覆盖。
     const requestLocation = form.requestLocationEnabled
@@ -261,13 +265,20 @@ export function useSettingsForm() {
     await saveAction.run(async () => {
       const result = await updateSettings({
         configRevision: savedSettings.form.configRevision,
-        providerRequestProfiles: requestProfileUpdates(
+        providerRequestProfiles: requestProfileChanges(
           savedSettings.form.providerRequestProfiles,
           form.providerRequestProfiles,
         ),
         codexPrivacyPolicy: cloneDeep(form.codexPrivacyPolicy),
+        openaiRequestCountry: form.openaiRequestCountry.mode === 'custom'
+          ? {
+              mode: 'custom',
+              country: form.openaiRequestCountry.country.trim().toUpperCase(),
+            }
+          : { mode: form.openaiRequestCountry.mode },
         requestLocationEnabled: form.requestLocationEnabled,
         requestLocation,
+        openaiOauthGuardianReviewModel: form.openaiOauthGuardianReviewModel,
         modelMappings: Object.fromEntries(mappings.value.map(row => [
           row.requestedModel.trim(),
           row.upstreamModel.trim(),
@@ -276,9 +287,9 @@ export function useSettingsForm() {
         refreshConcurrency: refreshConcurrency!,
         maxConcurrentPerAccount: maxConcurrentPerAccount!,
         openaiGuardianReservedConcurrency: openaiGuardianReservedConcurrency!,
-        openaiAccountAffinity: openaiAccountAffinity as AccountAffinity,
+        accountAffinity: accountAffinity as AccountAffinity,
         maxAccountRotations: maxAccountRotations!,
-        openaiSessionAffinityTtlHours: openaiSessionAffinityTtlHours!,
+        sessionAffinityTtlHours: sessionAffinityTtlHours!,
         maxWaitingPerKey: maxWaitingPerKey!,
         maxWaitingPerAccount: maxWaitingPerAccount!,
         keyQueueTimeoutSeconds: keyQueueTimeoutSeconds!,
@@ -343,7 +354,7 @@ export function useSettingsForm() {
     maxConcurrentPerAccountValue,
     openaiGuardianReservedConcurrencyValue,
     maxAccountRotationsValue,
-    openaiSessionAffinityTtlHoursValue,
+    sessionAffinityTtlHoursValue,
     maxWaitingPerKeyValue,
     maxWaitingPerAccountValue,
     keyQueueTimeoutSecondsValue,
@@ -356,21 +367,4 @@ export function useSettingsForm() {
     saveSettings,
     loadSettings,
   }
-}
-
-function requestProfileUpdates(
-  previous: ProviderRequestProfiles,
-  current: ProviderRequestProfiles,
-): ProviderRequestProfileUpdates {
-  const updates: ProviderRequestProfileUpdates = {}
-  const clonedCurrent = cloneDeep(current)
-  for (const provider of new Set([
-    ...Object.keys(previous),
-    ...Object.keys(current),
-  ])) {
-    if (isEqual(previous[provider], current[provider]))
-      continue
-    updates[provider] = clonedCurrent[provider] ?? null
-  }
-  return updates
 }

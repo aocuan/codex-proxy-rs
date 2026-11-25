@@ -4,7 +4,7 @@ import { useDebounceFn } from '@vueuse/core'
 import { computed, shallowRef } from 'vue'
 import { getAccountGroupOptions, getAccounts, getApiKeys } from '@/api'
 import { useRequestState } from '@/composables/useRequestState'
-import { formatProviderLabel } from '@/utils/providers'
+import { formatProviderLabel } from '@/providers/catalog'
 import { accountIdentityLabel } from '@/views/accounts/utils/accountIdentity'
 
 interface EvaluationAccountOption extends SelectOption {

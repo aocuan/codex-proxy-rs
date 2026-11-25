@@ -12,8 +12,6 @@ mod core_adapter;
 mod deletion;
 mod protection_revision;
 mod quota;
-mod quota_forecast;
-mod quota_history;
 mod timestamps;
 mod usage_projection;
 
@@ -1341,6 +1339,13 @@ async fn account_proxy_edits_preserve_credentials_and_clear_egress_without_audit
     let Some(database) = TestDatabase::create("account_proxy").await else {
         return;
     };
+    sqlx::query(
+        "insert into outbound_proxies (id, name, proxy_url) values ('proxy_next', 'Next', $1)",
+    )
+    .bind("socks5h://next:new-secret@127.0.0.1:1080")
+    .execute(&database.pool)
+    .await
+    .unwrap();
     let repository = PgProviderAccountRepository::new(database.pool.clone());
     let mut seed = account("acct_proxy", "proxy-user");
     seed.outbound_proxy = Some(
@@ -1378,11 +1383,8 @@ async fn account_proxy_edits_preserve_credentials_and_clear_egress_without_audit
     store
         .update_account(
             UpdateAccount {
-                outbound_proxy: Some(gateway_admin::model::proxies::AccountProxySelection::Url(
-                    gateway_core::account::OutboundProxy::parse(
-                        "socks5h://next:new-secret@127.0.0.1:1080",
-                    )
-                    .unwrap(),
+                outbound_proxy: Some(gateway_admin::model::proxies::AccountProxySelection::Saved(
+                    "proxy_next".to_owned(),
                 )),
                 ..command.clone()
             },
@@ -3090,7 +3092,8 @@ async fn quota_exhaustion_survives_rotation_only_for_the_same_upstream_identity(
         .apply_quota_access(QuotaAccessChange {
             account_id: ProviderAccountId::new("acct_rotation_quota").expect("account ID"),
             expected_revision: CredentialRevision::new(1).expect("credential revision"),
-            state: QuotaState::exhausted(QuotaEvidence::ProviderDenied, observed_at, None),
+            state: QuotaState::exhausted(QuotaEvidence::UsageLimitReached, observed_at, None)
+                .with_limit_window_minutes(Some(10080)),
         })
         .await
         .expect("persist quota exhaustion");
@@ -3111,13 +3114,13 @@ async fn quota_exhaustion_survives_rotation_only_for_the_same_upstream_identity(
         .await
         .expect("rotate exhausted account credential");
 
-    let quota_access_state: String =
-        sqlx::query_scalar("select quota_access_state from provider_accounts where id = $1")
-            .bind("acct_rotation_quota")
-            .fetch_one(&database.pool)
-            .await
-            .expect("load exhausted account after credential rotation");
-    assert_eq!(quota_access_state, "exhausted".to_owned());
+    let current = repository
+        .get_account(&ProviderAccountId::new("acct_rotation_quota").unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(current.quota().is_exhausted());
+    assert_eq!(current.quota().limit_window_minutes(), Some(10080));
 
     repository
         .rotate_provider_account(RotateProviderAccount {
@@ -3412,6 +3415,7 @@ fn credential_update(account_id: &str, revision: u64, marker: &str) -> ProviderC
     ProviderCredentialUpdate {
         preserve_profile: false,
         preserve_credential_state: false,
+        preserve_access_token_expiry: false,
         account_id: account_id.to_owned(),
         expected_revision: Revision::new(revision).expect("credential revision"),
         provider_credentials_json: credential_json(marker),
@@ -3560,6 +3564,13 @@ async fn proxy_edit_preserves_an_inflight_token_refresh() {
     let Some(database) = TestDatabase::create("review_proxy_refresh").await else {
         return;
     };
+    sqlx::query(
+        "insert into outbound_proxies (id, name, proxy_url) values ('proxy_next', 'Next', $1)",
+    )
+    .bind("http://127.0.0.1:18080")
+    .execute(&database.pool)
+    .await
+    .unwrap();
     let repository = PgProviderAccountRepository::new(database.pool.clone());
     let id = ProviderAccountId::new("acct_review_proxy").unwrap();
     let mut seed = account(id.as_str(), "review-proxy-user");
@@ -3592,8 +3603,8 @@ async fn proxy_edit_preserves_an_inflight_token_refresh() {
                 concurrency_limit: None,
                 weight: gateway_core::account::AccountWeight::DEFAULT,
                 group_ids: vec![],
-                outbound_proxy: Some(gateway_admin::model::proxies::AccountProxySelection::Url(
-                    gateway_core::account::OutboundProxy::parse("http://127.0.0.1:18080").unwrap(),
+                outbound_proxy: Some(gateway_admin::model::proxies::AccountProxySelection::Saved(
+                    "proxy_next".to_owned(),
                 )),
             },
             &MutationContext {
@@ -3864,6 +3875,7 @@ async fn connection_configuration_update_preserves_credential_health() {
     let mut credential = credential_update(ID, 1, "same-secret");
     credential.preserve_credential_state = true;
     credential.preserve_profile = true;
+    credential.preserve_access_token_expiry = true;
     repository
         .rotate_provider_account(RotateProviderAccount {
             scope: ProviderAccountAdminScope {
@@ -3887,6 +3899,7 @@ async fn connection_configuration_update_preserves_credential_health() {
         "name",
         "credential_state",
         "credential_observed_at",
+        "access_token_expires_at",
         "last_error_reason",
         "last_error_message",
     ] {

@@ -22,6 +22,10 @@ pub use gateway_core::account::{
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderAccountCapabilities {
     pub turn_state_probe: bool,
+    pub credential_refresh: bool,
+    pub reauthorize: bool,
+    pub credential_export: bool,
+    pub model_catalog_download: bool,
     pub quota_settings_supported: bool,
     pub quota_credits: bool,
     pub quota: bool,

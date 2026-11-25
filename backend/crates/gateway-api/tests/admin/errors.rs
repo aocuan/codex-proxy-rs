@@ -5,7 +5,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Method, Request, StatusCode, header},
 };
-use gateway_api::auth::SessionState;
+use gateway_api::SessionState;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
@@ -14,7 +14,7 @@ use super::{AdminTestFixture, AdminTestState};
 const SESSION_COOKIE: &str = "cpr_session=valid-session";
 
 fn app(state: AdminTestState) -> Router {
-    crate::openai::api_router_with_admin(state.admin_services().clone()).layer(axum::Extension(
+    crate::data_plane::api_router_with_admin(state.admin_services().clone()).layer(axum::Extension(
         axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 41000))),
     ))
 }
@@ -442,29 +442,14 @@ mod provider {
             *fixture.account.lock().unwrap() = Some(account(provider));
             for (kind, status, code, message) in [
                 (Kind::Invalid, 400, 40001, "刷新令牌已被使用，请重新授权"),
-                (
-                    Kind::Conflict,
-                    409,
-                    40901,
-                    "令牌刷新繁忙，请等待当前刷新完成后重试",
-                ),
-                (
-                    Kind::BadGateway,
-                    502,
-                    50201,
-                    "OpenAI 返回的 Codex PAT 身份资料不完整或格式无效，请稍后重试",
-                ),
-                (
-                    Kind::Unavailable,
-                    503,
-                    50301,
-                    "暂时无法向 OpenAI 验证 Codex PAT，请稍后重试",
-                ),
+                (Kind::Conflict, 409, 40901, "令牌刷新繁忙，请稍后重试"),
+                (Kind::BadGateway, 502, 50201, "PAT 身份信息无效"),
+                (Kind::Unavailable, 503, 50301, "PAT 验证服务暂不可用"),
                 (
                     Kind::Ambiguous,
                     502,
                     50202,
-                    "令牌刷新结果未知，请先核对账号状态，不要立即重复刷新",
+                    "刷新结果未知，核对账号状态前请勿重试",
                 ),
             ] {
                 *fixture.provider_error.lock().unwrap() = Some(
@@ -513,6 +498,12 @@ mod provider {
             (Kind::Unsupported, 400, 40001, "该服务商不支持此操作"),
             (Kind::BadGateway, 502, 50201, "上游服务请求失败"),
             (Kind::Unavailable, 503, 50301, "服务商暂不可用"),
+            (
+                Kind::CredentialRefreshRequired,
+                503,
+                50301,
+                "账号凭据需要刷新",
+            ),
             (
                 Kind::Ambiguous,
                 502,

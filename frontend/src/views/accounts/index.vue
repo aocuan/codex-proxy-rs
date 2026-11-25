@@ -8,7 +8,7 @@ import { computed, ref, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { recheckAccounts } from '@/api'
-import AccountPlanBadge from '@/components/account/AccountPlanBadge.vue'
+import AccountPlanBadge from '@/components/account-plan-badge/index.vue'
 import AccountGroupMarks from '@/components/AccountGroupMarks.vue'
 import EvaluationHistoryStrip from '@/components/evaluation/EvaluationHistoryStrip.vue'
 import EvaluationOutputModal from '@/components/evaluation/EvaluationOutputModal.vue'
@@ -18,13 +18,13 @@ import { useAccountGroupCatalog } from '@/composables/useAccountGroupCatalog'
 import { useAsyncAction } from '@/composables/useAsyncAction'
 import { generateRequestId } from '@/utils/operation'
 import AccountPreferenceModal from '@/views/evaluations/components/AccountPreferenceModal.vue'
+import AccountConcurrencyModal from './components/account-concurrency-modal/index.vue'
 import AccountCreateModal from './components/account-create-modal/index.vue'
 import AccountImportTasks from './components/account-import-tasks/index.vue'
 import AccountQuotaPanel from './components/account-quota-panel/index.vue'
 import AccountQuotaSummaryCell from './components/account-quota-summary-cell/index.vue'
 import AccountStatusBadge from './components/account-status-badge/index.vue'
 import AccountBatchEditModal from './components/AccountBatchEditModal.vue'
-import AccountConcurrencyModal from './components/AccountConcurrencyModal.vue'
 import AccountConnectionTestModal from './components/AccountConnectionTestModal.vue'
 import AccountEditModal from './components/AccountEditModal.vue'
 import AccountFilters from './components/AccountFilters.vue'
@@ -227,7 +227,7 @@ const {
   connectionTestStartedAt,
   connectionTestFinishedAt,
   connectionTestDurationMs,
-  testingConnectionIds,
+  testingAccountId,
   loadingConnectionTestModels,
   refreshingConnectionTestModels,
   connectionTestSelectedModel,
@@ -257,6 +257,7 @@ const {
   modelAccess: batchModelAccess,
   editedFields: batchEditedFields,
   catalogAccountId: batchCatalogAccountId,
+  provider: batchProvider,
   editingCount: batchEditingCount,
   proxyMode: batchProxyMode,
   proxyId: batchProxyId,
@@ -272,9 +273,6 @@ const {
 })
 
 const {
-  apiKey: editingApiKey,
-  oauthTransport: editingOAuthTransport,
-  configurationReady,
   showEditModal,
   editingAccount,
   name: editingName,
@@ -289,7 +287,6 @@ const {
   saving: savingAccountEdit,
   open: openAccountEdit,
   save: saveAccountEdit,
-  clearCredentials,
 } = useAccountEditor({
   reloadAccounts: loadAccounts,
   reloadGroups: loadGroups,
@@ -481,8 +478,8 @@ const {
               <span v-else class="text-z-text-tertiary" :title="t('accounts.evaluationActions.oauthOnly')">{{ t('accounts.evaluationActions.notApplicable') }}</span>
             </template>
             <template #planType="{ row }">
-              <div class="flex min-w-0 justify-center">
-                <AccountPlanBadge :upstream="row.upstream" :authentication-kind="row.authenticationKind" :plan-type="row.planType" :plan-type-display="row.planTypeDisplay" />
+              <div class="-mx-3 flex min-w-0 justify-center">
+                <AccountPlanBadge wrap :upstream="row.upstream" :authentication-kind="row.authenticationKind" :plan-type="row.planType" :plan-type-display="row.planTypeDisplay" />
               </div>
             </template>
 
@@ -509,7 +506,7 @@ const {
                 :downloading-catalog="downloadingCatalogAccountIds.has(row.id)"
                 :recovering="recoveringAccountIds.has(row.id)"
                 :refreshing="refreshingAccountIds.has(row.id)"
-                :testing="testingConnectionIds.has(row.id)"
+                :testing="testingAccountId === row.id"
                 :toggling-scheduling="togglingSchedulingAccountIds.has(row.id)"
                 @recheck="recheck([$event])"
                 @edit="openAccountEdit"
@@ -598,8 +595,6 @@ const {
 
     <AccountEditModal
       v-model="showEditModal"
-      v-model:api-key="editingApiKey"
-      v-model:oauth-transport="editingOAuthTransport"
       v-model:name="editingName"
       v-model:notes="editingNotes"
       v-model:enabled="schedulingEnabled"
@@ -609,13 +604,11 @@ const {
       v-model:proxy-mode="editingProxyMode"
       v-model:proxy-id="editingProxyId"
       v-model:selected-group-ids="editingGroupIds"
-      :configuration-ready="configurationReady"
       :account="editingAccount"
       :groups="groups"
       :groups-loading="groupsLoading"
       :saving="savingAccountEdit"
       @save="saveAccountEdit"
-      @after-leave="clearCredentials"
     />
 
     <AccountBatchEditModal
@@ -628,6 +621,7 @@ const {
       v-model:proxy-id="batchProxyId"
       v-model:selected-group-ids="batchGroupIds"
       :catalog-account-id="batchCatalogAccountId"
+      :provider="batchProvider"
       :edited-fields="batchEditedFields"
       :selected-count="batchEditingCount"
       :groups="groups"

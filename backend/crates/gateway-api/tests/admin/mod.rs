@@ -74,7 +74,7 @@ use gateway_admin::{
         },
     },
 };
-use gateway_api::auth::SessionState;
+use gateway_api::SessionState;
 use gateway_core::{
     account::FastMode,
     account::{AccountStatusFacts, CredentialState, ProviderAccountId, QuotaState},
@@ -206,6 +206,13 @@ impl AdminTestFixture {
         let provider_quota_gate = Arc::new(Mutex::new(None));
         let provider_models = Arc::new(Mutex::new(None));
         let providers: Vec<Arc<dyn ProviderAdmin>> = vec![
+            Arc::new(UnusedProvider::new(
+                "antigravity",
+                Arc::clone(&provider_error),
+                Arc::clone(&provider_quota),
+                Arc::clone(&provider_quota_gate),
+                Arc::clone(&provider_models),
+            )),
             Arc::new(UnusedProvider::new(
                 "openai",
                 Arc::clone(&provider_error),
@@ -526,6 +533,7 @@ struct StaticPricingSource;
 impl gateway_admin::ports::pricing::PricingSource for StaticPricingSource {
     async fn fetch(
         &self,
+        _: &gateway_admin::ports::pricing::PricingSourceScope,
     ) -> Result<gateway_admin::model::pricing::PricingSyncPreview, gateway_admin::model::AdminError>
     {
         Ok(gateway_admin::model::pricing::PricingSyncPreview {
@@ -651,43 +659,7 @@ impl SettingsStore for MemorySettingsStore {
             model_mappings: command.model_mappings,
             rotation_strategy: command.rotation_strategy,
             updated_at: Utc::now(),
-            values: gateway_admin::model::settings::RuntimeSettingsValues {
-                codex_privacy_policy: command.values.codex_privacy_policy,
-                request_location_enabled: command.values.request_location_enabled,
-                request_location: command.values.request_location,
-                refresh_margin_seconds: command.values.refresh_margin_seconds,
-                refresh_concurrency: command.values.refresh_concurrency,
-                max_concurrent_per_account: command.values.max_concurrent_per_account,
-                max_waiting_per_key: command.values.max_waiting_per_key,
-                max_waiting_per_account: command.values.max_waiting_per_account,
-                key_queue_timeout_seconds: command.values.key_queue_timeout_seconds,
-                account_queue_timeout_seconds: command.values.account_queue_timeout_seconds,
-                switch_account_on_queue_failure: command.values.switch_account_on_queue_failure,
-                max_retry_after_seconds: command.values.max_retry_after_seconds,
-                openai_guardian_reserved_concurrency: command
-                    .values
-                    .openai_guardian_reserved_concurrency,
-                openai_account_affinity: command.values.openai_account_affinity,
-                max_account_rotations: command.values.max_account_rotations,
-                openai_session_affinity_ttl_hours: command.values.openai_session_affinity_ttl_hours,
-                responses_max_decompressed_body_bytes: command
-                    .values
-                    .responses_max_decompressed_body_bytes,
-                smart_scheduling: command.values.smart_scheduling,
-                quota_reset_window_weights: command.values.quota_reset_window_weights,
-                min_codex_desktop_version: command.values.min_codex_desktop_version,
-                min_codex_cli_version: command.values.min_codex_cli_version,
-                usage_retention_days: command.values.usage_retention_days,
-                ops_event_retention_days: command.values.ops_event_retention_days,
-                audit_retention_days: command.values.audit_retention_days,
-                account_error_protection: command.values.account_error_protection,
-                account_warmup_enabled: false,
-                account_warmup_cron: "0 8 * * *".to_owned(),
-                account_warmup_model: None,
-                reset_credit_lead_minutes: 10,
-                reset_credit_on_low_weekly_quota: false,
-                reset_credit_max_weekly_remaining_percent: None,
-            },
+            values: command.values,
         };
         *settings = updated.clone();
         Ok(updated)
@@ -755,6 +727,8 @@ impl MemoryAccountGroupStore {
                 primary_id.clone(),
                 AccountGroupRecord {
                     allow_image_generation: true,
+                    allow_subagents: true,
+                    model_access: Default::default(),
                     fast_mode: FastMode::Default,
                     id: primary_id,
                     name: "Alpha routing".to_owned(),
@@ -778,6 +752,8 @@ impl MemoryAccountGroupStore {
                 secondary_id.clone(),
                 AccountGroupRecord {
                     allow_image_generation: true,
+                    allow_subagents: true,
+                    model_access: Default::default(),
                     fast_mode: FastMode::Default,
                     id: secondary_id,
                     name: "Beta routing".to_owned(),
@@ -941,6 +917,8 @@ impl AccountGroupStore for MemoryAccountGroupStore {
         let now = Utc::now();
         let record = AccountGroupRecord {
             allow_image_generation: command.allow_image_generation,
+            allow_subagents: command.allow_subagents,
+            model_access: command.model_access,
             fast_mode: command.fast_mode,
             id: command.id.clone(),
             name: command.name,
@@ -975,6 +953,12 @@ impl AccountGroupStore for MemoryAccountGroupStore {
         record.color = command.color;
         if let Some(fast_mode) = command.fast_mode {
             record.fast_mode = fast_mode;
+        }
+        if let Some(allowed) = command.allow_subagents {
+            record.allow_subagents = allowed;
+        }
+        if let Some(model_access) = command.model_access {
+            record.model_access = model_access;
         }
         if let Some(allowed) = command.allow_image_generation {
             record.allow_image_generation = allowed;
@@ -1030,6 +1014,30 @@ fn mutation(
 
 #[async_trait]
 impl ClientKeyStore for MemoryClientKeyStore {
+    async fn budget_reference_accounts(
+        &self,
+        _: &gateway_core::policy::ClientApiKeyId,
+        _: &str,
+        _: &str,
+    ) -> gateway_admin::ports::store::AdminStoreResult<
+        gateway_admin::model::client_keys::BudgetReferenceAccountPage,
+    > {
+        Err(unavailable("reference accounts"))
+    }
+
+    async fn batch_update_client_keys(
+        &self,
+        _: gateway_admin::model::client_keys::BatchUpdateClientKeys,
+        _: gateway_admin::ports::store::BatchClientKeyProfileMerger,
+        _: &MutationContext,
+    ) -> AdminStoreResult<Revision> {
+        Err(AdminStoreError::new(
+            AdminStoreErrorKind::Unavailable,
+            "client key",
+            "unused batch update",
+        ))
+    }
+
     async fn client_key_budget_window(
         &self,
         _: &gateway_core::policy::ClientApiKeyId,
@@ -1096,6 +1104,15 @@ impl ClientKeyStore for MemoryClientKeyStore {
             record.budget.weekly_used_usd = gateway_core::metering::Decimal::ZERO;
         }
         Ok(())
+    }
+
+    async fn client_key_budget(
+        &self,
+        id: &gateway_core::policy::ClientApiKeyId,
+    ) -> AdminStoreResult<Option<gateway_core::engine::budget::ClientBudgetStatus>> {
+        self.get_client_key(id)
+            .await
+            .map(|key| key.map(|row| row.budget))
     }
 
     async fn get_client_key(
@@ -1332,7 +1349,7 @@ impl AccountStore for UnusedStore {
     async fn load_quota_forecast_history(
         &self,
         _: &AccountUsageWindowQuery,
-    ) -> AdminStoreResult<gateway_admin::model::quota_forecast_sampling::QuotaForecastHistory> {
+    ) -> AdminStoreResult<gateway_admin::model::quota_forecast::QuotaForecastHistory> {
         Err(unavailable("quota forecast history"))
     }
 
@@ -1561,6 +1578,23 @@ impl ObservabilityStore for UnusedStore {
         Err(unavailable("dashboard trend"))
     }
 
+    async fn client_key_statistics(
+        &self,
+        _: TimeRange,
+        _: &gateway_core::policy::ClientApiKeyId,
+        _: gateway_admin::model::observability::KeyUsageMetric,
+    ) -> AdminStoreResult<gateway_admin::model::observability::KeyStatisticsOverview> {
+        Ok(Default::default())
+    }
+
+    async fn client_key_models(
+        &self,
+        _: TimeRange,
+        _: &gateway_core::policy::ClientApiKeyId,
+    ) -> AdminStoreResult<Vec<gateway_admin::model::observability::KeyModelRow>> {
+        Ok(Default::default())
+    }
+
     async fn usage_trend(
         &self,
         range: TimeRange,
@@ -1726,12 +1760,23 @@ impl UnusedProvider {
 
 #[async_trait]
 impl ProviderAdmin for UnusedProvider {
+    fn account_usage_lookback(
+        &self,
+    ) -> gateway_admin::model::provider_credentials::AccountUsageLookback {
+        use gateway_admin::model::provider_credentials::AccountUsageLookback;
+        match self.kind.as_str() {
+            "antigravity" => AccountUsageLookback::RecentWeek,
+            _ => AccountUsageLookback::RollingDay,
+        }
+    }
+
     fn account_capabilities(
         &self,
         _: &ProviderAccountId,
         authentication_kind: &str,
     ) -> gateway_admin::model::accounts::ProviderAccountCapabilities {
         gateway_admin::model::accounts::ProviderAccountCapabilities {
+            credential_export: true,
             turn_state_probe: self.kind.as_str() == "openai" && authentication_kind == "oauth",
             ..Default::default()
         }
@@ -1963,6 +2008,8 @@ fn test_runtime_settings() -> RuntimeSettings {
         rotation_strategy: RotationStrategy::Smart,
         updated_at: Utc::now(),
         values: gateway_admin::model::settings::RuntimeSettingsValues {
+            openai_oauth_guardian_review_model: true,
+            openai_request_country: Default::default(),
             codex_privacy_policy: Default::default(),
             request_location_enabled: false,
             request_location: Default::default(),
@@ -1976,9 +2023,9 @@ fn test_runtime_settings() -> RuntimeSettings {
             switch_account_on_queue_failure: false,
             max_retry_after_seconds: 240,
             openai_guardian_reserved_concurrency: 0,
-            openai_account_affinity: gateway_core::account::AccountAffinity::Relaxed,
+            account_affinity: gateway_core::account::AccountAffinity::Relaxed,
             max_account_rotations: 3,
-            openai_session_affinity_ttl_hours: 24,
+            session_affinity_ttl_hours: 24,
             responses_max_decompressed_body_bytes: 64 * 1024 * 1024,
             smart_scheduling: gateway_core::account::SmartSchedulingConfig::default(),
             quota_reset_window_weights: gateway_core::account::ResetWindowWeights::default(),

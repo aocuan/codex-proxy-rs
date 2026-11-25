@@ -23,7 +23,7 @@ pub(crate) use affinity::{
     derive_codex_endpoint_session_affinity, derive_codex_session_affinity,
     derive_codex_transport_key, derive_endpoint_affinity_with_headers,
     derive_live_session_affinity, derive_messages_session_affinity,
-    derive_previous_response_id_hash, derive_turn_alias,
+    derive_previous_response_id_hash, derive_turn_alias, root_session_affinity,
 };
 pub(crate) use eligibility::CodexSelectionModel;
 pub(crate) use oauth::oauth_owner_ref;
@@ -76,7 +76,6 @@ pub use selector::{
     SelectCodexCredential,
 };
 pub(crate) use selector::{CodexCyberPolicyScope, SelectCodexProviderEndpointCredential};
-pub(crate) use types::oauth_identity_key;
 pub use types::{
     CODEX_AUTHENTICATION_KIND_OAUTH, CodexAccountProfile, CodexCookie, CodexCookieCaptureOutcome,
     CodexCredentialData, CodexCredentialPrincipal, CodexOAuthCredentialData, CodexOAuthSecret,

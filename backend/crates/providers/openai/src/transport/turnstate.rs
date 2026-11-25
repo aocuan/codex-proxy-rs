@@ -22,9 +22,9 @@ use sha2::{Digest as _, Sha256};
 use super::{
     client::build_account_http_client,
     diagnostics::{CodexFailureCategory, classify_probe_failure},
-    profile::CodexWireProfile,
 };
 use crate::credential::CodexCredentialCodec;
+use crate::profile::CodexWireProfile;
 
 const ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
 const MAX_BODY_BYTES: usize = 256 * 1024;

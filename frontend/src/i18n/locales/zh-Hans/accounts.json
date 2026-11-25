@@ -11,14 +11,18 @@
       "empty": "没有已观测的额度桶",
       "invalid": "请输入 1～100 的整数，留空表示不限制",
       "limit": "调度上限",
-      "warmup": "预热",
+      "warmup": "重置预热",
       "model": "预热模型",
       "modelPlaceholder": "选择模型",
       "invalidModel": "请输入有效的预热模型 ID",
-      "subtitle": "设置额度上限与重置后预热"
+      "subtitle": "设置额度上限与重置预热"
     },
     "quota": {
       "general": "通用额度",
+      "groups": {
+        "geminiModels": "Gemini 模型",
+        "claudeGptModels": "Claude 和 GPT 模型"
+      },
       "usageInThisWindow": "窗口消耗：{localUsageDisplay}",
       "quotaUsed": "额度已使用：{rate}",
       "resets": "重置时间: {resetAtDisplay}",
@@ -116,7 +120,6 @@
         "failed": "测试连接失败",
         "modelRequired": "未选择模型",
         "browserUnsupported": "当前浏览器不支持连接测试",
-        "missingCompletion": "测试连接未返回完成事件",
         "invalidResponse": "测试响应解析失败",
         "disconnected": "测试连接已断开"
       },
@@ -140,7 +143,6 @@
     },
     "credentials": {
       "accountName": "账号名称",
-      "enterUpstreamName": "输入上游名称",
       "baseUrlHelp": "填写 API 前缀，接口路径会自动追加",
       "apiPrefix": "API 前缀",
       "apiKeyPlaceholder": "留空保留当前密钥",
@@ -149,7 +151,6 @@
       "transportLabel": "传输方式",
       "webSocketHelp": "WS 需要上游支持 Responses WebSocket",
       "messagesTransportHelp": "Messages 上游使用 HTTP/SSE",
-      "nameRequired": "请输入账号名称",
       "validation": {
         "urlLength": "上游 API 地址不能超过 2048 个字符",
         "urlFormat": "请输入不含认证、查询参数或片段的 HTTP 或 HTTPS 地址",
@@ -229,12 +230,13 @@
       "searchOrAddModels": "搜索或添加模型",
       "searchOrEnterId": "搜索模型或输入完整 ID",
       "addModel": "添加模型",
+      "addImageModels": "添加常用 OpenAI 生图模型",
       "customModels": "自定义",
       "availableModels": "可选模型",
       "upstreamCatalog": "上游目录",
       "selectAll": "全选",
       "deselectAll": "取消全选",
-      "addToDenylistHint": "保存后，此账号将拒绝该模型",
+      "addToDenylistHint": "添加并保存后将拒绝该模型",
       "loadingModel": "加载模型中",
       "noModels": "暂无模型",
       "selectOrAddAtLeastOneModel": "请至少选择或添加一个模型",
@@ -293,6 +295,7 @@
     "actions": {
       "deleteAccount": "删除账号",
       "moreActions": "更多操作",
+      "discoverPeer": "检测 CPR 互联",
       "disableScheduling": "停用",
       "enableScheduling": "启用",
       "refreshToken": "刷新令牌",
@@ -300,7 +303,7 @@
       "downloadModelCatalog": "下载模型目录",
       "restoreState": "重置状态",
       "staleSelection": "所选账号数据已失效，请重新选择",
-      "exportUnsupported": "所选账号包含不支持导出的平台",
+      "exportUnsupported": "所选账号中有账号不支持导出凭据",
       "deleted": "账号已删除",
       "deletedAccountDeletedAccounts": "已删除 {count} 个账号",
       "partialDeletion": "已删除 {count} 个账号，其余未删除：{value}",
@@ -319,7 +322,7 @@
       "resetRefreshFailed": "额度已重置，但最新额度加载失败：{value}",
       "statusRestored": "账号状态已恢复",
       "staleAccount": "账号 {id} 的页面数据已失效，请重新选择",
-      "unsupportedProvider": "不支持的 Provider：{provider}"
+      "deletionResultUnknown": "删除结果未知，请核对账号列表"
     },
     "usage": {
       "call": "调用",
@@ -332,7 +335,6 @@
       "tokensStructure": "Token 用量",
       "cacheRead": "缓存读取",
       "reasoning": "推理",
-      "cacheWrites": "缓存写入",
       "modelUsageRanking": "模型用量",
       "totalTokens": "总 Token",
       "totalCharge": "总计费",
@@ -340,6 +342,7 @@
       "noModelUsageYet": "暂无模型用量",
       "windows": {
         "daily": "日用量",
+        "recentWeek": "近一周",
         "general": "累计用量",
         "weekly": "周用量",
         "monthly": "月用量",
@@ -379,6 +382,8 @@
       "callbackLabel": "回调地址或授权码",
       "callbackAddress": "回调地址",
       "callbackPlaceholder": "回调地址、?code=...&state=... 或授权码",
+      "fullCallbackHelp": "完成浏览器授权后，将地址栏中的完整回调地址粘贴到这里",
+      "fullCallbackPlaceholder": "粘贴包含 code 和 state 的完整回调地址",
       "callbackHelp": "打开授权链接，完成浏览器授权后粘贴回调地址或授权码",
       "pasteOneAccessTokenPerLine": "每行粘贴一个 Access Token",
       "pasteOneRefreshTokenPerLine": "每行粘贴一个 Refresh Token",

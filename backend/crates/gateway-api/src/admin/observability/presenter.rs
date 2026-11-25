@@ -925,25 +925,9 @@ pub(crate) fn dashboard_view(
             .filter(|window| window.used_percent.is_none())
             .and_then(|window| window.local_usage.as_ref())
             .map(|usage| usage.request_count);
-        let (metric, metric_value_raw, metric_label, metric_value) = match local_requests {
-            Some(count) => (
-                DashboardAccountMetric::Requests,
-                Some(count),
-                "次数".to_owned(),
-                if count > 0 {
-                    format_compact_number(count)
-                } else {
-                    "—".to_owned()
-                },
-            ),
-            None => (
-                DashboardAccountMetric::Tokens,
-                credential.total_tokens,
-                "今日 Token".to_owned(),
-                credential
-                    .total_tokens
-                    .map_or_else(|| "—".to_owned(), format_compact_number),
-            ),
+        let (metric, metric_value_raw) = match local_requests {
+            Some(count) => (DashboardAccountMetric::Requests, Some(count)),
+            None => (DashboardAccountMetric::Tokens, credential.total_tokens),
         };
         account_usage_views.push(DashboardAccountUsageView {
             upstream: credential.upstream.map(|info| {
@@ -978,13 +962,10 @@ pub(crate) fn dashboard_view(
                 .map(|window| crate::admin::accounts::quota_window_view(window, time)),
             metric,
             metric_value_raw,
-            metric_label,
-            metric_value,
             last_used_at: credential.last_used_at,
             last_used_relative: credential
                 .last_used_at
                 .map(|value| time.relative_view(value, range.end)),
-            last_used: time.relative_optional(credential.last_used_at, range.end),
         });
     }
     let unavailable_accounts = provider_accounts
@@ -1410,7 +1391,14 @@ pub(crate) fn map_wire_error(error: WireValidationError) -> AdminError {
         "dimension" => "诊断维度不合法",
         "id" => "用量记录 ID 不能为空",
         "cursor" => "观测数据游标不合法",
-        _ => "观测查询参数不合法",
+        "currentPage" => "页码须大于 0",
+        "pageSize" => {
+            return AdminError::bad_request(format!("每页数量须为 1 至 {}", DomainPageSize::MAX));
+        }
+        "status" => "请求状态须为 success、error 或 all",
+        "errorOrigin" => "错误来源须为 proxy、upstream、connection 或 unknown",
+        "errorOriginStatus" => "仅错误请求支持按错误来源筛选",
+        field => return AdminError::bad_request(format!("{field} 字段不合法")),
     };
     AdminError::bad_request(message)
 }

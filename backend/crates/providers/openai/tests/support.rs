@@ -474,6 +474,7 @@ impl ProviderAccountStore for MemoryAccountStore {
     async fn list_for_provider(
         &self,
         provider: &ProviderKind,
+        include_disabled: bool,
     ) -> Result<Vec<ProviderAccount>, StoreError> {
         self.provider_list_reads.fetch_add(1, Ordering::SeqCst);
         if self.fail_provider_listing.load(Ordering::SeqCst) {
@@ -485,13 +486,15 @@ impl ProviderAccountStore for MemoryAccountStore {
                 ),
             ));
         }
-        // 与 Postgres 实现的调度列表语义一致：停用账号不进入常规候选
         Ok(self
             .accounts
             .lock()
             .expect("account store lock")
             .values()
-            .filter(|stored| stored.account.provider() == provider && stored.account.enabled())
+            .filter(|stored| {
+                stored.account.provider() == provider
+                    && (include_disabled || stored.account.enabled())
+            })
             .map(|stored| stored.account.clone())
             .collect())
     }
@@ -596,6 +599,7 @@ impl ProviderAccountStore for MemoryAccountStore {
             expected_revision,
             profile,
             preserve_profile,
+            preserve_access_token_expiry,
             credential,
             has_refresh_token,
             access_token_expires_at,
@@ -609,6 +613,11 @@ impl ProviderAccountStore for MemoryAccountStore {
         if stored.account.revision() != expected_revision {
             return Ok(CredentialCasOutcome::Conflict);
         }
+        let access_token_expires_at = if preserve_access_token_expiry {
+            stored.account.access_token_expires_at()
+        } else {
+            access_token_expires_at
+        };
         let next = expected_revision
             .next()
             .map_err(|_| store_error(StoreErrorKind::Conflict))?;
@@ -798,6 +807,32 @@ impl ProviderAccountStore for MemoryAccountStore {
             observation.state = change.state;
         }
         Ok(QuotaWriteOutcome::Updated)
+    }
+
+    async fn expire_access_token(
+        &self,
+        account: &ProviderAccount,
+        observed_at: SystemTime,
+    ) -> Result<bool, StoreError> {
+        let mut accounts = self.accounts.lock().expect("account store lock");
+        let Some(stored) = accounts.get_mut(account.id()) else {
+            return Ok(false);
+        };
+        if stored.account.revision() != account.revision()
+            || stored
+                .state_observed_at
+                .is_some_and(|current| current > observed_at)
+        {
+            return Ok(false);
+        }
+        let mut facts = AccountRebuild::preserving(&stored.account);
+        facts.access_token_expires_at = Some(
+            facts
+                .access_token_expires_at
+                .map_or(observed_at, |at| at.min(observed_at)),
+        );
+        stored.account = rebuild_account(&stored.account, facts);
+        Ok(true)
     }
 
     async fn apply_state_change(&self, change: AccountStateChange) -> Result<(), StoreError> {
@@ -1468,6 +1503,15 @@ pub(crate) fn runtime_policy() -> Arc<dyn ProviderRuntimePolicyPort> {
     Arc::new(StaticRuntimePolicy)
 }
 
+pub(crate) fn fedramp_secret(access_token: &str) -> CodexOAuthSecret {
+    use base64::Engine as _;
+    let mut credential = secret(access_token);
+    let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(br#"{"https://api.openai.com/auth":{"chatgpt_account_is_fedramp":true}}"#);
+    credential.id_token = Some(format!("header.{claims}.signature").into());
+    credential
+}
+
 pub(crate) fn secret(access_token: &str) -> CodexOAuthSecret {
     CodexOAuthSecret {
         access_token: SecretString::from(access_token.to_owned()),
@@ -1481,7 +1525,7 @@ pub(crate) fn account_policy() -> gateway_core::account::AccountSelectionPolicy 
         gateway_core::account::RotationStrategy::Smart,
         NonZeroU32::new(2).expect("nonzero concurrency"),
     )
-    .with_openai_account_affinity(gateway_core::account::AccountAffinity::Strict)
+    .with_account_affinity(gateway_core::account::AccountAffinity::Strict)
 }
 
 type CooldownReadHook =

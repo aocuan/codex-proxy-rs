@@ -45,6 +45,8 @@ pub use gateway_core::account::RotationStrategy;
 /// 运行设置的共同值；版本、Provider 画像更新和数据库秘密由外层类型拥有
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RuntimeSettingsValues {
+    pub openai_oauth_guardian_review_model: bool,
+    pub openai_request_country: gateway_core::account::OpenAiRequestCountry,
     pub codex_privacy_policy: gateway_core::settings::privacy::CodexPrivacyPolicy,
     pub request_location_enabled: bool,
     pub request_location: gateway_core::account::RequestLocation,
@@ -58,9 +60,9 @@ pub struct RuntimeSettingsValues {
     pub switch_account_on_queue_failure: bool,
     pub max_retry_after_seconds: u32,
     pub openai_guardian_reserved_concurrency: u32,
-    pub openai_account_affinity: gateway_core::account::AccountAffinity,
+    pub account_affinity: gateway_core::account::AccountAffinity,
     pub max_account_rotations: u32,
-    pub openai_session_affinity_ttl_hours: u32,
+    pub session_affinity_ttl_hours: u32,
     pub responses_max_decompressed_body_bytes: u64,
     pub smart_scheduling: gateway_core::account::SmartSchedulingConfig,
     pub quota_reset_window_weights: gateway_core::account::ResetWindowWeights,
@@ -73,7 +75,6 @@ pub struct RuntimeSettingsValues {
     pub account_warmup_enabled: bool,
     pub account_warmup_cron: String,
     pub account_warmup_model: Option<String>,
-    #[serde(default)]
     pub reset_credit_on_low_weekly_quota: bool,
     pub reset_credit_lead_minutes: u32,
     pub reset_credit_max_weekly_remaining_percent: Option<u32>,
@@ -200,6 +201,9 @@ impl RuntimeSettingsValues {
         {
             return Err("reset_credit_max_weekly_remaining_percent");
         }
+        self.openai_request_country
+            .validate()
+            .map_err(|_| "openai_request_country")?;
         self.request_location
             .validate()
             .map_err(|_| "request_location")?;
@@ -209,7 +213,7 @@ impl RuntimeSettingsValues {
             self.key_queue_timeout_seconds,
             self.account_queue_timeout_seconds,
             self.max_account_rotations,
-            self.openai_session_affinity_ttl_hours,
+            self.session_affinity_ttl_hours,
         )?;
         gateway_core::settings::response_body_limit(self.responses_max_decompressed_body_bytes)?;
         gateway_core::settings::client_min_versions(

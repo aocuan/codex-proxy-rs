@@ -11,7 +11,7 @@ use tower::ServiceExt as _;
 use super::AdminTestFixture;
 
 fn app(fixture: &AdminTestFixture) -> Router {
-    crate::openai::api_router_with_admin(fixture.services.clone()).layer(axum::Extension(
+    crate::data_plane::api_router_with_admin(fixture.services.clone()).layer(axum::Extension(
         axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 41000))),
     ))
 }

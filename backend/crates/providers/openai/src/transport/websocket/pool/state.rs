@@ -24,8 +24,10 @@ pub struct CodexWebSocketPoolKey {
     account_id: String,
     conversation_id: String,
     connection_profile: String,
+    response_exclusions: Vec<String>,
     installation_id: Option<String>,
     routing_affinity_id: Option<Uuid>,
+    fedramp_routing: bool,
     pub(super) downstream_connection_id: String,
     egress_key: String,
     pub(super) proxy_capacity_key: String,
@@ -43,8 +45,10 @@ impl CodexWebSocketPoolKey {
             account_id: account_id.into(),
             conversation_id: conversation_id.into(),
             connection_profile: String::new(),
+            response_exclusions: Vec::new(),
             installation_id: None,
             routing_affinity_id: None,
+            fedramp_routing: false,
             downstream_connection_id: String::new(),
             egress_key: String::new(),
             proxy_capacity_key: String::new(),
@@ -63,6 +67,16 @@ impl CodexWebSocketPoolKey {
         self
     }
 
+    /// 上游只在握手时读取响应排除项，精确续接也必须匹配最终发出的头值
+    pub(crate) fn with_response_exclusions(mut self, opening_headers: &[(String, String)]) -> Self {
+        self.response_exclusions = opening_headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("x-codex-exclude"))
+            .map(|(_, value)| value.clone())
+            .collect();
+        self
+    }
+
     /// 隔离同一逻辑会话中由不同下游 WebSocket 驱动的并发响应链
     pub(crate) fn with_downstream_connection_id(
         mut self,
@@ -78,6 +92,12 @@ impl CodexWebSocketPoolKey {
 
     pub(crate) fn with_routing_affinity(mut self, id: Option<Uuid>) -> Self {
         self.routing_affinity_id = id;
+        self
+    }
+
+    /// 凭据声明的 FedRAMP 路由也是精确续接的边界，不能把旧响应交给另一条路由
+    pub(crate) fn with_fedramp_routing(mut self, enabled: bool) -> Self {
+        self.fedramp_routing = enabled;
         self
     }
 
@@ -103,16 +123,22 @@ impl CodexWebSocketPoolKey {
             .routing_affinity_id
             .map(|id| id.to_string())
             .unwrap_or_default();
-        short_sha256([
+        let parts = [
             self.base_url.as_str(),
             self.account_id.as_str(),
             self.conversation_id.as_str(),
             self.connection_profile.as_str(),
+            if self.fedramp_routing { "fedramp" } else { "" },
             self.installation_id.as_deref().unwrap_or_default(),
             self.downstream_connection_id.as_str(),
             self.egress_key.as_str(),
             routing_affinity.as_str(),
-        ])
+        ];
+        short_sha256(
+            parts
+                .into_iter()
+                .chain(self.response_exclusions.iter().map(String::as_str)),
+        )
     }
 
     pub(super) fn same_logical_connection(&self, other: &Self) -> bool {
@@ -122,6 +148,8 @@ impl CodexWebSocketPoolKey {
             && self.conversation_id == other.conversation_id
             && self.egress_key == other.egress_key
             && self.routing_affinity_id == other.routing_affinity_id
+            && self.fedramp_routing == other.fedramp_routing
+            && self.response_exclusions == other.response_exclusions
     }
 }
 

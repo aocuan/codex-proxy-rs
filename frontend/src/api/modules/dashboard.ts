@@ -156,11 +156,8 @@ export interface DashboardAccountUsage {
   usageWindow: AccountQuotaWindow | null
   metric: 'requests' | 'tokens'
   metricValueRaw: number | null
-  metricLabel: string
-  metricValue: string
   lastUsedAt: string | null
   lastUsedRelative: RelativeTimeView | null
-  lastUsed: string
 }
 
 export interface DashboardPoolSummary {
@@ -198,7 +195,7 @@ export interface DashboardSummaryResponse {
 interface DashboardQuery {
   period: 'today'
   asOf: number
-  kind: string
+  kind: DashboardTrendKind
 }
 
 export function getDashboardSummary(data: DashboardQuery, options: RequestOptions = {}) {

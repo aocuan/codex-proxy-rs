@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import type { CodexPrivacyPolicy, PrivacySample } from '@/api/modules/settings/privacy'
+import type { CodexPrivacyPolicy, PrivacySample } from '@/api'
 
 import { ZButton, ZDialog, ZFormItem, ZTextarea } from '@codex-proxy/ui'
 import { computed, shallowRef, watch } from 'vue'
 import { I18nT, useI18n } from 'vue-i18n'
-import { usePrivacyPreview } from '../../composables/usePrivacyPreview'
 import { exampleRequest } from './presets'
+import { usePrivacyPreview } from './usePrivacyPreview'
 
 const props = defineProps<{ policy: CodexPrivacyPolicy }>()
 
@@ -61,7 +61,7 @@ async function test() {
               <strong class="text-z-sm font-emphasis text-z-text tabular-nums">{{ outcome.matches }}</strong>
             </template>
           </I18nT>
-          <p v-if="outcome.reason" class="col-span-2 m-0 text-z-xs break-words text-z-warning-text">
+          <p v-if="outcome.reason" class="col-span-2 m-0 text-z-xs wrap-break-word text-z-warning-text">
             {{ outcome.reason }}
           </p>
         </li>

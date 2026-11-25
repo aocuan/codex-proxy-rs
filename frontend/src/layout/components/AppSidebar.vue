@@ -29,12 +29,12 @@ import { useI18n } from 'vue-i18n'
 import { isNavigationFailure, NavigationFailureType, useRoute, useRouter } from 'vue-router'
 import AppBrandMark from '@/components/AppBrandMark.vue'
 import AppLanguageMenu from '@/components/AppLanguageMenu.vue'
+import { pluginPageLocation, shortPluginInstanceId } from '@/router/plugin'
 import { useAuthStore } from '@/stores/modules/auth'
 import { usePluginViewsStore } from '@/stores/modules/plugin-views'
 import { useSystemUpdateStore } from '@/stores/modules/system-update'
 import { useThemeStore } from '@/stores/modules/theme'
 import { formatVersionLabel } from '@/utils/format'
-import { pluginPageLocation, shortPluginInstanceId } from '@/utils/plugin'
 
 const props = withDefaults(defineProps<{
   collapse?: boolean

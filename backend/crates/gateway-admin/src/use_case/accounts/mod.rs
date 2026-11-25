@@ -8,7 +8,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use futures::StreamExt as _;
 use gateway_core::{
     account::ProviderAccountId,
@@ -20,24 +20,26 @@ use gateway_core::{
 use crate::{
     model::{
         AdminError, MutationContext,
+        account_groups::AccountGroupRef,
         accounts::{
             AccountConnectionTestEvent, AccountConnectionTestEventStream, AccountListQuery,
             AccountPageItem, AccountUpdateResult, AccountUsage, AccountUsageWindowQuery,
             AccountsUpdateResult, BatchUpdateAccounts, UpdateAccount,
         },
+        client_keys::ClientKeyBudgetReference,
         observability::TimeRange,
         provider_credentials::{
             AccountDirectoryItem, AccountDirectoryPage, AccountExportBundle, AccountPersonalInfo,
-            AccountRefreshResult, AccountUsagePeriod, ConsumeProviderResetCredit,
-            PrepareCredentialRefresh, ProviderModelCatalogDocument, ProviderModels,
-            ProviderProfileAvatar, ProviderQuota, ProviderQuotaReadRequest, ProviderQuotaRequest,
-            ProviderQuotaWindow, ProviderResetCreditResult, ProviderResetCredits,
-            QuotaLocalUsageAttribution,
+            AccountRefreshResult, AccountUsageLookback, AccountUsagePeriod,
+            ConsumeProviderResetCredit, PrepareCredentialRefresh, ProviderModelCatalogDocument,
+            ProviderModels, ProviderProfileAvatar, ProviderQuota, ProviderQuotaReadRequest,
+            ProviderQuotaRequest, ProviderQuotaWindow, ProviderResetCreditResult,
+            ProviderResetCredits, QuotaLocalUsageAttribution,
         },
         quota_forecast::{
             AccountQuotaForecastReport, account_quota_forecasts, quota_forecast_source_window,
         },
-        quota_forecast_sampling::{QuotaForecastPoint, select_forecast_sample},
+        quota_forecast::{QuotaForecastPoint, select_forecast_sample},
     },
     ports::{
         provider::ProviderAdminRegistry,
@@ -106,6 +108,12 @@ pub trait AccountsService: Send + Sync {
         account_id: &ProviderAccountId,
         refresh: bool,
     ) -> Result<AccountDirectoryItem, AdminError>;
+
+    async fn key_budget_references(
+        &self,
+        account_id: &ProviderAccountId,
+        key_groups: &[AccountGroupRef],
+    ) -> Result<Vec<ClientKeyBudgetReference>, AdminError>;
 
     async fn quota_forecast(
         &self,
@@ -449,10 +457,10 @@ impl DefaultAccountsService {
         let (stored, provider) = self.provider_for_account(account_id).await?;
         let account = &stored.account;
         let now = Utc::now();
-        let rolling_range = TimeRange {
-            start: now - Duration::hours(24),
-            end: now,
-        };
+        let lookback = provider.account_usage_lookback();
+        let rolling_range = lookback
+            .range(now, self.timezone)
+            .map_err(|_| AdminError::internal("时间超出支持范围"))?;
         let ids = vec![account.id.clone()];
         let rolling_usage = self
             .accounts
@@ -493,15 +501,17 @@ impl DefaultAccountsService {
             std::slice::from_mut(&mut quota),
         )
         .await?;
-        let usage = self
+        let api_key_usage = self
             .load_api_key_usage(std::slice::from_ref(&stored), std::slice::from_ref(&quota))
             .await?
-            .remove(&stored.account.id)
-            .or_else(|| {
-                quota
-                    .usage_window()
-                    .and_then(|(window, _)| window.local_usage.clone())
-            });
+            .remove(&stored.account.id);
+        let (usage, usage_period) = resolve_account_usage(
+            &stored.account.authentication_kind,
+            &quota,
+            rolling_usage,
+            api_key_usage,
+            lookback,
+        );
         Ok(AccountDirectoryItem {
             protection_rules: stored.protection_rules,
             capacity: super::peer_link::upstream::account_capacity(
@@ -518,6 +528,7 @@ impl DefaultAccountsService {
             ),
             projection: stored.projection,
             usage,
+            usage_period,
             account: stored.account,
             quota,
         })
@@ -564,10 +575,6 @@ impl AccountsService for DefaultAccountsService {
             .await
             .map_err(|error| map_store_error(error, "account directory"))?;
         let now = Utc::now();
-        let rolling_range = TimeRange {
-            start: now - Duration::hours(24),
-            end: now,
-        };
         let ids = page
             .items
             .iter()
@@ -585,15 +592,33 @@ impl AccountsService for DefaultAccountsService {
                 }
             }
         };
-        let rolling_usage = self
-            .accounts
-            .load_account_usage(rolling_range, &ids)
-            .await
-            .map_err(|error| map_store_error(error, "rolling account usage"))?;
-        let rolling_usage = rolling_usage
-            .into_iter()
-            .map(|usage| (usage.account_id.clone(), usage))
-            .collect::<BTreeMap<_, _>>();
+        let mut usage_groups = BTreeMap::<AccountUsageLookback, Vec<String>>::new();
+        for item in &page.items {
+            let lookback = providers
+                .require(&item.account.provider_kind)
+                .map(|provider| provider.account_usage_lookback())
+                .unwrap_or_default();
+            usage_groups
+                .entry(lookback)
+                .or_default()
+                .push(item.account.id.clone());
+        }
+        let mut rolling_usage = BTreeMap::new();
+        for (lookback, ids) in usage_groups {
+            let range = lookback
+                .range(now, self.timezone)
+                .map_err(|_| AdminError::internal("时间超出支持范围"))?;
+            let usages = self
+                .accounts
+                .load_account_usage(range, &ids)
+                .await
+                .map_err(|error| map_store_error(error, "local account usage"))?;
+            rolling_usage.extend(
+                usages
+                    .into_iter()
+                    .map(|usage| (usage.account_id.clone(), usage)),
+            );
+        }
         let mut quotas = self.read_quotas(&page.items, &rolling_usage).await;
         self.attach_quota_local_usage(&page.items, &mut quotas)
             .await?;
@@ -605,17 +630,22 @@ impl AccountsService for DefaultAccountsService {
             .map(|(mut item, quota)| {
                 let id = ProviderAccountId::new(item.account.id.clone())
                     .map_err(|_| AdminError::invalid("服务商账号 ID 不合法"))?;
-                let capabilities = providers
+                let (capabilities, lookback) = providers
                     .require(&item.account.provider_kind)
                     .map(|provider| {
-                        provider.account_capabilities(&id, &item.account.authentication_kind)
+                        (
+                            provider.account_capabilities(&id, &item.account.authentication_kind),
+                            provider.account_usage_lookback(),
+                        )
                     })
                     .unwrap_or_default();
-                let usage = api_key_usage.remove(&item.account.id).or_else(|| {
-                    quota
-                        .usage_window()
-                        .and_then(|(window, _)| window.local_usage.clone())
-                });
+                let (usage, usage_period) = resolve_account_usage(
+                    &item.account.authentication_kind,
+                    &quota,
+                    rolling_usage.remove(&item.account.id),
+                    api_key_usage.remove(&item.account.id),
+                    lookback,
+                );
                 Ok(AccountDirectoryItem {
                     protection_rules: item.protection_rules,
                     capacity: crate::model::accounts::AccountCapacity {
@@ -635,6 +665,7 @@ impl AccountsService for DefaultAccountsService {
                         Some(&quota),
                     ),
                     usage,
+                    usage_period,
                     account: item.account,
                     projection: item.projection,
                     quota,
@@ -654,37 +685,30 @@ impl AccountsService for DefaultAccountsService {
         context: &MutationContext,
         account_ids: Vec<ProviderAccountId>,
     ) -> Result<AccountExportBundle, AdminError> {
-        let providers = &self.providers;
         if account_ids.is_empty() || account_ids.len() > 200 {
             return Err(AdminError::invalid("账号导出数量必须在 1 到 200 之间"));
         }
         let exported_ids = account_ids.clone();
-        let mut grouped = BTreeMap::<ProviderKind, Vec<ProviderAccountId>>::new();
-        for account_id in account_ids {
-            let account = self.load_account(&account_id).await?;
-            grouped
-                .entry(account.account.provider_kind)
-                .or_default()
-                .push(account_id);
+        let mut grouped = BTreeMap::new();
+        // 混选时先检查每个账号的导出能力，再读取任何一组明文凭据
+        for id in account_ids {
+            let (item, provider) = self.provider_for_account(&id).await?;
+            if !provider
+                .account_capabilities(&id, &item.account.authentication_kind)
+                .credential_export
+            {
+                return Err(AdminError::invalid("所选账号不支持导出"));
+            }
+            let (_, ids) = grouped
+                .entry(item.account.provider_kind)
+                .or_insert_with(|| (provider, Vec::new()));
+            if ids.contains(&id) {
+                return Err(AdminError::invalid("账号导出列表包含重复 ID"));
+            }
+            ids.push(id);
         }
-        if grouped.values().any(|ids| {
-            let unique = ids.iter().collect::<std::collections::BTreeSet<_>>();
-            unique.len() != ids.len()
-        }) {
-            return Err(AdminError::invalid("账号导出列表包含重复 ID"));
-        }
-        // 混选时先确认全部 Provider 已注册，拒绝路径不读取任何一组明文凭据
-        let export_groups = grouped
-            .into_iter()
-            .map(|(provider_kind, ids)| {
-                let provider = providers
-                    .require(&provider_kind)
-                    .map_err(|error| map_provider_error(error, "provider account export"))?;
-                Ok((provider_kind, provider, ids))
-            })
-            .collect::<Result<Vec<_>, AdminError>>()?;
-        let mut documents = Vec::with_capacity(export_groups.len());
-        for (provider_kind, provider, ids) in export_groups {
+        let mut documents = Vec::with_capacity(grouped.len());
+        for (provider_kind, (provider, ids)) in grouped {
             let credentials = self
                 .accounts
                 .load_credentials_for_export(&provider_kind, &ids)
@@ -972,6 +996,48 @@ impl AccountsService for DefaultAccountsService {
         self.load_directory_item(account_id, refresh).await
     }
 
+    async fn key_budget_references(
+        &self,
+        account_id: &ProviderAccountId,
+        key_groups: &[AccountGroupRef],
+    ) -> Result<Vec<ClientKeyBudgetReference>, AdminError> {
+        let (stored, provider) = self.provider_for_account(account_id).await?;
+        if !key_groups.is_empty()
+            && !stored.account.groups.iter().any(|account_group| {
+                account_group.enabled && key_groups.iter().any(|group| group.id == account_group.id)
+            })
+        {
+            return Err(AdminError::bad_request("参考账号不在此密钥的账号范围内"));
+        }
+        // 只取已观测的额度边界，预览与确认都不触发上游刷新或账号用量聚合
+        let quota = match super::peer_link::upstream::read_quota(
+            self.upstream_info.as_deref(),
+            provider.as_ref(),
+            &stored.account,
+            ProviderQuotaRequest {
+                account_id: account_id.clone(),
+                refresh: false,
+                rolling_usage: None,
+            },
+        )
+        .await
+        {
+            Ok(quota) => quota,
+            Err(error)
+                if error.kind() == crate::ports::provider::ProviderAdminErrorKind::Unsupported =>
+            {
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(map_provider_error(error, "provider quota")),
+        };
+        let now = Utc::now();
+        Ok(quota
+            .windows
+            .into_iter()
+            .filter_map(|window| ClientKeyBudgetReference::from_current_window(window, now))
+            .collect())
+    }
+
     async fn quota_forecast(
         &self,
         account_id: &ProviderAccountId,
@@ -1007,6 +1073,8 @@ impl AccountsService for DefaultAccountsService {
             ) else {
                 continue;
             };
+            let reset_at = query.range.end;
+            let window_duration = reset_at - query.range.start;
             query.range.start = query.range.start.max(stored.account.created_at);
             if query.range.start >= observed
                 || observed > now
@@ -1016,7 +1084,6 @@ impl AccountsService for DefaultAccountsService {
             {
                 continue;
             }
-            let reset_at = query.range.end;
             query.range.end = observed;
             let history = self
                 .accounts
@@ -1024,27 +1091,37 @@ impl AccountsService for DefaultAccountsService {
                 .await
                 .map_err(|error| map_store_error(error, "forecast paired usage"))?;
             let mut points = Vec::new();
-            let mut interrupted = false;
+            let mut plan_changed = false;
             for point in history.points {
                 let Some(fact) =
                     provider.quota_forecast_observation(&point.provider_observation, window)
                 else {
                     continue;
                 };
-                let same_plan = quota
-                    .plan_type
-                    .as_deref()
-                    .zip(fact.plan_type.as_deref())
-                    .is_some_and(|(current, previous)| current.eq_ignore_ascii_case(previous));
-                // 仅容纳已观测到的秒级量化抖动，不用宽时间容差合并实际重置
-                // 不匹配的段截断基线；之后的有效观测可以重新积累
-                if !same_plan || (fact.reset_at - reset_at).abs() > Duration::seconds(2) {
+                let (Some(current_plan), Some(previous_plan)) =
+                    (quota.plan_type.as_deref(), fact.plan_type.as_deref())
+                else {
+                    continue;
+                };
+                let Some(start) = fact.reset_at.checked_sub_signed(window_duration) else {
+                    continue;
+                };
+                if point.completed_at >= observed
+                    || point.started_at < query.range.start
+                    || point.completed_at < start
+                    || point.completed_at >= fact.reset_at
+                {
+                    continue;
+                }
+                if !current_plan.eq_ignore_ascii_case(previous_plan) {
                     points.clear();
-                    interrupted = true;
+                    plan_changed = true;
                     continue;
                 }
                 points.push(QuotaForecastPoint {
+                    started_at: point.started_at,
                     observed_at: point.completed_at,
+                    reset_at: fact.reset_at,
                     used_percent: fact.used_percent,
                     usage: point.usage,
                 });
@@ -1053,13 +1130,15 @@ impl AccountsService for DefaultAccountsService {
                 window.key.clone(),
                 query.range.start,
                 QuotaForecastPoint {
+                    started_at: observed,
                     observed_at: observed,
+                    reset_at,
                     used_percent: percent,
                     usage: history.usage,
                 },
                 points,
                 history.pending_request_count,
-                interrupted,
+                plan_changed,
             );
             samples.push(sample);
         }
@@ -1283,6 +1362,23 @@ impl AccountsService for DefaultAccountsService {
     }
 }
 
+fn resolve_account_usage(
+    authentication_kind: &str,
+    quota: &ProviderQuota,
+    rolling_usage: Option<AccountUsage>,
+    api_key_usage: Option<AccountUsage>,
+    lookback: AccountUsageLookback,
+) -> (Option<AccountUsage>, Option<AccountUsagePeriod>) {
+    if authentication_kind == "api_key" {
+        return (api_key_usage, None);
+    }
+    if let Some((window, period)) = quota.usage_window() {
+        return (window.local_usage.clone(), Some(period));
+    }
+    // 模型分组额度无法归属整号用量，本地统计独立回退，不能为此合成上游额度桶
+    (rolling_usage, Some(lookback.period()))
+}
+
 fn map_reset_credits_error_after_refresh(
     error: crate::ports::provider::ProviderAdminError,
 ) -> AdminError {
@@ -1304,9 +1400,7 @@ fn quota_usage_window(
     if window.local_usage_attribution != QuotaLocalUsageAttribution::AccountWide {
         return None;
     }
-    let reset_at = window.reset_at?;
-    let seconds = i64::try_from(window.window_seconds?).ok()?;
-    let start = reset_at.checked_sub_signed(Duration::try_seconds(seconds)?)?;
+    let (start, reset_at) = window.observed_bounds()?;
     let range = TimeRange::new(start, reset_at).ok()?;
     // 上游百分比以该 reset 边界定义；以当前时间回推会让本地 Token 属于另一窗口
     Some(AccountUsageWindowQuery {

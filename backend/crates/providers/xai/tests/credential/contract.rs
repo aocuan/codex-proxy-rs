@@ -26,7 +26,7 @@ fn repository() -> (Arc<MemoryProviderAccountStore>, GrokCredentialRepository) {
 }
 
 #[tokio::test]
-async fn create_persists_plaintext_oauth_json_without_envelope_fields() {
+async fn create_persists_oauth_method_and_tokens_in_provider_json() {
     let (store, _) = repository();
     let input = create_input("plain", "subject-plain");
     seed_input(&store, &input).await.expect("create account");
@@ -47,8 +47,6 @@ async fn create_persists_plaintext_oauth_json_without_envelope_fields() {
         object.get("refresh_token").and_then(|v| v.as_str()),
         Some("refresh-plain")
     );
-    assert!(!object.contains_key("secret_envelope"));
-    assert!(!object.contains_key("secret_key_id"));
 }
 
 #[tokio::test]
@@ -391,7 +389,7 @@ async fn oauth_bundle_export_is_provider_owned_canonical_and_debug_redacted() {
     assert_eq!(value["accounts"][0]["credentials"]["idToken"], "id-export");
     assert_eq!(value["accounts"][0]["credentials"]["tokenType"], "Bearer");
     assert!(
-        value["accounts"][0]["credentials"]["expiresAt"]
+        value["accounts"][0]["credentials"]["accessTokenExpiresAt"]
             .as_str()
             .is_some()
     );
@@ -400,26 +398,25 @@ async fn oauth_bundle_export_is_provider_owned_canonical_and_debug_redacted() {
         provider_xai::OFFICIAL_CLIENT_ID
     );
     assert_eq!(
-        value["accounts"][0]["credentials"]["scope"],
-        "openid profile email offline_access grok-cli:access api:access"
+        value["accounts"][0]["credentials"]["scopes"],
+        serde_json::json!([
+            "openid",
+            "profile",
+            "email",
+            "offline_access",
+            "grok-cli:access",
+            "api:access"
+        ])
     );
-    for field in [
-        "access_token",
-        "refresh_token",
-        "id_token",
-        "token_type",
-        "expires_at",
-        "base_url",
-        "client_id",
-    ] {
-        assert!(value["accounts"][0]["credentials"].get(field).is_none());
-    }
     assert_eq!(value["proxies"], serde_json::json!([]));
     let imported = provider_xai::GrokOAuthImportDocument::parse_json(
         &serde_json::to_vec(&value).expect("JSON"),
     )
     .expect("re-import exported account");
-    assert_eq!(imported.into_entries()[0].model_access(), Some(&policy));
+    let entries = imported.into_entries();
+    assert_eq!(entries[0].name(), input.name);
+    assert_eq!(entries[0].email(), input.account.email.as_deref());
+    assert_eq!(entries[0].model_access(), Some(&policy));
 }
 
 #[test]

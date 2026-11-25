@@ -249,7 +249,7 @@ impl AccountGroupStore for PgAccountGroupRepository {
                     account.next_refresh_at, account.enabled, account.quota_settings, account.quota_paused, account.auto_use_quota_credits, account.concurrency_limit,
                     account.quota_observed_at, account.weight, account.model_access_json, account.credential_state, account.quota_access_state,
                     account.quota_evidence, account.quota_access_observed_at,
-                    account.quota_reset_at, account.last_error_reason,
+                    account.quota_reset_at, account.quota_limit_window_minutes, account.last_error_reason,
                     account.last_error_message, account.credential_observed_at,
                     account.created_at, account.updated_at,
                     settings.max_concurrent_per_account
@@ -320,6 +320,9 @@ impl AccountGroupStore for PgAccountGroupRepository {
             vec![
                 "name".to_owned(),
                 "description".to_owned(),
+                "color".to_owned(),
+                "allow_subagents".to_owned(),
+                "model_access".to_owned(),
                 "fast_mode".to_owned(),
                 "allow_image_generation".to_owned(),
             ],
@@ -346,23 +349,37 @@ impl AccountGroupStore for PgAccountGroupRepository {
     ) -> AdminStoreResult<AccountGroupMutation> {
         validate_group_fields(&command.name, command.description.as_deref())?;
         let id = command.id.clone();
+        let mut fields = vec![
+            "name".to_owned(),
+            "description".to_owned(),
+            "color".to_owned(),
+        ];
+        for (field, supplied) in [
+            ("allow_subagents", command.allow_subagents.is_some()),
+            ("model_access", command.model_access.is_some()),
+            ("fast_mode", command.fast_mode.is_some()),
+            (
+                "allow_image_generation",
+                command.allow_image_generation.is_some(),
+            ),
+        ] {
+            if supplied {
+                fields.push(field.to_owned());
+            }
+        }
         let audit = mutation_audit(
             context,
             MutationAuditOperation::AccountGroupUpdate,
             id.as_str(),
-            vec![
-                "name".to_owned(),
-                "description".to_owned(),
-                "fast_mode".to_owned(),
-                "allow_image_generation".to_owned(),
-            ],
+            fields,
         );
         let revision = self
             .mutate(audit, false, |transaction| {
                 Box::pin(async move {
                     let result = sqlx::query(
                         "update account_groups
-                 set name = $2, description = $3, color = $4, fast_mode = coalesce($5, fast_mode), allow_image_generation = coalesce($6, allow_image_generation), updated_at = now()
+                 set name = $2, description = $3, color = $4, fast_mode = coalesce($5, fast_mode), allow_image_generation = coalesce($6, allow_image_generation),
+                     allow_subagents = coalesce($7, allow_subagents), model_access_json = coalesce($8, model_access_json), updated_at = now()
                  where id = $1",
                     )
                     .bind(command.id.as_str())
@@ -371,6 +388,8 @@ impl AccountGroupStore for PgAccountGroupRepository {
                     .bind(command.color.as_str())
                     .bind(command.fast_mode.map(FastMode::as_str))
                     .bind(command.allow_image_generation)
+                    .bind(command.allow_subagents)
+                    .bind(command.model_access.map(sqlx::types::Json))
                     .execute(&mut **transaction)
                     .await
                     .map_err(|error| map_group_write_error(error, command.id.as_str()))?;
@@ -464,7 +483,10 @@ impl AccountGroupStore for PgAccountGroupRepository {
                     .await
                     .map_err(|source| unavailable("check account group delete conflict", source))?;
                     if exists {
-                        Err(conflict(command.id.as_str()))
+                        Err(conflict(
+                            command.id.as_str(),
+                            ConflictKind::InvalidTransition,
+                        ))
                     } else {
                         Err(not_found_store(command.id.as_str()))
                     }
@@ -481,7 +503,7 @@ impl AccountGroupStore for PgAccountGroupRepository {
 
 fn group_select() -> QueryBuilder<Postgres> {
     QueryBuilder::new(
-        "select g.id, g.name, g.description, g.color, g.enabled, g.fast_mode, g.allow_image_generation, g.created_at, g.updated_at,
+        "select g.id, g.name, g.description, g.color, g.enabled, g.fast_mode, g.allow_image_generation, g.allow_subagents, g.model_access_json, g.created_at, g.updated_at,
                 coalesce(members.member_count, 0)::bigint as member_count,
                 coalesce(keys.client_key_count, 0)::bigint as client_key_count,
                 coalesce(members.provider_counts, '{}'::jsonb) as provider_counts
@@ -559,6 +581,13 @@ fn group_record(row: &sqlx::postgres::PgRow) -> StoreResult<AccountGroupRecord> 
     let provider_counts = serde_json::from_value::<BTreeMap<String, u64>>(provider_counts)
         .map_err(|source| invalid("invalid provider counts").with_source(source))?;
     Ok(AccountGroupRecord {
+        allow_subagents: row
+            .try_get("allow_subagents")
+            .map_err(|source| invalid("invalid subagent policy").with_source(source))?,
+        model_access: row
+            .try_get::<sqlx::types::Json<_>, _>("model_access_json")
+            .map_err(|source| invalid("invalid model access policy").with_source(source))?
+            .0,
         allow_image_generation: row
             .try_get("allow_image_generation")
             .map_err(|source| invalid("invalid image generation policy").with_source(source))?,
@@ -691,11 +720,15 @@ fn require_one(rows: u64, id: &str) -> StoreResult<()> {
 }
 
 fn map_group_write_error(error: sqlx::Error, id: &str) -> StoreError {
-    if error
-        .as_database_error()
-        .is_some_and(|database| database.is_unique_violation())
+    if let Some(database) = error.as_database_error()
+        && database.is_unique_violation()
     {
-        conflict(id)
+        let kind = if database.constraint() == Some("account_groups_name_uq") {
+            ConflictKind::DuplicateName
+        } else {
+            ConflictKind::InvalidTransition
+        };
+        conflict(id, kind)
     } else {
         unavailable("write account group", error)
     }
@@ -713,12 +746,12 @@ fn not_found_store(id: &str) -> StoreError {
     }
 }
 
-fn conflict(id: &str) -> StoreError {
+fn conflict(id: &str, kind: ConflictKind) -> StoreError {
     StoreError::Conflict {
         source: None,
         entity: ENTITY,
         id: id.to_owned(),
-        kind: ConflictKind::InvalidTransition,
+        kind,
     }
 }
 
@@ -750,8 +783,8 @@ pub(crate) async fn insert_account_group_in_transaction(
         .map_err(|source| invalid("invalid account group fields").with_source(source))?;
     sqlx::query(
         "insert into account_groups
-         (id, name, description, color, fast_mode, allow_image_generation, enabled, created_at, updated_at)
-         values ($1, $2, $3, $4, $5, $6, true, now(), now())",
+         (id, name, description, color, fast_mode, allow_image_generation, allow_subagents, model_access_json, enabled, created_at, updated_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, true, now(), now())",
     )
     .bind(command.id.as_str())
     .bind(&command.name)
@@ -759,6 +792,8 @@ pub(crate) async fn insert_account_group_in_transaction(
     .bind(command.color.as_str())
     .bind(command.fast_mode.as_str())
     .bind(command.allow_image_generation)
+    .bind(command.allow_subagents)
+    .bind(sqlx::types::Json(&command.model_access))
     .execute(&mut **transaction)
     .await
     .map_err(|error| map_group_write_error(error, command.id.as_str()))?;

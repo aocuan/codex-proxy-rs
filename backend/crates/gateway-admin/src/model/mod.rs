@@ -23,7 +23,6 @@ pub mod pricing;
 pub mod provider_credentials;
 pub mod proxies;
 pub mod quota_forecast;
-pub mod quota_forecast_sampling;
 pub mod quota_history;
 pub mod reset_credit_automation;
 pub mod retention;
@@ -238,8 +237,6 @@ pub enum AdminModelError {
     InvalidPageSize(u16),
     #[error("observability page size {0} is outside 1..=100")]
     InvalidObservabilityPageSize(u16),
-    #[error("account group name or description is invalid")]
-    InvalidAccountGroupFields,
     #[error("client key group IDs are duplicated or exceed 1000 entries")]
     InvalidClientKeyGroups,
     #[error("client key page size must be inside 1..=65535")]

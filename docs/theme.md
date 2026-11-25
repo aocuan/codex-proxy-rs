@@ -11,16 +11,8 @@
 
 </div>
 
-在管理端「主题」中调整颜色、字号、圆角和组件样式，保存后应用到当前浏览器。
-设置保存在浏览器本地，不会同步到服务器或其他设备。只想换配色时，选择品牌色预置即可
-
-下文说明实现和扩展方式。颜色使用 Ant Design 十阶色板与项目的明暗角色规则，
-中性表面从当前底色和文字基色派生；Vue 组件通过 CSS Variables 与 Tailwind CSS 4 使用这些值。
-项目不依赖 Ant Design 组件库或 CSS-in-JS
-
-> [!IMPORTANT]
-> 主题的目标是调整颜色、密度、圆角与层级，不改变现有页面结构和产品语义。默认主题保留既有表面层级，并满足正常文字的可读性约束；
-> 成功、警告、错误和业务数据色不会因为品牌色变化而失去原有含义
+在管理端「主题」选择预置配色，或调整颜色、字号、圆角和组件样式。设置仅保存在当前浏览器。
+Vue 组件通过 CSS Variables 和 Tailwind CSS 4 使用主题，无需 Ant Design 组件库或 CSS-in-JS
 
 ## 设计原则
 
@@ -29,7 +21,7 @@
 - **主色与表面分离**：品牌色负责交互和强调，页面、容器与浮层使用预设底色或自定义背景，文字由文本 Seed 派生
 - **语义独立**：成功、警告、错误、信息和链接色各自派生，不随品牌色改变
 - **无边设计**：默认依靠表面色差、间距和轻阴影表达层级；边框只用于焦点、错误和必要分隔
-- **运行时可定制**：用户输入在浏览器中实时派生，因此使用 CSS Variables，不使用构建时 SCSS 变量
+- **运行时可定制**：浏览器按用户设置实时生成 CSS Variables
 - **单一事实源**：Store 只保存最小配置，所有 Map、Alias 与未覆盖的 Component Token 均由纯函数生成
 - **行为透明**：任意自定义 Seed 都进入统一算法，页面只选择角色。功能色 `text` 与 `on-container` 分别依据中性
   Surface 和自身 Container 三态做对比度保护，不使用固定色相的文字锚点覆盖自定义 Seed；交互仍尊重
@@ -37,15 +29,10 @@
 
 ## 界面文案与信息层级
 
-管理端以查看状态和完成操作为主，延续紧凑的信息布局、清楚的主次关系，以及表面色差、间距和轻阴影构成的层级
-
-- **先沿用已有设计**：先看原页面和最接近的同类实现，复用布局、控件、操作位置与状态展示，新增能力优先融入原有操作路径
-  只有现有设计无法承载本次任务时才改变结构，并说明具体问题，不以个人审美或设计技能中的通用建议为由重做页面
+- **沿用已有设计**：参考原页面和同类实现，复用布局、控件、操作位置与状态展示。只有现有结构无法承载需求时才调整，并说明具体问题
 - **按作用范围摆放操作**，例如单行操作沿用表格已有的行操作区，整表操作沿用列表工具栏。同层内容沿用相邻区域的对齐边线，同组控件保持一致的间距，换行后仍能看出标签、控件与操作的对应关系
 - **页面文案言简意赅**，控件含义清楚就省去说明。必要的限制、失败原因和操作后果就近简述，用法和示例放在文档中
-- **文案不使用句号和分号**：自行编写的标题、标签、按钮、表单帮助、空状态、提示和错误文案不使用 `。`、句末 `.`、`；` 或 `;`，优先写成短语或简短分句
-  需要表达多个要点时，按内容关系拆成字段、短行或列表，不把长段落机械替换成逗号串
-  这项约定针对界面文案，URL、版本号、小数、代码、原始日志和用户输入保留原样
+- **界面文案省去句号和分号**：标题、标签、按钮、帮助、空状态、提示和错误文案使用短语或短句。多个要点拆成字段、短行或列表。URL、版本号、小数、代码、原始日志和用户输入保留原样
 - **按内容选择提示方式**：Tooltip 用于短名称或单句补充，Popover 用于需要阅读、多段说明或含链接的内容，复用项目现有组件
   帮助入口需可识别、可通过键盘和触屏打开，图标提供可访问名称，不依赖悬停才能读到必要内容
 - **避免大字报**：不堆叠超大标题、口号、整屏介绍、重复副标题或大段说明卡片，页面尽快进入数据、筛选和操作
@@ -53,15 +40,13 @@
 - **按任务组织空间**：优先使用紧凑的工具栏、表格、表单和必要的指标卡，卡片承担独立的信息或操作职责，不为每段说明单独套卡
   密度以可读、可点击为边界，保留窄屏换行和必要的控件间距
 
-开发时按任务选择参考入口，复用其职责和信息层级，具体布局仍以当前任务为准：
-
 | 场景 | 参考入口 | 关注点 |
 | --- | --- | --- |
-| 页面头部 | `@codex-proxy/ui` 的 `ZPageHeader`、[系统概览](../frontend/src/views/dashboard/components/DashboardContent.vue) | 简短标题、必要的统计范围或状态、就近操作 |
+| 页面头部 | `@codex-proxy/ui` 的 `ZPageHeader`、[系统概览](../frontend/src/views/dashboard/components/DashboardOverview.vue) | 简短标题、必要的统计范围或状态、就近操作 |
 | 内容与指标 | `@codex-proxy/ui` 的 `ZCard`、[用量概览卡片](../frontend/src/views/usage/components/UsageSummaryCards.vue) | 可选说明、紧凑摘要、数值与辅助信息的主次 |
-| 表单帮助 | [API Key 账号字段](../frontend/src/views/accounts/components/AccountApiKeyFields.vue) | 直接命名字段，在对应位置提供短提示和示例 |
+| 表单帮助 | [API Key 账号字段](../frontend/src/providers/openai/accounts/ApiKeyFields.vue) | 直接命名字段，在对应位置提供短提示和示例 |
 | 详细规则 | [自动审批并发帮助](../frontend/src/views/settings/components/ConcurrencyPolicyCard.vue) | 标签旁帮助图标打开 Popover，页面保留短提示，浮层补充规则和示例 |
-| 账号与用量展示 | [账号额度窗口](../frontend/src/components/account/account-usage-window/index.vue)、[共用用量表格](../frontend/src/components/usage/UsageRecordsTable.vue) | 复用后端展示字段和共享 presenter，管理端与 Key 页保持同一展示口径 |
+| 账号与用量展示 | [账号额度窗口](../frontend/src/components/account-usage-window/index.vue)、[共用用量表格](../frontend/src/components/usage-records-table/index.vue) | 复用后端展示字段和共享 presenter，管理端与 Key 页保持同一展示口径 |
 
 页面查询、表单状态与纯展示逻辑的归属见 [前端模块职责](architecture.md#34-前端模块职责)
 
@@ -69,7 +54,7 @@
 
 应用使用 Vue I18n Composition API，语言标识为 `en`、`zh-Hans`、`zh-Hant`。资源按领域存放在 `frontend/src/i18n/locales/`，使用 `领域.功能.用途` 的语义 key，例如 `accounts.connectionTest.description`，三种语言保持相同 key 和具名参数
 
-默认语言为简体中文，浏览器本地保存的有效语言选择优先；未保存选择、保存值无效或存储不可用时使用简体中文
+优先使用浏览器本地保存的有效语言，其他情况使用简体中文
 
 业务语言包及对应 UI 文案按语言加载，首次只加载当前语言，加载成功后缓存资源。缺失消息显示为空，不回退到其他语言或显示 key；切换时语言包加载失败则保留当前语言
 
@@ -80,7 +65,7 @@
 - 繁体中文只转换简体原文的字形，保持措辞与语序，不替换地区用词，例如 `数据 → 數據`、`设置 → 設置`
 - 只翻译应用拥有的文本，具体后端错误、上游诊断、日志和独立插件内容保留原文；固定错误码在请求层映射，业务分类码优先保留后端公开的具体原因，无原因时使用本地兜底文案
 - 侧边栏语言图标展开就地选项，选择后切换并收起；品牌区固定显示 `Codex Proxy`、`Rust build` 和版本号
-- UI 库默认文案由 `ZConfigProvider` 提供，命令式通知通过 `utils/notification.ts` 绑定同一个语言来源，组件约定见 [UI 国际化](../modules/ui/playground/guide/i18n.md)
+- UI 库默认文案由 `ZConfigProvider` 提供，命令式通知通过 `plugins/notification.ts` 绑定同一个语言来源，组件约定见 [UI 国际化](../modules/ui/playground/guide/i18n.md)
 
 正文默认使用 Inter Variable，中文及缺失字形按系统无衬线字体栈回退。代码使用 JetBrains Mono Variable，中文由系统字体补齐，不随语言切换额外修改字重。默认值由 UI 库持有，应用负责加载字体包，图表读取同一字体 Token
 
@@ -100,8 +85,6 @@ flowchart LR
   I --> J[Shadow DOM 预览]
   J --> K[首页画板 / 组件概览]
 ```
-
-核心职责保持分离：
 
 | 层 | 入口 | 职责 |
 | --- | --- | --- |
@@ -210,9 +193,8 @@ Input、阴影与其他 Component Token 从 Fill、Surface、Primary 和 Semanti
 
 正常文字同时检查 Layout、Container、Elevated、文字交互背景、三级 Fill，以及控件透明填充在各宿主上的合成色
 和浅色的选中 / 选中 Hover 背景。正文、标题和 Secondary 至少 7:1，
-Tertiary 至少 5.5:1，Quaternary 至少 4.5:1；这些是相对全部上述表面的最低目标，对 Container 的实测比值通常更高。
-Disabled 保留独立的弱化颜色，不承担正常信息。控件填充由文字 Seed 和透明度派生，placeholder 继续消费
-Quaternary；主按钮白字与功能色文字遵循各自的容器配对规则
+Tertiary 至少 5.5:1，Quaternary 至少 4.5:1。
+Disabled 使用独立的弱化颜色，不承担正常信息。控件填充由文字 Seed 和透明度派生，placeholder 使用 Quaternary。主按钮白字与功能色文字遵循各自的容器配对规则
 
 ### Alias Token
 
@@ -389,7 +371,7 @@ Store 在其他入口发生变化时更新保存基线；没有未保存修改�
 样式，并把预览内容 Teleport 到影子根中。预览可独立切换浅色和深色，不受外层主题影响。
 画布和操作控件先显示，选中的预览内容异步加载，就绪前画布留空，资源加载完成后同步影子根样式
 
-- **首页画板**复用真实 `DashboardContent` 和固定 fixture，不请求接口，也不启动自动刷新
+- **首页画板**通过 `views/dashboard/components/DashboardOverview.vue` 展示固定样本，请求和刷新由真实概览页管理
 - **组件概览**展示基础组件、表格、空状态、骨架、浮层和菜单等关键状态
 - 画板固定为 `1600 × 1808`，使用 CSS `zoom` 重排，不使用 `transform: scale()` 长期缩放文字
 - 空白区域可拖拽，滚轮以指针为锚点缩放，并提供缩小、100%、放大和适应画板操作

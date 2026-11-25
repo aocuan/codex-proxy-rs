@@ -250,7 +250,7 @@ impl GrokCredentialAdmin {
             }
             credentials.insert("tokenType".to_owned(), Value::String("Bearer".to_owned()));
             credentials.insert(
-                "expiresAt".to_owned(),
+                "accessTokenExpiresAt".to_owned(),
                 Value::String(
                     loaded
                         .account
@@ -269,14 +269,13 @@ impl GrokCredentialAdmin {
                 Value::String(OFFICIAL_CLIENT_ID.to_owned()),
             );
             credentials.insert(
-                "scope".to_owned(),
-                Value::String(std::mem::take(&mut secret.scope)),
+                "scopes".to_owned(),
+                serde_json::json!(secret.scope.split_ascii_whitespace().collect::<Vec<_>>()),
             );
             if let Some(email) = loaded.account.email() {
                 credentials.insert("email".to_owned(), Value::String(email.to_owned()));
             }
             let mut exported = serde_json::json!({
-                "name": loaded.account.name(),
                 "modelAccess": loaded.account.model_access(),
                 "platform": "grok",
                 "type": "oauth",
@@ -288,6 +287,9 @@ impl GrokCredentialAdmin {
                     .email()
                     .map_or_else(|| serde_json::json!({}), |email| serde_json::json!({"email": email})),
             });
+            if !loaded.account.name().is_empty() {
+                exported["label"] = Value::String(loaded.account.name().to_owned());
+            }
             if let Some(proxy) = loaded.account.outbound_proxy() {
                 exported["outboundProxyUrl"] = Value::String(proxy.expose_url().to_owned());
             }
@@ -513,7 +515,7 @@ impl GrokCredentialRepository {
         })?;
         let accounts = self
             .store
-            .list_for_provider(&provider)
+            .list_for_provider(&provider, false)
             .await
             .map_err(map_store_error)?;
         let mut loaded = Vec::with_capacity(accounts.len());
@@ -535,7 +537,7 @@ impl GrokCredentialRepository {
         })?;
         let accounts = self
             .store
-            .list_for_provider(&provider)
+            .list_for_provider(&provider, false)
             .await
             .map_err(map_store_error)?;
         for account in &accounts {

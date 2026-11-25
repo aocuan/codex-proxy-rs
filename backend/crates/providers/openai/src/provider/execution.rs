@@ -154,6 +154,22 @@ impl CodexProvider {
         } else {
             CodexSelectionModel::Search(requested_model.as_ref().map(|model| model.as_str()))
         };
+        if !context.is_diagnostic_required_account()
+            && context
+                .account_scope()
+                .is_some_and(|scope| scope.groups_deny_model(model.model()))
+        {
+            return Err(provider_error(
+                ProviderErrorKind::RequestPolicyDenied,
+                UpstreamSendState::NotSent,
+            )
+            .with_retry_prohibited()
+            .with_client_visible_upstream_error(ClientVisibleUpstreamError::new(
+                gateway_core::validation::GROUP_MODEL_DENIED_MESSAGE,
+                Some(gateway_core::validation::GROUP_MODEL_DENIED_CODE.to_owned()),
+                None,
+            )));
+        }
         let selection_started_at = Instant::now();
         let lease = self
             .selector
@@ -300,9 +316,7 @@ impl CodexProvider {
                 .remember_turn(
                     turn,
                     affinity,
-                    context
-                        .account_selection_policy()
-                        .openai_session_affinity_ttl(),
+                    context.account_selection_policy().session_affinity_ttl(),
                 )
                 .await
                 .map_err(map_selection_error)?;
@@ -351,13 +365,20 @@ impl CodexProvider {
             });
         let events = cold_json_response_stream(ColdJsonResponse {
             installation_id,
-            client: client
-                .for_account(lease.account())
+            client: lease
+                .authentication()
+                .model_client_for_account(&client, lease.account())
                 .map_err(|error| map_client_error(error, UpstreamSendState::NotSent, None).error)?
-                .with_responses_api_base_url(lease.authentication().responses_api_base_url())
                 .with_middleware_headers(middleware_headers)
                 .with_outbound_middleware(outbound_middleware)
-                .with_privacy(context.privacy(), context.cancellation().clone()),
+                .with_account_privacy(
+                    context.privacy(),
+                    context.cancellation().clone(),
+                    lease.account(),
+                    affinity
+                        .as_ref()
+                        .map(|affinity| affinity.persistence_hash()),
+                ),
             response_origin: request.response_origin,
             endpoint_path: request.endpoint_path,
             body: request.body,
@@ -430,14 +451,12 @@ pub(super) struct ColdJsonResponse {
 pub(super) struct OpenAiSessionState {
     pub(super) account_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) reviewer_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) credential_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) oauth_identity: Option<String>,
     pub(super) conversation_id: Option<String>,
-    #[serde(default)]
-    pub(super) turn_state: Option<String>,
-    #[serde(default)]
-    pub(super) client_turn_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) reasoning_effort_override: Option<String>,
     pub(super) continuation_scope: OpenAiContinuationScope,
@@ -453,21 +472,14 @@ pub(super) enum OpenAiContinuationScope {
 
 pub(super) struct OpenAiSessionCapture {
     pub(super) account_id: String,
+    pub(super) reviewer_model: Option<String>,
     pub(super) credential_revision: Option<u64>,
     pub(super) oauth_identity: Option<String>,
     pub(super) conversation_id: Option<String>,
-    pub(super) turn_state: Option<String>,
-    pub(super) client_turn_id: Option<String>,
     pub(super) reasoning_effort_override: Option<String>,
     pub(super) response_store: bool,
     pub(super) oversized_http: bool,
     pub(super) continuation_scope: Option<OpenAiContinuationScope>,
-}
-
-pub(super) fn same_client_turn(previous: Option<&str>, current: Option<&str>) -> bool {
-    previous
-        .zip(current)
-        .is_some_and(|(previous, current)| !previous.is_empty() && previous == current)
 }
 
 pub(super) fn decode_openai_session_state(request: &GenerateRequest) -> Option<OpenAiSessionState> {
@@ -502,11 +514,10 @@ fn encode_openai_session_capture(
     };
     encode_openai_session_state(OpenAiSessionState {
         account_id: capture.account_id.clone(),
+        reviewer_model: capture.reviewer_model.clone(),
         credential_revision: capture.credential_revision,
         oauth_identity: capture.oauth_identity.clone(),
         conversation_id: capture.conversation_id.clone(),
-        turn_state: capture.turn_state.clone(),
-        client_turn_id: capture.client_turn_id.clone(),
         reasoning_effort_override: capture.reasoning_effort_override.clone(),
         continuation_scope,
     })
@@ -791,7 +802,7 @@ fn image_response_metering(
         .and_then(Value::as_u64);
     // 总量是上游独立报告的事实；图片明细是总输入/输出的子集，不能再次相加
     usage.total_tokens = raw.get("total_tokens").and_then(Value::as_u64);
-    let cost = crate::transport::usage::image_calculated_cost(request_body, &raw, prices);
+    let cost = crate::billing::image_calculated_cost(request_body, &raw, prices);
     (usage != Usage::default()).then_some((usage, cost))
 }
 
@@ -938,7 +949,6 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
             } else {
                 OpenAiContinuationScope::ReplayRequired
             });
-            capture.turn_state = response.turn_state.clone().or(capture.turn_state.clone());
         }
         let mut observation_state = OpenAiResponseObservationState::from_backend_response(
             &response,
@@ -996,6 +1006,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
         }
         let response_transport = response.transport;
         let routing_affinity = response.routing_affinity;
+        let codex_oauth = matches!(lease.authentication(), crate::credential::CodexRuntimeAuthentication::OAuth(_));
         let websocket_connection_id = response.websocket_connection_id;
         let mut body = response.body;
         let mut failure_diagnostics = response.diagnostics.clone();
@@ -1070,7 +1081,6 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                     };
                     let metadata_merge = merge_response_metadata_updates(
                         response_metadata_updates.as_ref(),
-                        &mut session_capture,
                         &mut observation_state,
                     )
                     .await;
@@ -1148,7 +1158,6 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
             };
             let metadata_merge = merge_response_metadata_updates(
                 response_metadata_updates.as_ref(),
-                &mut session_capture,
                 &mut observation_state,
             )
             .await;
@@ -1179,10 +1188,10 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                 )
             });
             let timing_signals = decoder.take_timing_signals();
-            if let Some(affinity) = &routing_affinity {
+            if codex_oauth {
                 for fact in events.iter().flat_map(ProviderEvent::canonical_facts) {
                     if let GatewayEvent::Started(meta) = fact {
-                        guardian_routing.remember(context.client_api_key_ref(), &active_account, meta.response_id(), affinity);
+                        guardian_routing.remember(context.client_api_key_ref(), &active_account, meta.response_id(), routing_affinity.as_ref());
                     }
                 }
             }
@@ -1267,9 +1276,7 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
                         yield event;
                     }
                 } else if atomic_upstream_failure {
-                    failure.error = failure
-                        .error
-                        .with_atomic_client_events(events);
+                    failure.error = with_atomic_failure_events(failure.error, events, &context);
                 }
                 Err(continuation_recovery_error(
                     failure.error,
@@ -1354,7 +1361,6 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
         }
         let metadata_changed = merge_response_metadata_updates(
             response_metadata_updates.as_ref(),
-            &mut session_capture,
             &mut observation_state,
         )
         .await
@@ -1417,12 +1423,8 @@ pub(super) fn cold_response_stream(response: ColdResponse) -> EventStream {
 
 async fn merge_response_metadata_updates(
     updates: Option<&CodexResponseMetadataUpdates>,
-    session_capture: &mut Option<OpenAiSessionCapture>,
     observation_state: &mut OpenAiResponseObservationState,
 ) -> Option<bool> {
     let turn_state = updates?.lock().await.turn_state.take()?;
-    if let Some(capture) = session_capture.as_mut() {
-        capture.turn_state = Some(turn_state.clone());
-    }
     Some(observation_state.merge_client_header("x-codex-turn-state", &turn_state))
 }

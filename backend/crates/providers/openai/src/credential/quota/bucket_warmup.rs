@@ -137,7 +137,7 @@ impl CodexCredentialQuotaService {
         now: DateTime<Utc>,
     ) -> Result<CodexWarmupSummary, CodexCredentialQuotaError> {
         let mut summary = CodexWarmupSummary::default();
-        for account in self.repository.list_for_provider().await? {
+        for account in self.repository.list_for_provider(false).await? {
             if !warmup::warmup_account_is_available(&account)
                 || !account.quota_settings().has_warmup()
             {
@@ -231,17 +231,7 @@ impl CodexCredentialQuotaService {
                 .await?;
             return Ok(None);
         };
-        let profile = self
-            .profile
-            .resolve_global_request_profile(self.runtime_policy.as_ref())
-            .await
-            .map_err(CodexCredentialQuotaError::Profile)?;
-        let client = CodexBackendClient::new(
-            self.http.clone(),
-            self.base_url.clone(),
-            self.profile.clone(),
-        )
-        .with_request_profile(profile);
+        let client = self.global_profile_client().await?;
         // 先持久化领取再发请求；超时、取消或重启后不重放结果不明的推理
         // 通用窗口共享请求用量，同批到期窗口只发一次轻量请求
         for (key, _, reset) in &due {

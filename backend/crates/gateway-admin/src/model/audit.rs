@@ -45,6 +45,7 @@ pub enum MutationAuditOperation {
     PluginSourceCredentialCreate,
     PluginSourceCredentialDelete,
     ClientApiKeyUpdateBudgetLimits,
+    ClientApiKeyBatchUpdate,
     ClientApiKeyCreate,
     ClientApiKeyUpdate,
     ClientApiKeyEnabled { enabled: bool },
@@ -129,6 +130,7 @@ impl MutationAuditOperation {
             Self::PluginSourceCredentialCreate => ("create", "plugin_source_credential"),
             Self::PluginSourceCredentialDelete => ("delete", "plugin_source_credential"),
             Self::ClientApiKeyUpdateBudgetLimits => ("update_budget_limits", "client_api_key"),
+            Self::ClientApiKeyBatchUpdate => ("batch_update", "client_api_key"),
             Self::ClientApiKeyCreate => ("create", "client_api_key"),
             Self::ClientApiKeyUpdate => ("update", "client_api_key"),
             Self::ClientApiKeyEnabled { enabled } => {

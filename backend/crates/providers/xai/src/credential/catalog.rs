@@ -1,6 +1,6 @@
 //! xAI OAuth account 的实时模型目录与可重建 TTL cache 边界
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::fmt;
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
@@ -12,6 +12,7 @@ use gateway_core::account::{
 };
 use gateway_core::provider_ports::{
     ProviderCatalogCacheKey, ProviderCatalogCachePort, ProviderCatalogScope,
+    ProviderRuntimePolicyPort,
 };
 use gateway_core::routing::{ProviderCatalogGeneration, ProviderKind};
 
@@ -348,6 +349,8 @@ pub enum GrokCredentialCatalogError {
     ConflictingModelFacts,
     #[error("Grok model catalog cache update failed")]
     Cache,
+    #[error("Grok client profile is unavailable")]
+    Profile(#[source] gateway_core::error::ErrorSource),
     #[error("Grok provider account store is unavailable")]
     Store,
 }
@@ -359,12 +362,16 @@ pub struct GrokCredentialCatalogService {
     cache: Arc<dyn GrokCredentialCatalogCache>,
     published: Arc<RwLock<PublishedCatalogState>>,
     wire_profile: XaiWireProfileState,
+    runtime_policy: Arc<dyn ProviderRuntimePolicyPort>,
 }
+
+/// 同一目录模型可由多个套餐的成员账号发现
+pub(crate) type SourcedCatalogModel = (GrokCatalogModel, BTreeSet<ProviderAccountId>);
 
 #[derive(Default)]
 struct PublishedCatalogState {
     generation: u64,
-    models: Vec<GrokCatalogModel>,
+    models: Vec<SourcedCatalogModel>,
 }
 
 impl GrokCredentialCatalogService {
@@ -374,6 +381,7 @@ impl GrokCredentialCatalogService {
         transport: Arc<dyn GrokModelCatalogTransport>,
         cache: Arc<dyn GrokCredentialCatalogCache>,
         wire_profile: XaiWireProfileState,
+        runtime_policy: Arc<dyn ProviderRuntimePolicyPort>,
     ) -> Self {
         Self {
             repository,
@@ -381,6 +389,7 @@ impl GrokCredentialCatalogService {
             cache,
             published: Arc::new(RwLock::new(PublishedCatalogState::default())),
             wire_profile,
+            runtime_policy,
         }
     }
 
@@ -496,27 +505,26 @@ impl GrokCredentialCatalogService {
             .map_err(|_| GrokCredentialCatalogError::Cache)
     }
 
-    /// Provider Registry 构建 RuntimeSnapshot 时使用的实时能力目录
-    pub async fn query_models(&self) -> Result<Vec<GrokCatalogModel>, GrokCredentialCatalogError> {
-        self.fetch_and_cache().await
-    }
-
-    async fn fetch_and_cache(&self) -> Result<Vec<GrokCatalogModel>, GrokCredentialCatalogError> {
+    /// 快照同时冻结套餐目录及其成员；来源变化也要求重新发布
+    pub async fn query_models(
+        &self,
+    ) -> Result<Vec<SourcedCatalogModel>, GrokCredentialCatalogError> {
         let candidates = self
             .repository
             .list_loaded_for_provider()
             .await
-            .map_err(|_| GrokCredentialCatalogError::Store)?
-            .into_iter()
-            .filter(eligible_catalog_candidate)
-            .collect::<Vec<_>>();
+            .map_err(|_| GrokCredentialCatalogError::Store)?;
         let groups = catalog_candidates_by_scope(candidates)?;
         // 单个套餐失败只跳过该套餐，不阻断其他套餐的目录同步
         let mut fetched = Vec::with_capacity(groups.len());
         let mut last_error = None;
         for (scope, candidates) in groups {
+            let accounts = candidates
+                .iter()
+                .map(|candidate| candidate.account.id().clone())
+                .collect();
             match self.fetch_scope_catalog(scope.clone(), candidates).await {
-                Ok(catalog) => fetched.push(catalog),
+                Ok(catalog) => fetched.push((catalog, accounts)),
                 Err(error) => {
                     tracing::warn!(
                         scope = scope.as_str(),
@@ -530,10 +538,9 @@ impl GrokCredentialCatalogService {
         if fetched.is_empty() {
             return Err(last_error.unwrap_or(GrokCredentialCatalogError::NoEligibleCredential));
         }
-        fetched.sort_by(|left, right| left.scope.cmp(&right.scope));
         let models = strict_model_union(&fetched)?;
         let observed_at = Utc::now();
-        for fetched in fetched {
+        for (fetched, _) in fetched {
             let scope = fetched.scope.clone();
             if self
                 .cache
@@ -577,12 +584,18 @@ impl GrokCredentialCatalogService {
         candidates: Vec<LoadedGrokCredential>,
     ) -> Result<FetchedCredentialCatalog, GrokCredentialCatalogError> {
         let mut last_error = None;
+        let profile = XaiWireProfileState::new(
+            self.wire_profile
+                .resolve_global_request_profile(self.runtime_policy.as_ref())
+                .await
+                .map_err(GrokCredentialCatalogError::Profile)?,
+        );
         for candidate in candidates.into_iter().take(MAX_CATALOG_FETCH_ATTEMPTS) {
             match fetch_candidate_catalog(
                 Arc::clone(&self.client),
                 scope.clone(),
                 candidate,
-                self.wire_profile.clone(),
+                profile.clone(),
             )
             .await
             {
@@ -593,7 +606,7 @@ impl GrokCredentialCatalogService {
         Err(last_error.unwrap_or(GrokCredentialCatalogError::NoEligibleCredential))
     }
 
-    fn publish_models(&self, models: &[GrokCatalogModel]) {
+    fn publish_models(&self, models: &[SourcedCatalogModel]) {
         let mut published = self
             .published
             .write()
@@ -691,18 +704,23 @@ async fn fetch_candidate_catalog(
 }
 
 fn strict_model_union(
-    fetched: &[FetchedCredentialCatalog],
-) -> Result<Vec<GrokCatalogModel>, GrokCredentialCatalogError> {
-    let mut union = BTreeMap::<String, GrokCatalogModel>::new();
-    for credential in fetched {
+    fetched: &[(FetchedCredentialCatalog, BTreeSet<ProviderAccountId>)],
+) -> Result<Vec<SourcedCatalogModel>, GrokCredentialCatalogError> {
+    let mut union = BTreeMap::<String, SourcedCatalogModel>::new();
+    for (credential, accounts) in fetched {
         for model in credential.snapshot.models() {
             let slug = model.request_model().as_str().to_owned();
-            if let Some(existing) = union.get(&slug) {
-                if existing != model {
-                    return Err(GrokCredentialCatalogError::ConflictingModelFacts);
+            match union.entry(slug) {
+                Entry::Vacant(entry) => {
+                    entry.insert((model.clone(), accounts.clone()));
                 }
-            } else {
-                union.insert(slug, model.clone());
+                Entry::Occupied(mut entry) => {
+                    let (existing, sources) = entry.get_mut();
+                    if existing != model {
+                        return Err(GrokCredentialCatalogError::ConflictingModelFacts);
+                    }
+                    sources.extend(accounts.iter().cloned());
+                }
             }
         }
     }

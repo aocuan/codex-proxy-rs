@@ -52,7 +52,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::transport::profile::CodexWireProfileState;
+use crate::profile::CodexWireProfileState;
 use crate::transport::protocol::responses::CodexResponsesRequest;
 use crate::transport::{
     CodexBackendClient, CodexBackendStreamingResponse, CodexClientError,
@@ -65,7 +65,7 @@ use document::{
     DEFAULT_CODEX_LIMIT_ID, RateLimitSnapshotsByLimitId, normalize_quota_window_placeholders,
     observed_account_plan,
 };
-use evidence::{QuotaEndpointFailure, classify_quota_endpoint_failure};
+use evidence::{QuotaEndpointFailure, classify_quota_endpoint_failure, upstream_error_code};
 use recovery::{RECOVERY_FIELD, reconcile_refresh};
 use snapshot::{
     parse_account_quota_snapshot, quota_projection_ttl, quota_snapshot_from_observation,
@@ -123,6 +123,7 @@ pub struct CodexQuotaSyncSummary {
     pub updated: u64,
     pub exhausted: u64,
     pub banned: u64,
+    pub revoked: u64,
     pub transient: u64,
     pub stale: u64,
 }
@@ -144,7 +145,7 @@ pub struct CodexWarmupSummary {
 
 #[derive(Debug, Error)]
 pub enum CodexCredentialQuotaError {
-    #[error("Codex warmup client profile is unavailable")]
+    #[error("Codex quota client profile is unavailable")]
     Profile(#[source] gateway_core::error::ErrorSource),
     #[error("Codex quota response is invalid")]
     InvalidCredentialData,

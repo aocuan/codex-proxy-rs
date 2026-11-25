@@ -6,7 +6,7 @@ import { SlidersHorizontal } from '@lucide/vue'
 import { computed, ref, shallowRef, useId, useTemplateRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { batchUpdateAccounts, getAccountModels, getAccountQuota } from '@/api'
-import { quotaWindowLabel } from '@/components/account/account-usage-window/presenter'
+import { quotaWindowLabel } from '@/components/account-usage-window/presenter'
 import { useAsyncAction } from '@/composables/useAsyncAction'
 import QuotaActionButton from './QuotaActionButton.vue'
 
@@ -128,7 +128,7 @@ async function save() {
             v-model="row.warmup"
             size="small"
             inline-prompt
-            class="w-12 [&:lang(en)]:w-18"
+            class="w-18 shrink-0 [&:lang(en)]:w-28"
             width="100%"
             :active-text="t('accounts.quotaSettings.warmup')"
             :inactive-text="t('accounts.quotaSettings.warmup')"

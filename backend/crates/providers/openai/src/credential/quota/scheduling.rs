@@ -336,11 +336,15 @@ fn quota_refresh_candidate(
     snapshot: Option<&CodexAccountQuotaSnapshot>,
     now: SystemTime,
 ) -> Option<(ProviderAccount, Option<SystemTime>)> {
-    if !eligible_periodic_quota_refresh(&account, now) {
+    if !access_token_is_current(&account, now) {
         return None;
     }
     if account.quota().is_exhausted() {
-        let reset_at = account.quota().reset_at();
+        let state = account.quota();
+        let reset_at = state.reset_at().or_else(|| {
+            let at = SystemTime::from(snapshot?.denied_window(state)?.reset_at()?);
+            (at > state.observed_at()?).then_some(at)
+        });
         return Some((account, reset_at));
     }
     // 正常账号首次进入周期候选也要等待宽限期，不能由“无刷新历史”绕过
@@ -428,14 +432,9 @@ fn insert_projection_entry(
     );
 }
 
-fn eligible_periodic_quota_refresh(account: &ProviderAccount, now: SystemTime) -> bool {
-    account.enabled() && access_token_is_current(account, now)
-}
-
 fn eligible_initial_quota_sync(account: &ProviderAccount, now: SystemTime) -> bool {
     // 首次观察只兜底刚入库、尚无 quota 快照的账号
     // 已耗尽等运行时状态必须由
     // periodic 路径处理，才能保留同一账号的最小复核间隔
-    account.credential_state() == CredentialState::Ready
-        && eligible_periodic_quota_refresh(account, now)
+    account.credential_state() == CredentialState::Ready && access_token_is_current(account, now)
 }

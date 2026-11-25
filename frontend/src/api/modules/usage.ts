@@ -435,9 +435,10 @@ interface PageQuery {
 
 type UsagePageQuery = UsageRangeQuery & PageQuery & {
   clientApiKeyName?: string
-  accountName?: string
+  accountSearch?: string
   model?: string
   status?: UsageRecordStatus
+  errorOrigin?: UsageErrorOrigin
 }
 
 interface UsageDetailQuery {

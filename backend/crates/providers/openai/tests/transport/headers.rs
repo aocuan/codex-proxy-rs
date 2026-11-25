@@ -148,9 +148,17 @@ async fn backend_websocket_should_forward_context_headers_and_preserve_payload_f
             .expect("send terminal event");
         payload
     });
-    let mut request =
-        codex_request_with_prompt_cache_key("gpt-test", "be brief", Vec::new(), "client-thread");
+    let mut body = codex_request_body("gpt-test", "be brief", Vec::new());
+    body.insert("prompt_cache_key".into(), json!("client-thread"));
+    let mut request = encode_request_with_headers(
+        body,
+        &[
+            ("x-codex-beta-features", "feature-a"),
+            ("x-responsesapi-include-timing-metrics", "true"),
+        ],
+    );
     request.use_websocket = true;
+    request.turn_state = Some("turn-state".to_owned());
     request.responses_lite = Some("true".to_owned());
     request.memgen_request = Some("true".to_owned());
     request.set_client_metadata(Some(json!({
@@ -179,8 +187,6 @@ async fn backend_websocket_should_forward_context_headers_and_preserve_payload_f
                 request_id: "req_ws_security",
                 turn_state: Some("turn-state"),
                 turn_metadata: Some("{\"thread_source\":\"subagent\"}"),
-                beta_features: Some("feature-a"),
-                include_timing_metrics: Some("true"),
                 version: Some("26.318.11754"),
                 codex_window_id: Some("cw_derived"),
                 parent_thread_id: Some("parent-456"),
@@ -189,7 +195,6 @@ async fn backend_websocket_should_forward_context_headers_and_preserve_payload_f
                 session_id: Some("cp_derived"),
                 thread_id: None,
                 client_request_id: None,
-                turn_id: None,
                 account_selection: Default::default(),
             },
         )
@@ -213,11 +218,11 @@ async fn backend_websocket_should_forward_context_headers_and_preserve_payload_f
             .and_then(Value::as_str)
             .is_some_and(|value| value.parse::<u128>().is_ok_and(|value| value > 0))
     );
+    assert_eq!(metadata["x-codex-turn-state"], "turn-state");
     let headers = received_headers.lock().expect("headers lock");
     for (name, expected) in [
         ("x-client-request-id", "cp_derived"),
         ("openai-beta", "responses_websockets=2026-02-06"),
-        ("x-codex-turn-state", "turn-state"),
         ("x-codex-turn-metadata", "{\"thread_source\":\"subagent\"}"),
         ("x-codex-beta-features", "feature-a"),
         ("x-responsesapi-include-timing-metrics", "true"),
@@ -240,6 +245,7 @@ async fn backend_websocket_should_forward_context_headers_and_preserve_payload_f
         }
     }
     for forbidden in [
+        "x-codex-turn-state",
         "x-codex-installation-id",
         "x-codex-turn-id",
         "x-openai-internal-codex-residency",
@@ -265,11 +271,18 @@ async fn backend_http_should_send_codex_context_without_browser_headers() {
         write_completed_sse_response(&mut stream).await;
         request
     });
-    let mut request = codex_request("gpt-test", "", Vec::new());
+    let mut body = codex_request_body("gpt-test", "", Vec::new());
+    body.insert("betaFeatures".into(), json!("body-beta"));
+    body.insert("includeTimingMetrics".into(), json!("body-timing"));
+    let mut request = encode_request_with_headers(
+        body,
+        &[
+            ("x-codex-beta-features", "beta-a"),
+            ("x-responsesapi-include-timing-metrics", "true"),
+        ],
+    );
     request.force_http_sse = true;
     request.turn_metadata = Some("turn-meta".to_owned());
-    request.beta_features = Some("beta-a".to_owned());
-    request.include_timing_metrics = Some("true".to_owned());
     request.version = Some("26.707.51957".to_owned());
     request.codex_window_id = Some("cw_1".to_owned());
     request.parent_thread_id = Some("parent-1".to_owned());
@@ -297,8 +310,6 @@ async fn backend_http_should_send_codex_context_without_browser_headers() {
                 request_id: "req_order",
                 turn_state: Some("turn-state"),
                 turn_metadata: request.turn_metadata.as_deref(),
-                beta_features: request.beta_features.as_deref(),
-                include_timing_metrics: request.include_timing_metrics.as_deref(),
                 version: request.version.as_deref(),
                 codex_window_id: request.codex_window_id.as_deref(),
                 parent_thread_id: request.parent_thread_id.as_deref(),
@@ -307,7 +318,6 @@ async fn backend_http_should_send_codex_context_without_browser_headers() {
                 session_id: Some("session-1"),
                 thread_id: None,
                 client_request_id: None,
-                turn_id: None,
                 account_selection: Default::default(),
             },
         )
@@ -429,11 +439,8 @@ async fn backend_http_should_ignore_unrepresentable_protocol_headers_without_blo
                 client_request_id: Some("opaque\nclient-request-id"),
                 session_id: Some("opaque\nsession"),
                 thread_id: Some("opaque\nthread"),
-                turn_id: Some("opaque\nturn"),
                 codex_window_id: Some("opaque\nwindow"),
                 parent_thread_id: Some("opaque\nparent"),
-                beta_features: Some("opaque\nbeta"),
-                include_timing_metrics: Some("opaque\ntiming"),
                 version: Some("opaque\nversion"),
                 turn_state: request.turn_state.as_deref(),
                 turn_metadata: request.turn_metadata.as_deref(),
@@ -735,7 +742,7 @@ async fn websocket_should_keep_an_exact_chain_while_new_connections_adopt_the_la
 #[tokio::test]
 async fn custom_core_version_change_reconnects_new_chains_and_keeps_exact_continuations() {
     use gateway_core::account::OpaqueProviderData;
-    use provider_openai::transport::profile::identity::RequestProfileSelection;
+    use provider_openai::profile::identity::RequestProfileSelection;
 
     const USER_AGENT: &str = "Custom Agent/test";
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -824,9 +831,7 @@ async fn custom_core_version_change_reconnects_new_chains_and_keeps_exact_contin
 
 #[tokio::test]
 async fn concurrent_request_profiles_emit_independent_http_identities() {
-    use provider_openai::transport::profile::selection::{
-        ClientKind, ClientPlatform, ClientProfileSelection,
-    };
+    use provider_openai::profile::selection::{ClientKind, ClientPlatform, ClientProfileSelection};
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -845,7 +850,7 @@ async fn concurrent_request_profiles_emit_independent_http_identities() {
         }
         requests
     });
-    let state = provider_openai::transport::profile::CodexWireProfileState::new(Default::default());
+    let state = provider_openai::profile::CodexWireProfileState::new(Default::default());
     let desktop = ClientProfileSelection::default().resolve(&state).unwrap();
     let cli = ClientProfileSelection {
         client: ClientKind::Cli,
@@ -899,7 +904,7 @@ async fn concurrent_request_profiles_emit_independent_http_identities() {
 
 #[tokio::test]
 async fn tui_and_exec_send_the_same_complete_identity_over_http_and_websocket() {
-    use provider_openai::transport::profile::selection::{
+    use provider_openai::profile::selection::{
         CliEntry, ClientKind, ClientPlatform, ClientProfileSelection, VersionMode,
     };
     for (entry, name) in [(CliEntry::Tui, "codex-tui"), (CliEntry::Exec, "codex_exec")] {
@@ -931,8 +936,7 @@ async fn tui_and_exec_send_the_same_complete_identity_over_http_and_websocket() 
             .await
             .unwrap();
         });
-        let state =
-            provider_openai::transport::profile::CodexWireProfileState::new(Default::default());
+        let state = provider_openai::profile::CodexWireProfileState::new(Default::default());
         let profile = ClientProfileSelection {
             client: ClientKind::Cli,
             platform: ClientPlatform::Linux,

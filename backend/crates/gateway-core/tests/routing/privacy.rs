@@ -26,6 +26,7 @@ impl CompiledPrivacyPolicy for Compiled {
         body: &mut serde_json::Value,
         _: &mut http::HeaderMap,
         _: &mut Option<String>,
+        _: Option<&str>,
         _: &dyn Fn() -> bool,
     ) -> Result<Vec<PrivacyRuleOutcome>, PrivacyError> {
         *body = self.0.clone();
@@ -69,7 +70,7 @@ fn privacy_rule_requires_steps_and_rejects_unknown_fields() {
     missing_steps.as_object_mut().unwrap().remove("steps");
     assert!(serde_json::from_value::<PrivacyRule>(missing_steps).is_err());
     let mut unknown_rule_field = value.clone();
-    unknown_rule_field["scope"] = serde_json::json!("request_body");
+    unknown_rule_field["unexpected"] = serde_json::json!(true);
     assert!(serde_json::from_value::<PrivacyRule>(unknown_rule_field).is_err());
     let mut unknown_step_field = value;
     unknown_step_field["steps"][0]["unexpected"] = serde_json::json!(true);
@@ -118,12 +119,24 @@ fn privacy_is_frozen_and_unrelated_request_settings_reuse_compiled_rules() {
         .unwrap();
     let mut body = serde_json::Value::Null;
     original
-        .apply(&mut body, &mut http::HeaderMap::new(), &mut None, &|| false)
+        .apply(
+            &mut body,
+            &mut http::HeaderMap::new(),
+            &mut None,
+            None,
+            &|| false,
+        )
         .unwrap();
     assert_eq!(body, "first");
     compiled(&changed)
         .unwrap()
-        .apply(&mut body, &mut http::HeaderMap::new(), &mut None, &|| false)
+        .apply(
+            &mut body,
+            &mut http::HeaderMap::new(),
+            &mut None,
+            None,
+            &|| false,
+        )
         .unwrap();
     assert_eq!(body, "second");
     assert_eq!(compiler.0.load(Ordering::SeqCst), 2);

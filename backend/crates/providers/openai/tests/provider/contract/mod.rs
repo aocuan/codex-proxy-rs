@@ -8,6 +8,7 @@ mod catalog_startup;
 mod cookies;
 mod correlation;
 mod error_details;
+mod guardian_model;
 mod image_model_access;
 mod messages;
 mod model_account_eligibility;
@@ -39,8 +40,8 @@ use chrono::Utc;
 use futures::{SinkExt, StreamExt, future::BoxFuture};
 use gateway_core::account::{
     AccountFeedbackStats, AccountWeight, CredentialState, FastMode, OpaqueProviderData,
-    ProviderAccountId, ProviderAccountStore as _, QuotaAccessChange, QuotaAccessState,
-    QuotaEvidence, QuotaObservation, QuotaState,
+    OpenAiRequestCountry, ProviderAccountId, ProviderAccountStore as _, QuotaAccessChange,
+    QuotaAccessState, QuotaEvidence, QuotaObservation, QuotaState,
 };
 use gateway_core::engine::continuation::{
     ContinuationBinding, NativeContinuationPin, PreviousResponseId,
@@ -80,8 +81,8 @@ use provider_openai::credential::{
     CodexCookiePolicy, CodexCredentialCatalogService, CodexCredentialQuotaService,
     CodexCredentialSelector, ImportCodexOAuthCredential,
 };
+use provider_openai::profile::{CodexWireProfile, CodexWireProfileState};
 use provider_openai::transport::CodexWebSocketPool;
-use provider_openai::transport::profile::{CodexWireProfile, CodexWireProfileState};
 use provider_openai::{CodexProvider, OFFICIAL_CODEX_BASE_URL};
 use serde_json::{Map, Value, json};
 use tokio::{
@@ -775,7 +776,7 @@ async fn selected_proxy_location_overrides_global_and_reloads_without_mutating_c
     }
     // 目标不可解析；收到请求证明使用的是账号代理，而非测试机默认出口
     let provider = provider_with_base_url(&store, "http://upstream.invalid".to_owned());
-    let original = json!({"model":"gpt-5.4", "input":[
+    let original = json!({"model":"gpt-5.4", "request_country":"CA", "input":[
         {"role":"user", "content":[{"type":"input_text", "text":"<environment_context><timezone>UTC</timezone></environment_context>"}], "internal_chat_message_metadata_passthrough":{"content_item_kinds":["environments.environment_context"], "create_time":1789293131.822}},
         {"role":"user", "content":[{"type":"input_text", "text":"<environment_context><timezone>UTC</timezone></environment_context>"}], "internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text"]}},
         {"role":"user", "content":[{"type":"input_text", "text":"<environment_context><timezone>UTC</timezone></environment_context>"}]},
@@ -787,19 +788,20 @@ async fn selected_proxy_location_overrides_global_and_reloads_without_mutating_c
             .unwrap()
             .with_context(Map::from_iter([("use_websocket".to_owned(), json!(false))])),
     ));
-    for (index, (proxy, location, global_enabled, expected)) in [
-        (&first_proxy, Some(json!({"country":"JP", "region":"Tokyo", "city":"Tokyo", "timezone":"Asia/Tokyo"})), true, Some("Asia/Tokyo")),
-        (&second_proxy, Some(json!({"country":"US", "region":"New York", "city":"New York", "timezone":"America/New_York"})), true, Some("America/New_York")),
-        (&second_proxy, None, true, Some("Pacific/Auckland")),
-        (&second_proxy, None, false, None),
-        (&first_proxy, Some(json!({"country":"JP", "region":"Tokyo", "city":"Tokyo", "timezone":"Asia/Tokyo"})), false, Some("Asia/Tokyo")),
+    for (index, (proxy, location, global_enabled, expected_country, expected)) in [
+        (&first_proxy, Some(json!({"country":"JP", "region":"Tokyo", "city":"Tokyo", "timezone":"Asia/Tokyo"})), true, Some("JP"), Some("Asia/Tokyo")),
+        (&second_proxy, Some(json!({"country":"US", "region":"New York", "city":"New York", "timezone":"America/New_York"})), true, Some("US"), Some("America/New_York")),
+        (&second_proxy, None, true, Some("NZ"), Some("Pacific/Auckland")),
+        (&second_proxy, None, false, None, None),
+        (&first_proxy, Some(json!({"country":"JP", "region":"Tokyo", "city":"Tokyo", "timezone":"Asia/Tokyo"})), false, Some("JP"), Some("Asia/Tokyo")),
     ].into_iter().enumerate() {
         let location = location.map(|value| serde_json::from_value::<RequestLocation>(value).unwrap());
         store.set_egress(account_id, Some(OutboundProxy::parse(&proxy.uri()).unwrap()), location);
-        let mut stream = Arc::clone(&provider).execute(planned_request("openai", operation.clone()), context_with_state_owner_and_location(&format!("req_proxy_location_{index}"), account_id, global_enabled.then(global_request_location))).await.expect("prepare");
+        let mut stream = Arc::clone(&provider).execute(planned_request("openai", operation.clone()), context_with_request_settings(&format!("req_proxy_location_{index}"), account_id, global_enabled.then(global_request_location), None, OpenAiRequestCountry::FollowLocation {})).await.expect("prepare");
         while let Some(event) = stream.next().await { event.expect("proxy response"); }
         let requests = proxy.received_requests().await.unwrap();
         let body = captured_request_body(requests.last().expect("request reached selected proxy"));
+        assert_eq!(body.get("request_country"), Some(&json!(expected_country)));
         assert_eq!(body.pointer("/tools/0/user_location/timezone"), expected.map(|timezone| json!(timezone)).as_ref());
         let expected = expected.unwrap_or("UTC");
         assert_eq!(body.pointer("/input/0/content/0/text"), Some(&json!(format!("<environment_context><timezone>{expected}</timezone></environment_context>"))));
@@ -896,12 +898,39 @@ async fn replay_compatibility_should_leave_normal_official_history_unchanged() {
 }
 
 #[tokio::test]
+async fn replay_compatibility_should_omit_only_unreferenced_inline_message_ids() {
+    let input = json!([
+        {"type":"item_reference","id":"item_before"},
+        {"type":"message","id":"item_standalone","role":"assistant","phase":"final_answer",
+         "content":[{"type":"output_text","text":"done"}]},
+        {"type":"message","id":"item_before","role":"assistant","content":"first"},
+        {"type":"message","id":"item_after","role":"user","content":"second"},
+        {"type":"message","id":"item_implicit","role":"developer","content":"instructions"},
+        {"type":"item_reference","id":"item_after"},
+        {"id":"item_implicit"},
+        {"type":"message","id":"msg_valid","role":"assistant","content":"answer"},
+        {"type":"message","id":"item_no_content","role":"assistant","content":[]},
+        {"type":"message","id":"item_encrypted","role":"assistant","content":"summary","encrypted_content":"opaque"},
+        {"type":"message","id":"item_opaque_part","role":"assistant","content":[{"type":"encrypted_content","encrypted_content":"opaque"}]},
+        {"type":"message","id":"item_image","role":"user","content":[{"type":"input_image","file_id":"file_example"}]},
+        {"type":"agent_message","id":"item_agent","content":[{"type":"encrypted_content","encrypted_content":"opaque"}]},
+        {"type":"function_call","id":"item_call","call_id":"call_example","name":"echo","arguments":"{}"}
+    ]);
+    let mut expected = input.clone();
+    expected[1].as_object_mut().unwrap().shift_remove("id");
+    for websocket in [false, true] {
+        let actual = capture_replay_compatibility_request(input.clone(), false, websocket).await;
+        assert_eq!(actual["input"].to_string(), expected.to_string());
+    }
+}
+
+#[tokio::test]
 async fn replay_compatibility_should_not_apply_codex_rules_to_api_key_accounts() {
-    let input = json!([{
-        "type":"reasoning","id":"rs_api","status":"completed","summary":[],
-        "content":[{"type":"reasoning_text","text":"API-specific history"}],
-        "encrypted_content":"test-cipher"
-    }]);
+    let input = json!([
+        {"type":"reasoning","id":"rs_api","status":"completed","summary":[],
+         "content":[{"type":"reasoning_text","text":"API-specific history"}],"encrypted_content":"test-cipher"},
+        {"type":"message","id":"item_standalone","role":"assistant","content":"answer"}
+    ]);
     for websocket in [false, true] {
         let actual = capture_replay_compatibility_request(input.clone(), true, websocket).await;
         assert_eq!(actual["input"].to_string(), input.to_string());
@@ -952,6 +981,18 @@ async fn capture_downstream_request(
     api_key: bool,
     websocket: bool,
     lite: bool,
+) -> Value {
+    capture_downstream_with_country(original, api_key, websocket, lite, None, Default::default())
+        .await
+}
+
+async fn capture_downstream_with_country(
+    original: Value,
+    api_key: bool,
+    websocket: bool,
+    lite: bool,
+    location: Option<gateway_core::account::RequestLocation>,
+    country: OpenAiRequestCountry,
 ) -> Value {
     let http = MockServer::start().await;
     let (base_url, websocket_server) = if websocket {
@@ -1018,10 +1059,12 @@ async fn capture_downstream_request(
     let mut stream = provider
         .execute(
             planned_request("openai", operation),
-            context_with_state_owner_and_location(
+            context_with_request_settings(
                 "req_replay_compatibility",
                 "acct_provider_contract",
+                location,
                 None,
+                country,
             ),
         )
         .await
@@ -1107,7 +1150,7 @@ fn selected_account_log_fields<'events>(
 
 fn wire_profile() -> CodexWireProfileState {
     CodexWireProfileState::new(CodexWireProfile {
-        client_kind: provider_openai::transport::profile::selection::ClientKind::Desktop,
+        client_kind: provider_openai::profile::selection::ClientKind::Desktop,
         originator: "codex_cli_rs".to_owned(),
         codex_version: "0.144.0".to_owned(),
         desktop_version: "1.0.0".to_owned(),
@@ -1789,14 +1832,21 @@ fn context_with_state_owner_and_location(
     owner_account_id: &str,
     location: Option<gateway_core::account::RequestLocation>,
 ) -> AttemptContext {
-    context_with_state_owner_and_profile(request_id, owner_account_id, location, None)
+    context_with_request_settings(
+        request_id,
+        owner_account_id,
+        location,
+        None,
+        Default::default(),
+    )
 }
 
-fn context_with_state_owner_and_profile(
+fn context_with_request_settings(
     request_id: &str,
     owner_account_id: &str,
     location: Option<gateway_core::account::RequestLocation>,
     profile: Option<OpaqueProviderData>,
+    country: OpenAiRequestCountry,
 ) -> AttemptContext {
     let owner = ProviderAccountStateOwner::new(
         ProviderKind::new("openai").expect("provider"),
@@ -1808,6 +1858,7 @@ fn context_with_state_owner_and_profile(
             ClientApiKeyId::new("key_openai_contract").expect("client key id"),
         )
         .with_request_location(location)
+        .with_openai_request_country(country)
         .with_request_profile(profile),
         NonZeroU32::new(1).expect("attempt"),
         SystemTime::now() + Duration::from_secs(30),
@@ -2036,6 +2087,7 @@ async fn provider_should_override_unclassified_time_contexts_over_websocket() {
         body.pointer("/input/1/content/0/text"),
         Some(&json!(desktop.replace("Asia/Shanghai", "Pacific/Auckland")))
     );
+    assert_eq!(body.get("request_country"), Some(&json!("NZ")));
     assert_eq!(
         body.pointer("/input/0/content/0/text"),
         Some(&json!(
@@ -2053,8 +2105,6 @@ async fn provider_should_override_unclassified_time_contexts_over_websocket() {
 }
 
 async fn capture_turn_state_request(
-    request_id: &str,
-    previous_turn_id: Option<&str>,
     current_turn_id: Option<&str>,
     client_turn_state: Option<&str>,
 ) -> wiremock::Request {
@@ -2072,18 +2122,19 @@ async fn capture_turn_state_request(
         .expect(1)
         .mount(&server)
         .await;
-    let mut session_state = Map::from_iter([
+    let session_state = Map::from_iter([
         ("account_id".to_owned(), json!(account_id)),
         ("conversation_id".to_owned(), json!("conversation")),
         ("turn_state".to_owned(), json!("previous-turn-state")),
+        ("client_turn_id".to_owned(), json!("turn-same")),
         ("continuation_scope".to_owned(), json!("persisted")),
     ]);
-    if let Some(previous_turn_id) = previous_turn_id {
-        session_state.insert("client_turn_id".to_owned(), json!(previous_turn_id));
-    }
     let mut protocol_context = Map::from_iter([("use_websocket".to_owned(), json!(false))]);
     if let Some(current_turn_id) = current_turn_id {
-        protocol_context.insert("turn_id".to_owned(), json!(current_turn_id));
+        protocol_context.insert(
+            "turn_metadata".to_owned(),
+            Value::String(json!({"turn_id": current_turn_id}).to_string()),
+        );
     }
     if let Some(client_turn_state) = client_turn_state {
         protocol_context.insert("turn_state".to_owned(), json!(client_turn_state));
@@ -2095,6 +2146,7 @@ async fn capture_turn_state_request(
     let mut body = Map::from_iter([
         ("model".to_owned(), json!("gpt-5.4")),
         ("input".to_owned(), json!("current input")),
+        ("previous_response_id".to_owned(), json!("resp_previous")),
         ("client_metadata".to_owned(), json!({"custom":"preserved"})),
     ]);
     if let Some(state) = client_turn_state {
@@ -2119,7 +2171,7 @@ async fn capture_turn_state_request(
     let mut stream = provider_with_base_url(&store, server.uri())
         .execute(
             planned_request("openai", operation),
-            context(request_id, CancellationToken::new()),
+            context("req_client_turn_state", CancellationToken::new()),
         )
         .await
         .expect("prepare turn-state provider stream");
@@ -3559,7 +3611,7 @@ async fn assert_cross_endpoint_affinity(thread_id: Option<&str>) {
     }
     drop(same);
 
-    // 仍由旧租约流程报告繁忙并换号，亲和不绕过并发限制
+    // 亲和账号的并发租约已满时，请求应切换账号
     leases
         .busy_accounts
         .lock()
@@ -3971,7 +4023,7 @@ async fn repeated_message_too_big_closes_keep_session_on_websocket() {
         listener.local_addr().expect("listener address")
     );
     let server = tokio::spawn(async move {
-        for _ in 0..3 {
+        for index in 0..3 {
             let (stream, _) = listener
                 .accept()
                 .await
@@ -3982,31 +4034,28 @@ async fn repeated_message_too_big_closes_keep_session_on_websocket() {
                 .await
                 .expect("WebSocket request")
                 .expect("valid WebSocket request");
+            let prelude = if index == 0 {
+                json!({"type": "codex.rate_limits"})
+            } else {
+                json!({"type": "response.created", "response": {
+                    "id": "resp_before_committed_close", "model": "gpt-5.4"
+                }})
+            };
             websocket
-                .send(Message::Text(
-                    json!({
-                        "type": "response.created",
-                        "response": {
-                            "id": "resp_before_committed_close",
-                            "model": "gpt-5.4"
-                        }
-                    })
-                    .to_string()
-                    .into(),
-                ))
+                .send(Message::text(prelude.to_string()))
                 .await
-                .expect("start WebSocket response");
-            websocket
-                .send(Message::Text(
-                    json!({
-                        "type": "response.output_text.delta",
-                        "delta": "partial output"
-                    })
-                    .to_string()
-                    .into(),
-                ))
-                .await
-                .expect("send semantic WebSocket event");
+                .unwrap();
+            if index == 2 {
+                websocket
+                    .send(Message::text(
+                        json!({
+                            "type": "response.output_text.delta", "delta": "partial output"
+                        })
+                        .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+            }
             websocket
                 .close(Some(CloseFrame {
                     code: CloseCode::Size,
@@ -5260,6 +5309,15 @@ async fn websocket_upgrade_required_immediately_enables_session_http_fallback() 
 
 #[tokio::test]
 async fn advertised_size_fallback_preserves_next_request_websocket_for_all_credentials() {
+    check_request_size_fallback(true).await;
+}
+
+#[tokio::test]
+async fn early_size_close_preserves_next_request_websocket_for_all_credentials() {
+    check_request_size_fallback(false).await;
+}
+
+async fn check_request_size_fallback(advertised: bool) {
     for api_key in [false, true] {
         for downstream_websocket in [false, true] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -5268,13 +5326,31 @@ async fn advertised_size_fallback_preserves_next_request_websocket_for_all_crede
                 let (socket, _) = listener.accept().await.unwrap();
                 let mut websocket =
                     crate::transport::accept_codex_test_websocket_with(socket, |_, response| {
-                        response
-                            .headers_mut()
-                            .insert("x-codex-websocket-max-message-bytes", "1".parse().unwrap());
+                        if advertised {
+                            response.headers_mut().insert(
+                                "x-codex-websocket-max-message-bytes",
+                                "1".parse().unwrap(),
+                            );
+                        }
                     })
                     .await;
-                while let Some(Ok(message)) = websocket.next().await {
-                    assert!(!message.is_text(), "size fallback must precede upload");
+                if advertised {
+                    while let Some(Ok(message)) = websocket.next().await {
+                        assert!(!message.is_text(), "advertised limit must precede upload");
+                    }
+                } else {
+                    assert!(websocket.next().await.unwrap().unwrap().is_text());
+                    // 慢上传可以超过发送前建连预算，上游明确拒绝后仍应完成本次 HTTP 恢复
+                    tokio::time::pause();
+                    tokio::time::advance(Duration::from_secs(31)).await;
+                    tokio::time::resume();
+                    websocket
+                        .close(Some(CloseFrame {
+                            code: CloseCode::Size,
+                            reason: "too large".into(),
+                        }))
+                        .await
+                        .unwrap();
                 }
                 let (mut http, _) = listener.accept().await.unwrap();
                 let request = crate::transport::read_http_request_with_body(&mut http).await;
@@ -5331,6 +5407,26 @@ async fn advertised_size_fallback_preserves_next_request_websocket_for_all_crede
                         json!(format!("ws_size_{index}")),
                     )]));
                 }
+                let request_context = RequestAttemptContext::new(
+                    ModelRequestId::new(format!("req_size_{index}")).unwrap(),
+                    ClientApiKeyId::new("key_openai_contract").unwrap(),
+                )
+                .with_request_location(Some(global_request_location()))
+                .with_connection_budget(
+                    gateway_core::engine::connection::ConnectionBudget::with_clock(|| {
+                        tokio::time::Instant::now().into_std()
+                    }),
+                );
+                let context = AttemptContext::new(
+                    request_context,
+                    NonZeroU32::MIN,
+                    SystemTime::now() + Duration::from_secs(120),
+                    account_policy(),
+                    AccountAttemptContext::new(BTreeSet::new(), None, None)
+                        .with_account_scope(contract_account_scope()),
+                    None,
+                    CancellationToken::new(),
+                );
                 let mut stream = Arc::clone(&provider)
                     .execute(
                         planned_request(
@@ -5359,7 +5455,7 @@ async fn advertised_size_fallback_preserves_next_request_websocket_for_all_crede
                                     ),
                             ),
                         ),
-                        context(&format!("req_size_{index}"), CancellationToken::new()),
+                        context,
                     )
                     .await
                     .unwrap();
@@ -5381,17 +5477,25 @@ async fn advertised_size_fallback_preserves_next_request_websocket_for_all_crede
 }
 
 #[tokio::test]
-async fn advertised_size_limit_on_reused_connection_requests_client_replay_before_send() {
+async fn size_rejection_on_reused_connection_requests_client_replay() {
+    for advertised in [true, false] {
+        check_oversized_continuation(advertised).await;
+    }
+}
+
+async fn check_oversized_continuation(advertised: bool) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base_url = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap();
         let mut websocket =
             crate::transport::accept_codex_test_websocket_with(socket, |_, response| {
-                response.headers_mut().insert(
-                    "x-codex-websocket-max-message-bytes",
-                    "2048".parse().unwrap(),
-                );
+                if advertised {
+                    response.headers_mut().insert(
+                        "x-codex-websocket-max-message-bytes",
+                        "2048".parse().unwrap(),
+                    );
+                }
             })
             .await;
         assert!(websocket.next().await.unwrap().unwrap().is_text());
@@ -5401,11 +5505,19 @@ async fn advertised_size_limit_on_reused_connection_requests_client_replay_befor
             ))
             .await
             .unwrap();
-        while let Some(Ok(message)) = websocket.next().await {
-            assert!(
-                !message.is_text(),
-                "oversized continuation must not be uploaded"
-            );
+        if advertised {
+            while let Some(Ok(message)) = websocket.next().await {
+                assert!(!message.is_text(), "advertised limit must precede upload");
+            }
+        } else {
+            assert!(websocket.next().await.unwrap().unwrap().is_text());
+            websocket
+                .close(Some(CloseFrame {
+                    code: CloseCode::Size,
+                    reason: "too large".into(),
+                }))
+                .await
+                .unwrap();
         }
         assert!(
             tokio::time::timeout(Duration::from_millis(100), listener.accept())
@@ -5490,7 +5602,14 @@ async fn advertised_size_limit_on_reused_connection_requests_client_replay_befor
         error.kind(),
         ProviderErrorKind::ContinuationRecoveryRequired
     );
-    assert_eq!(error.send_state(), UpstreamSendState::NotSent);
+    assert_eq!(
+        error.send_state(),
+        if advertised {
+            UpstreamSendState::NotSent
+        } else {
+            UpstreamSendState::Ambiguous
+        }
+    );
     assert_eq!(
         error.continuation_unavailable_reason(),
         Some("transport_payload_too_large")
@@ -5504,7 +5623,13 @@ async fn advertised_size_limit_on_reused_connection_requests_client_replay_befor
         Some("previous_response_not_found")
     );
     assert!(error.upstream_status().is_none());
-    assert!(error.raw_upstream_error().is_none());
+    if advertised {
+        assert!(error.raw_upstream_error().is_none());
+    } else {
+        let close: Value =
+            serde_json::from_str(error.raw_upstream_error().unwrap().as_str()).unwrap();
+        assert_eq!(close["code"], 1009);
+    }
     assert!(!error.allows_pre_delivery_retry());
     drop(continuation);
     server.await.unwrap();
@@ -5635,30 +5760,39 @@ async fn oversized_websocket_http_response_continues_with_client_tool_history_re
         ),
         ("store".to_owned(), json!(false)),
     ]);
-    let error = Arc::clone(&provider)
-        .execute(
-            planned_request("openai", ws_operation(delta, "ws_first", Some(state))),
-            pinned_continuation_context(
-                "req_large_ws_delta",
-                "acct_provider_contract",
-                "resp_large_ws_http",
-                "resp_large_ws_http",
-                1,
-                ContinuationAttempt::Native,
-            ),
-        )
-        .await
-        .err()
-        .expect("HTTP store=false delta requires client replay");
-    assert_eq!(error.send_state(), UpstreamSendState::NotSent);
-    assert_eq!(
-        error.client_visible_upstream_error().unwrap().code(),
-        Some("previous_response_not_found")
-    );
-    assert_eq!(
-        error.continuation_recovery_disposition(),
-        Some(ContinuationRecoveryDisposition::ClientReplayRequired)
-    );
+    let http_delta = GenerateRequest::from_protocol_payload(
+        ProtocolPayload::json_object("openai", delta.clone()).unwrap(),
+    )
+    .with_provider_session_state(state.clone());
+    for operation in [
+        ws_operation(delta, "ws_first", Some(state)),
+        Operation::Generate(http_delta),
+    ] {
+        let error = Arc::clone(&provider)
+            .execute(
+                planned_request("openai", operation),
+                pinned_continuation_context(
+                    "req_large_ws_delta",
+                    "acct_provider_contract",
+                    "resp_large_ws_http",
+                    "resp_large_ws_http",
+                    1,
+                    ContinuationAttempt::Native,
+                ),
+            )
+            .await
+            .err()
+            .expect("HTTP store=false delta requires client replay");
+        assert_eq!(error.send_state(), UpstreamSendState::NotSent);
+        assert_eq!(
+            error.client_visible_upstream_error().unwrap().code(),
+            Some("previous_response_not_found")
+        );
+        assert_eq!(
+            error.continuation_recovery_disposition(),
+            Some(ContinuationRecoveryDisposition::ClientReplayRequired)
+        );
+    }
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 
     let input = body.get_mut("input").unwrap().as_array_mut().unwrap();
@@ -6515,11 +6649,12 @@ async fn websocket_account_scoping_keeps_installation_in_metadata() {
                     "openai",
                     Operation::Generate(GenerateRequest::from_protocol_payload(payload)),
                 ),
-                context_with_state_owner_and_profile(
+                context_with_request_settings(
                     "req_installation_ws",
                     owner,
                     Some(global_request_location()),
                     Some(profile),
+                    Default::default(),
                 ),
             )
             .await
@@ -7093,78 +7228,29 @@ async fn missing_affinity_full_request_should_preserve_client_turn_state() {
 }
 
 #[tokio::test]
-async fn matching_turn_id_should_restore_previous_turn_state() {
-    let request = capture_turn_state_request(
-        "req_restore_same_turn_state",
-        Some("turn-same"),
-        Some("turn-same"),
-        None,
-    )
-    .await;
-
-    assert_eq!(
-        captured_header_values(&request, "x-codex-turn-state"),
-        vec![b"previous-turn-state".to_vec()]
-    );
-}
-
-#[tokio::test]
-async fn matching_turn_id_should_prefer_an_explicit_client_echo_over_saved_provider_state() {
-    let request = capture_turn_state_request(
-        "req_use_client_turn_state",
-        Some("turn-same"),
-        Some("turn-same"),
-        Some("client-turn-state"),
-    )
-    .await;
-
-    assert_eq!(
-        captured_header_values(&request, "x-codex-turn-state"),
-        vec![b"client-turn-state".to_vec()]
-    );
-    let body = captured_request_body(&request);
-    for key in ["turnState", "turn_state", "x-codex-turn-state"] {
-        assert_eq!(body[key], "client-turn-state");
-        assert_eq!(body["client_metadata"][key], "client-turn-state");
-    }
-}
-
-#[tokio::test]
-async fn new_or_unidentified_turn_should_not_restore_previous_turn_state() {
-    for (request_id, previous_turn_id, current_turn_id, client_turn_state) in [
-        (
-            "req_new_turn_state",
-            Some("turn-old"),
-            Some("turn-new"),
-            Some("stale-client-turn-state"),
-        ),
-        (
-            "req_unidentified_turn_state",
-            None,
-            Some("turn-new"),
-            Some("stale-client-turn-state"),
-        ),
-        (
-            "req_missing_current_turn_state",
-            Some("turn-old"),
-            None,
-            Some("stale-client-turn-state"),
-        ),
+async fn same_account_continuation_forwards_only_the_current_request_turn_state() {
+    // 旧版会话中可能仍有保存的轮次和 token
+    for (turn, supplied) in [
+        (Some("turn-same"), None),
+        (Some("turn-same"), Some("client-turn-state")),
+        (Some("turn-new"), Some("client-turn-state")),
+        (None, Some("client-turn-state")),
     ] {
-        let request = capture_turn_state_request(
-            request_id,
-            previous_turn_id,
-            current_turn_id,
-            client_turn_state,
-        )
-        .await;
-        assert!(captured_header_values(&request, "x-codex-turn-state").is_empty());
+        let request = capture_turn_state_request(turn, supplied).await;
+        let headers = captured_header_values(&request, "x-codex-turn-state");
+        assert_eq!(
+            headers,
+            supplied
+                .map(|value| value.as_bytes())
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
         let body = captured_request_body(&request);
         for key in ["turnState", "turn_state", "x-codex-turn-state"] {
-            assert!(body.get(key).is_none(), "stale body state: {key}");
-            assert!(
-                body["client_metadata"].get(key).is_none(),
-                "stale metadata state: {key}"
+            assert_eq!(body.get(key).and_then(Value::as_str), supplied);
+            assert_eq!(
+                body["client_metadata"].get(key).and_then(Value::as_str),
+                supplied
             );
         }
         assert_eq!(body["input"][0]["content"][0]["text"], "current input");
@@ -7406,7 +7492,7 @@ async fn relaxed_mode_skips_cache_preferences() {
                 "req_affinity_key",
                 contract_account_scope(),
                 account_policy()
-                    .with_openai_account_affinity(gateway_core::account::AccountAffinity::Relaxed),
+                    .with_account_affinity(gateway_core::account::AccountAffinity::Relaxed),
             ),
         )
         .await
@@ -8198,13 +8284,45 @@ async fn completed_response_persists_session_affinity_before_stream_consumer_sto
     assert_eq!(upstream_service_tier.as_deref(), Some("default"));
 }
 
+async fn seed_service_tiers(store: &MemoryAccountStore, id: &str, model: &str, tiers: &[&str]) {
+    use gateway_core::account::AccountCatalogObservation;
+    let account = store.account(id).unwrap();
+    let tiers: Vec<_> = tiers
+        .iter()
+        .map(|id| json!({"id":id,"name":id,"description":""}))
+        .collect();
+    let mut document = vec![0];
+    serde_json::to_writer(
+        &mut document,
+        &json!({"models":[{
+            "slug":model, "display_name":model, "service_tiers":tiers,
+        }]}),
+    )
+    .unwrap();
+    assert!(
+        store
+            .save_account_catalog(
+                &AccountCatalogObservation {
+                    account_id: account.id().clone(),
+                    revision: account.revision(),
+                    plan: account.plan_type().map(str::to_owned),
+                    etag: None,
+                    observed_at: SystemTime::now(),
+                },
+                &document
+            )
+            .await
+            .unwrap()
+    );
+}
+
 #[tokio::test]
 async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_transports() {
     for use_websocket in [false, true] {
-        for (fast_mode, supports_priority, requested, reported, expected_tier, expected_cost) in [
+        let regular_cases = [
             (
                 FastMode::Default,
-                false,
+                None,
                 Some(json!("priority")),
                 Some("default"),
                 Some("priority"),
@@ -8212,7 +8330,7 @@ async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_tra
             ),
             (
                 FastMode::Default,
-                false,
+                None,
                 Some(json!("priority")),
                 None,
                 Some("priority"),
@@ -8220,7 +8338,7 @@ async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_tra
             ),
             (
                 FastMode::Default,
-                false,
+                None,
                 Some(json!("default")),
                 Some("priority"),
                 Some("default"),
@@ -8228,7 +8346,7 @@ async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_tra
             ),
             (
                 FastMode::Default,
-                false,
+                None,
                 None,
                 Some("priority"),
                 None,
@@ -8236,7 +8354,7 @@ async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_tra
             ),
             (
                 FastMode::Disabled,
-                false,
+                None,
                 Some(json!("priority")),
                 Some("priority"),
                 Some("default"),
@@ -8244,7 +8362,7 @@ async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_tra
             ),
             (
                 FastMode::Disabled,
-                false,
+                None,
                 Some(json!("fast")),
                 None,
                 Some("default"),
@@ -8252,16 +8370,16 @@ async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_tra
             ),
             (
                 FastMode::Disabled,
-                false,
+                None,
                 Some(json!("default")),
                 None,
                 Some("default"),
                 Some(3_437_500),
             ),
-            (FastMode::Disabled, false, None, None, None, Some(3_437_500)),
+            (FastMode::Disabled, None, None, None, None, Some(3_437_500)),
             (
                 FastMode::Disabled,
-                false,
+                None,
                 Some(json!("flex")),
                 None,
                 Some("flex"),
@@ -8269,15 +8387,15 @@ async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_tra
             ),
             (
                 FastMode::Disabled,
-                false,
+                None,
                 Some(json!("ultrafast")),
                 None,
-                Some("ultrafast"),
-                None,
+                Some("default"),
+                Some(3_437_500),
             ),
             (
                 FastMode::Enabled,
-                true,
+                Some("priority"),
                 None,
                 Some("default"),
                 Some("priority"),
@@ -8285,7 +8403,7 @@ async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_tra
             ),
             (
                 FastMode::Enabled,
-                true,
+                Some("priority"),
                 Some(Value::Null),
                 Some("default"),
                 Some("priority"),
@@ -8293,7 +8411,7 @@ async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_tra
             ),
             (
                 FastMode::Enabled,
-                true,
+                Some("priority"),
                 Some(json!("default")),
                 Some("default"),
                 Some("priority"),
@@ -8301,7 +8419,7 @@ async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_tra
             ),
             (
                 FastMode::Enabled,
-                true,
+                Some("priority"),
                 Some(json!("priority")),
                 None,
                 Some("priority"),
@@ -8309,40 +8427,135 @@ async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_tra
             ),
             (
                 FastMode::Enabled,
-                true,
+                Some("priority"),
                 Some(json!("flex")),
                 None,
-                Some("flex"),
-                Some(1_720_000),
+                Some("priority"),
+                Some(6_875_000),
             ),
             (
                 FastMode::Enabled,
-                true,
+                Some("priority"),
+                Some(json!("ultrafast")),
+                None,
+                Some("priority"),
+                Some(6_875_000),
+            ),
+            (
+                FastMode::Enabled,
+                Some("priority"),
+                Some(json!("auto")),
+                None,
+                Some("priority"),
+                Some(6_875_000),
+            ),
+            (FastMode::Enabled, None, None, None, None, Some(3_437_500)),
+            (
+                FastMode::Enabled,
+                None,
+                Some(json!("default")),
+                None,
+                Some("default"),
+                Some(3_437_500),
+            ),
+            (
+                FastMode::Default,
+                None,
                 Some(json!("ultrafast")),
                 None,
                 Some("ultrafast"),
                 None,
             ),
             (
-                FastMode::Enabled,
-                true,
-                Some(json!("auto")),
-                None,
-                Some("auto"),
-                None,
-            ),
-            (FastMode::Enabled, false, None, None, None, Some(3_437_500)),
-            (
-                FastMode::Enabled,
-                false,
-                Some(json!("default")),
+                FastMode::Ultrafast,
+                Some("ultrafast"),
                 None,
                 Some("default"),
-                Some(3_437_500),
+                Some("ultrafast"),
+                None,
             ),
-        ] {
+            (
+                FastMode::Ultrafast,
+                Some("ultrafast"),
+                Some(json!("priority")),
+                None,
+                Some("ultrafast"),
+                None,
+            ),
+            (
+                FastMode::Ultrafast,
+                Some("ultrafast"),
+                Some(json!("flex")),
+                None,
+                Some("ultrafast"),
+                None,
+            ),
+            (
+                FastMode::Ultrafast,
+                Some("priority"),
+                Some(json!("priority")),
+                None,
+                Some("priority"),
+                Some(6_875_000),
+            ),
+            (FastMode::Ultrafast, None, None, None, None, Some(3_437_500)),
+        ];
+        let guardian_cases = [
+            ("reviewer", None, 3_437_500),
+            ("Reviewer", Some("priority"), 6_875_000),
+            ("classifier", None, 3_437_500),
+            ("guardian_classifier", None, 3_437_500),
+            ("guardian_housekeeper", Some("default"), 3_437_500),
+            ("guardian_housekeeper", None, 3_437_500),
+        ]
+        .map(|(role, expected_tier, cost)| {
+            (
+                Some(role),
+                (
+                    FastMode::Enabled,
+                    Some("priority"),
+                    if role == "guardian_housekeeper" {
+                        expected_tier.map(|tier| json!(tier))
+                    } else {
+                        Some(json!("flex"))
+                    },
+                    None,
+                    expected_tier,
+                    Some(cost),
+                ),
+            )
+        });
+        for (
+            guardian,
+            (fast_mode, advertised_tier, requested, reported, expected_tier, expected_cost),
+        ) in regular_cases
+            .into_iter()
+            .map(|case| (None, case))
+            .chain(guardian_cases)
+        {
             let store = Arc::new(MemoryAccountStore::default());
             create_account(&store, "acct_provider_contract").await;
+            // 同名模型的聚合画像来自另一个分组，故意与本次能选的账号声明相反
+            let other = "acct_other_tier_catalog";
+            create_account(&store, other).await;
+            seed_service_tiers(
+                &store,
+                "acct_provider_contract",
+                "gpt-5.4",
+                advertised_tier.as_slice(),
+            )
+            .await;
+            seed_service_tiers(
+                &store,
+                other,
+                "gpt-5.4",
+                if advertised_tier.is_some() {
+                    &[]
+                } else {
+                    &["priority", "ultrafast"]
+                },
+            )
+            .await;
             let mut created =
                 json!({"type":"response.created","response":{"id":"resp_tier","model":"gpt-5.4"}});
             let mut completed = json!({
@@ -8365,14 +8578,11 @@ async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_tra
                 let base_url = format!("http://{}", listener.local_addr().expect("address"));
                 let server = tokio::spawn(async move {
                     let (socket, _) = listener.accept().await.expect("accept WebSocket");
+                    let mut headers = None;
                     let mut websocket = crate::transport::accept_codex_test_websocket_with(
                         socket,
                         |request, response| {
-                            let expected_hint = expected_tier.map_or_else(
-                                || "model=gpt-5.4".to_owned(),
-                                |tier| format!("model=gpt-5.4;tier={tier}"),
-                            );
-                            assert_eq!(request.headers()["x-codex-routing-hint"], expected_hint);
+                            headers = Some(request.headers().clone());
                             response.headers_mut().insert(
                                 "sec-websocket-extensions",
                                 "permessage-deflate".parse().unwrap(),
@@ -8389,7 +8599,7 @@ async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_tra
                             .await
                             .expect("response");
                     }
-                    request
+                    (headers.unwrap(), request)
                 });
                 (base_url, None, Some(server))
             } else {
@@ -8417,28 +8627,42 @@ async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_tra
             if let Some(requested) = &requested {
                 body.insert("service_tier".to_owned(), json!(requested));
             }
+            let mut protocol_context =
+                Map::from_iter([("use_websocket".to_owned(), json!(use_websocket))]);
+            if let Some(role) = guardian {
+                let mut headers = vec![json!([
+                    "x-codex-routing-hint",
+                    STANDARD.encode("client-hint")
+                ])];
+                if matches!(role, "guardian_classifier" | "guardian_housekeeper") {
+                    let turn = if role == "guardian_classifier" {
+                        json!({"thread_source":role, "turn_trigger":role})
+                    } else {
+                        json!({"turn_trigger":role})
+                    };
+                    body.get_mut("client_metadata").unwrap()["x-openai-subagent"] =
+                        json!("guardian");
+                    body.get_mut("client_metadata").unwrap()["x-codex-turn-metadata"] =
+                        json!(turn.to_string());
+                } else {
+                    headers.push(json!(["x-codex-guardian", STANDARD.encode(role)]));
+                }
+                protocol_context.insert("opaque_request_headers".to_owned(), json!(headers));
+            }
             let payload = ProtocolPayload::json_object("openai", body.clone())
                 .expect("payload")
-                .with_context(Map::from_iter([(
-                    "use_websocket".to_owned(),
-                    json!(use_websocket),
-                )]));
+                .with_context(protocol_context);
             let operation = Operation::Generate(GenerateRequest::from_protocol_payload(payload));
             let original = operation.clone();
-            let mut stream = provider_with_base_url(&store, base_url)
+            let provider = provider_with_catalog_and_base_url(&store, base_url).await;
+            let catalog = provider.query_model_capabilities().await.unwrap();
+            let mut stream = provider
                 .execute(
                     planned_request_with_presentation(
                         "openai",
                         operation.clone(),
                         "gpt-5.4",
-                        supports_priority.then(|| {
-                            gateway_core::routing::ModelPresentation::new(None, None)
-                                .with_service_tiers(vec![
-                                    gateway_core::routing::ModelServiceTier::new(
-                                        "priority", "fast", "Fast",
-                                    ),
-                                ])
-                        }),
+                        catalog[0].presentation().cloned(),
                     ),
                     context_with_fast_policy(
                         "req_service_tier",
@@ -8472,31 +8696,70 @@ async fn responses_should_observe_and_bill_the_outbound_service_tier_on_both_tra
                     raw_messages.push(message.to_owned());
                 }
             }
-            let outbound = if let Some(server) = http_server {
+            let (headers, outbound) = if let Some(server) = http_server {
                 server.verify().await;
                 let requests = server.received_requests().await.expect("upstream requests");
-                let expected_hint = expected_tier.map_or_else(
-                    || "model=gpt-5.4".to_owned(),
-                    |tier| format!("model=gpt-5.4;tier={tier}"),
-                );
-                assert_eq!(requests[0].headers["x-codex-routing-hint"], expected_hint);
-                captured_request_body(&requests[0])
+                (
+                    requests[0].headers.clone(),
+                    captured_request_body(&requests[0]),
+                )
             } else {
                 websocket_server
                     .expect("WebSocket server")
                     .await
                     .expect("server task")
             };
+            let expected_hint = matches!(guardian, None | Some("Reviewer")).then(|| {
+                expected_tier.map_or_else(
+                    || "model=gpt-5.4".to_owned(),
+                    |tier| format!("model=gpt-5.4;tier={tier}"),
+                )
+            });
             assert_eq!(
-                outbound.get("service_tier").and_then(Value::as_str),
-                expected_tier
+                headers
+                    .get("x-codex-guardian")
+                    .map(|value| value.to_str().unwrap()),
+                match guardian {
+                    Some("guardian_classifier") => Some("classifier"),
+                    Some("guardian_housekeeper") => None,
+                    other => other,
+                }
+            );
+            if !use_websocket
+                && matches!(
+                    guardian,
+                    Some("classifier" | "guardian_classifier" | "guardian_housekeeper")
+                )
+            {
+                assert!(headers.get("content-encoding").is_none());
+            }
+            assert_eq!(
+                headers
+                    .get("x-codex-routing-hint")
+                    .map(|value| value.to_str().unwrap()),
+                expected_hint.as_deref()
+            );
+            assert_eq!(
+                outbound.get("service_tier"),
+                expected_tier.map(|tier| json!(tier)).as_ref()
             );
             assert_eq!(operation, original);
             for (field, value) in body["client_metadata"]
                 .as_object()
                 .expect("client metadata")
             {
-                assert_eq!(&outbound["client_metadata"][field], value);
+                if field == "x-codex-turn-metadata" {
+                    let sent: Value =
+                        serde_json::from_str(outbound["client_metadata"][field].as_str().unwrap())
+                            .unwrap();
+                    let source: Map<String, Value> =
+                        serde_json::from_str(value.as_str().unwrap()).unwrap();
+                    for (key, value) in source {
+                        assert_eq!(sent[&key], value);
+                    }
+                } else {
+                    assert_eq!(&outbound["client_metadata"][field], value);
+                }
             }
             assert!(!observations.is_empty());
             for observation in &observations {
@@ -8690,6 +8953,14 @@ async fn official_usage_limit_failure_persists_fact_without_fabricating_usage() 
     assert_eq!(
         account.quota().evidence(),
         Some(QuotaEvidence::UsageLimitReached)
+    );
+    assert_eq!(
+        account.quota().reset_at(),
+        Some(
+            chrono::DateTime::from_timestamp(reset_at, 0)
+                .unwrap()
+                .into()
+        )
     );
     let projected = store
         .get_quotas(&[account.id().clone()])
@@ -8924,6 +9195,7 @@ async fn capacity_http_and_websocket_opening_rejections_use_bounded_business_ret
                 }
             };
             assert_eq!(error.kind(), ProviderErrorKind::UpstreamCapacityUnavailable);
+            assert_eq!(error.diagnostic().unwrap().as_str(), "上游模型容量不足");
             assert_eq!(error.upstream_status(), Some(status));
             assert!(error.replay_is_safe());
             assert_eq!(error.retry_after(), Some(Duration::from_secs(129600)));
@@ -8964,27 +9236,62 @@ async fn capacity_http_and_websocket_opening_rejections_use_bounded_business_ret
 #[tokio::test]
 async fn request_rejections_should_not_retry_or_cool_down_accounts() {
     use gateway_core::provider_ports::ProviderCooldownPort as _;
-    for (use_websocket, (code, expected_kind)) in [false, true].into_iter().flat_map(|websocket| {
-        [
-            ("flex_unavailable", ProviderErrorKind::Unavailable),
-            ("turn_rate_limit_exceeded", ProviderErrorKind::RateLimited),
-        ]
-        .map(|case| (websocket, case))
-    }) {
+    use provider_openai::credential::ResponsesTransport;
+    for (use_websocket, (code, error_type, expected_kind)) in
+        [false, true].into_iter().flat_map(|websocket| {
+            [
+                (
+                    "flex_unavailable",
+                    "resource_unavailable",
+                    ProviderErrorKind::Unavailable,
+                ),
+                (
+                    "turn_rate_limit_exceeded",
+                    "rate_limit_error",
+                    ProviderErrorKind::RateLimited,
+                ),
+                (
+                    "api_key_spend_limit_exceeded",
+                    "insufficient_quota",
+                    ProviderErrorKind::QuotaExhausted,
+                ),
+                (
+                    "project_spend_limit_exceeded",
+                    "insufficient_quota",
+                    ProviderErrorKind::QuotaExhausted,
+                ),
+                (
+                    "organization_spend_limit_exceeded",
+                    "insufficient_quota",
+                    ProviderErrorKind::QuotaExhausted,
+                ),
+            ]
+            .map(|case| (websocket, case))
+        })
+    {
         let store = Arc::new(MemoryAccountStore::default());
         let account_id = "acct_provider_contract";
-        create_account(&store, account_id).await;
         let cooldowns = Arc::new(MemoryCooldownPort::new());
         let server = MockServer::start().await;
-        let error_type = if code == "turn_rate_limit_exceeded" {
-            "rate_limit_error"
+        let spend_limit = expected_kind == ProviderErrorKind::QuotaExhausted;
+        let endpoint = if spend_limit {
+            let transport = if use_websocket {
+                ResponsesTransport::PreferWebsocket
+            } else {
+                ResponsesTransport::Http
+            };
+            store
+                .seed_api_key(account_id, server.uri(), transport)
+                .await;
+            "/responses"
         } else {
-            "resource_unavailable"
+            create_account(&store, account_id).await;
+            "/codex/responses"
         };
         let body =
             json!({"error":{"type":error_type,"code":code,"message":"Retry this request later."}});
         Mock::given(method(if use_websocket { "GET" } else { "POST" }))
-            .and(path("/codex/responses"))
+            .and(path(endpoint))
             .respond_with(
                 ResponseTemplate::new(429)
                     .insert_header("retry-after", "300")
@@ -9032,7 +9339,14 @@ async fn request_rejections_should_not_retry_or_cool_down_accounts() {
         );
         let account = store.account(account_id).unwrap();
         assert_eq!(account.credential_state(), CredentialState::Ready);
-        assert_eq!(account.quota().access(), QuotaAccessState::Unknown);
+        assert_eq!(
+            account.quota().access(),
+            if spend_limit {
+                QuotaAccessState::Exhausted
+            } else {
+                QuotaAccessState::Unknown
+            }
+        );
         assert!(cooldowns.read(account.id()).await.unwrap().is_none());
     }
 }
@@ -9313,6 +9627,18 @@ async fn stream_failures_preserve_error_fields_independent_of_retry_classificati
                     false,
                 ),
                 (
+                    "project_spend_limit_exceeded",
+                    "Project spending limit reached.",
+                    ProviderErrorKind::QuotaExhausted,
+                    false,
+                ),
+                (
+                    "organization_spend_limit_exceeded",
+                    "Organization spending limit reached.",
+                    ProviderErrorKind::QuotaExhausted,
+                    false,
+                ),
+                (
                     "unsupported_parameter",
                     "Hosted tool 'web_search' requires authorization and metering that are not supported by rustponsesapi.",
                     ProviderErrorKind::InvalidRequest,
@@ -9356,7 +9682,9 @@ async fn stream_failures_preserve_error_fields_independent_of_retry_classificati
                     "type":"invalid_request_error","code":code,"message":message,"param":"tools"
                 }});
             }
-            if code == "turn_rate_limit_exceeded" {
+            if code == "organization_spend_limit_exceeded" {
+                original = json!({"type":"error","error":{"code":code,"message":message,"headers":{"retry-after":"7"}}});
+            } else if code == "turn_rate_limit_exceeded" || expected_kind == ProviderErrorKind::QuotaExhausted {
                 original["response"]["error"]["headers"] = json!({"retry-after": "7"});
             }
             let expected_status = original["status"]
@@ -9438,9 +9766,12 @@ async fn stream_failures_preserve_error_fields_independent_of_retry_classificati
             );
             assert_eq!(error.replay_is_safe(), capacity && !semantic_output);
             assert_eq!(error.upstream_status(), expected_status);
-            if code == "turn_rate_limit_exceeded" {
+            if code == "turn_rate_limit_exceeded" || expected_kind == ProviderErrorKind::QuotaExhausted {
                 assert!(error.retry_is_prohibited());
                 assert_eq!(error.retry_after(), Some(Duration::from_secs(7)));
+            }
+            if expected_kind == ProviderErrorKind::QuotaExhausted {
+                assert_eq!(store.account("acct_provider_contract").unwrap().quota().access(), QuotaAccessState::Exhausted);
             }
             assert_eq!(
                 error.pre_delivery_retry().is_some(),
@@ -12154,6 +12485,7 @@ async fn quota_continuation_opening_rejection_projects_replay_without_losing_ups
     for use_websocket in [false, true] {
         for (status, code, projects_replay) in [
             (429, "usage_limit_reached", true),
+            (429, "project_spend_limit_exceeded", false),
             (402, "insufficient_quota", true),
             (429, "quota_exceeded", false),
             (429, "rate_limit_exceeded", false),
@@ -12246,6 +12578,7 @@ async fn quota_continuation_opening_rejection_projects_replay_without_losing_ups
 
 #[tokio::test]
 async fn quota_continuation_stream_rejection_only_projects_before_delivery() {
+    let reset_at = 1_900_000_000;
     for use_websocket in [false, true] {
         for semantic_output in [false, true] {
             for native_continuation in [false, true] {
@@ -12257,7 +12590,10 @@ async fn quota_continuation_stream_rejection_only_projects_before_delivery() {
                 if semantic_output {
                     events.push(json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"hello"}));
                 }
-                let original = json!({"type":"response.failed","response":{"id":"resp_quota","error":{"code":"usage_limit_reached","message":"You have reached your usage limit."}}});
+                let original = json!({"type":"response.failed","response":{"id":"resp_quota","error":{
+                    "code":"usage_limit_reached", "message":"You have reached your usage limit.",
+                    "resets_at": reset_at, "limit_window_minutes": 300
+                }}});
                 events.push(original.clone());
                 let (base_url, _http_server, websocket_server) = if use_websocket {
                     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -12326,6 +12662,12 @@ async fn quota_continuation_stream_rejection_only_projects_before_delivery() {
                     }
                 };
                 assert_eq!(error.kind(), ProviderErrorKind::QuotaExhausted);
+                let quota = store.account("acct_provider_contract").unwrap().quota();
+                assert_eq!(
+                    quota.reset_at(),
+                    Some(SystemTime::UNIX_EPOCH + Duration::from_secs(reset_at))
+                );
+                assert_eq!(quota.limit_window_minutes(), Some(300));
                 assert_eq!(error.send_state(), UpstreamSendState::Sent);
                 assert_eq!(error.replay_is_safe(), !semantic_output);
                 assert_eq!(
@@ -12669,6 +13011,7 @@ async fn fast_policy_changes_preserve_the_websocket_continuation_and_meter_each_
     const ACCOUNT: &str = "acct_provider_contract";
     let store = Arc::new(MemoryAccountStore::default());
     create_account(&store, ACCOUNT).await;
+    seed_service_tiers(&store, ACCOUNT, "gpt-6.1-sol", &["priority", "ultrafast"]).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base_url = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
@@ -12678,7 +13021,7 @@ async fn fast_policy_changes_preserve_the_websocket_continuation_and_meter_each_
                 // 提示头只在首次握手发送；后续档位由各自 response.create 正文指定
                 assert_eq!(
                     request.headers()["x-codex-routing-hint"],
-                    "model=gpt-5.4;tier=default"
+                    "model=gpt-6.1-sol;tier=default"
                 );
                 response.headers_mut().insert(
                     "sec-websocket-extensions",
@@ -12686,7 +13029,7 @@ async fn fast_policy_changes_preserve_the_websocket_continuation_and_meter_each_
                 );
             })
             .await;
-        for (index, tier) in ["default", "priority", "default", "default"]
+        for (index, tier) in ["default", "priority", "ultrafast", "default"]
             .into_iter()
             .enumerate()
         {
@@ -12704,11 +13047,11 @@ async fn fast_policy_changes_preserve_the_websocket_continuation_and_meter_each_
                     .map(|previous| json!(format!("resp_fast_turn_{previous}")))
             );
             websocket.send(Message::Text(json!({
-                "type":"response.created", "response":{"id":format!("resp_fast_turn_{index}"),"model":"gpt-5.4"}
+                "type":"response.created", "response":{"id":format!("resp_fast_turn_{index}"),"model":"gpt-6.1-sol"}
             }).to_string().into())).await.unwrap();
             websocket.send(Message::Text(json!({
                 "type":"response.completed", "response":{
-                    "id":format!("resp_fast_turn_{index}"), "model":"gpt-5.4", "status":"completed", "output":[],
+                    "id":format!("resp_fast_turn_{index}"), "model":"gpt-6.1-sol", "status":"completed", "output":[],
                     "service_tier":"priority", "usage":{"input_tokens":100,"output_tokens":10,"input_tokens_details":{"cached_tokens":25,"cache_write_tokens":0},"total_tokens":110}
                 }
             }).to_string().into())).await.unwrap();
@@ -12720,7 +13063,7 @@ async fn fast_policy_changes_preserve_the_websocket_continuation_and_meter_each_
             "all four turns must use the same upstream connection"
         );
     });
-    let provider = provider_with_base_url(&store, base_url);
+    let provider = provider_with_catalog_and_base_url(&store, base_url).await;
     let mut session_state = ProviderSessionState::new(
         "openai",
         Map::from_iter([
@@ -12733,11 +13076,11 @@ async fn fast_policy_changes_preserve_the_websocket_continuation_and_meter_each_
         ]),
     )
     .unwrap();
-    for (index, fast_mode) in [
-        FastMode::Default,
-        FastMode::Enabled,
-        FastMode::Disabled,
-        FastMode::Default,
+    for (index, (fast_mode, tier, cost)) in [
+        (FastMode::Default, "default", 2_525_000),
+        (FastMode::Enabled, "priority", 5_050_000),
+        (FastMode::Ultrafast, "ultrafast", 15_150_000),
+        (FastMode::Disabled, "default", 2_525_000),
     ]
     .into_iter()
     .enumerate()
@@ -12745,8 +13088,7 @@ async fn fast_policy_changes_preserve_the_websocket_continuation_and_meter_each_
         let previous = index
             .checked_sub(1)
             .map(|index| format!("resp_fast_turn_{index}"));
-        let mut body =
-            json!({"model":"gpt-5.4","input":"next turn","service_tier":"default","store":false});
+        let mut body = json!({"model":"gpt-6.1-sol","input":"next turn","service_tier":"default","store":false});
         if let Some(previous) = &previous {
             body["previous_response_id"] = json!(previous);
         }
@@ -12802,19 +13144,7 @@ async fn fast_policy_changes_preserve_the_websocket_continuation_and_meter_each_
         });
         let mut stream = Arc::clone(&provider)
             .execute(
-                planned_request_with_presentation(
-                    "openai",
-                    operation,
-                    "gpt-5.4",
-                    Some(
-                        gateway_core::routing::ModelPresentation::new(None, None)
-                            .with_service_tiers(vec![
-                                gateway_core::routing::ModelServiceTier::new(
-                                    "priority", "fast", "Fast",
-                                ),
-                            ]),
-                    ),
-                ),
+                planned_request_for_model("openai", operation, "gpt-6.1-sol"),
                 context,
             )
             .await
@@ -12851,22 +13181,8 @@ async fn fast_policy_changes_preserve_the_websocket_continuation_and_meter_each_
                 WebSocketPoolKind::Reuse
             })
         );
-        assert_eq!(
-            observed_tier.as_deref(),
-            Some(if fast_mode == FastMode::Enabled {
-                "priority"
-            } else {
-                "default"
-            })
-        );
-        assert_eq!(
-            costs,
-            vec![if fast_mode == FastMode::Enabled {
-                6_875_000
-            } else {
-                3_437_500
-            }]
-        );
+        assert_eq!(observed_tier.as_deref(), Some(tier));
+        assert_eq!(costs, vec![cost]);
     }
     server.await.unwrap();
 }
@@ -13297,7 +13613,14 @@ async fn downstream_client_markers_preserve_instruction_content() {
                 json!([["X-Grok-Model-Override", STANDARD.encode(b"test")]]),
             )]);
             let sent = capture_client_request(body.clone(), context, api_key).await;
-            assert_eq!(sent, body);
+            let mut expected = body;
+            if !api_key {
+                expected.insert(
+                    "request_country".to_owned(),
+                    json!(global_request_location().country),
+                );
+            }
+            assert_eq!(sent, expected);
         }
     }
 }

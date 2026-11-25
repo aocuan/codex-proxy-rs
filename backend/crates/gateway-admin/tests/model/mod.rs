@@ -9,5 +9,4 @@ mod observability;
 mod plugins;
 mod provider_credentials;
 mod quota_forecast;
-mod quota_forecast_sampling;
 mod retention;

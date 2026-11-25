@@ -175,7 +175,7 @@ async fn usage_error_origins_agree_for_saved_errors_without_failure_status() {
                 .list_usage_records(UsageRecordQuery {
                     range,
                     filter: UsageRecordFilter::default(),
-                    status: admin_observability::UsageRecordStatus::All,
+                    status: admin_observability::UsageRecordStatus::Error(Some(origin)),
                     current_page: 1,
                     page_size: ObservabilityPageSize::new(10).unwrap(),
                 })
@@ -282,7 +282,7 @@ async fn usage_error_origins_preserve_saved_failure_and_connection_boundaries() 
             .list_usage_records(UsageRecordQuery {
                 range,
                 filter: UsageRecordFilter::default(),
-                status: admin_observability::UsageRecordStatus::All,
+                status: admin_observability::UsageRecordStatus::Error(Some(origin)),
                 current_page: 1,
                 page_size: ObservabilityPageSize::new(10).unwrap(),
             })
@@ -957,6 +957,69 @@ async fn usage_search_should_ignore_request_ids_and_preserve_exact_filters() {
             .expect("exact request identity filter");
         assert_eq!(page.total, 1);
         assert_eq!(page.items[0].id, "req_observe_success");
+    }
+    database.close().await;
+}
+
+#[tokio::test]
+async fn usage_account_filter_matches_only_historical_names_and_emails() {
+    use admin_observability::UsageRecordStatus::{All, Error, Success};
+
+    let Some(database) = TestDatabase::create("usage_account_filter").await else {
+        return;
+    };
+    let now = Utc::now();
+    seed_observability_facts(&database.pool, now)
+        .await
+        .expect("seed observability facts");
+    seed_calculated_billing_facts(&database.pool, now)
+        .await
+        .expect("seed unrelated request");
+    sqlx::query(
+        "update model_requests set request_observation_json = jsonb_set(
+           request_observation_json, '{account}', case when id = 'req_observe_success'
+             then jsonb_build_object('email', $1::text)
+             else jsonb_build_object('name', $2::text) end)
+         where id in ('req_observe_success', 'req_observe_failed')",
+    )
+    .bind(r"alice_%\ops@example.invalid")
+    .bind("alice team")
+    .execute(&database.pool)
+    .await
+    .expect("set email-only and name-only snapshots");
+    super::drain_analytics(&database.pool).await;
+
+    let range = ObservabilityRange::new(now - TimeDelta::hours(1), now).expect("range");
+    let repo = observability_repository(&database.pool);
+    for (status, search, page, total, expected_id) in [
+        (Success, r"_%\", 1, 1, Some("req_observe_success")),
+        (Error(None), "team", 1, 1, Some("req_observe_failed")),
+        (All, "alice", 1, 2, Some("req_observe_failed")),
+        (All, "alice", 2, 2, Some("req_observe_success")),
+        (Error(None), "@example", 1, 0, None),
+        (All, "ALICE", 1, 0, None),
+        (All, "alice%ops", 1, 0, None),
+        (All, "public-model", 1, 0, None),
+    ] {
+        let result = repo
+            .list_usage_records(UsageRecordQuery {
+                status,
+                range,
+                filter: UsageRecordFilter {
+                    provider_account_search: Some(search.to_owned()),
+                    ..Default::default()
+                },
+                current_page: page,
+                page_size: ObservabilityPageSize::new(1).expect("page size"),
+            })
+            .await
+            .expect("filter usage by account snapshot");
+        assert_eq!(result.total, total, "{status:?} {search} page {page}");
+        assert_eq!(
+            result.items.first().map(|item| item.id.as_str()),
+            expected_id,
+            "{status:?} {search} page {page}"
+        );
     }
     database.close().await;
 }
@@ -2207,7 +2270,7 @@ async fn admin_observability_adapter_preserves_utc_queries_metrics_costs_and_det
             filter: admin_observability::UsageFilter {
                 model_contains: None,
                 client_api_key_name: None,
-                provider_account_name: None,
+                provider_account_search: Some("@example.invalid".to_owned()),
                 client_api_key_ref: Some("key_observe".to_owned()),
                 request_id: Some("req_observe_success".to_owned()),
                 provider_account_ref: Some("acct_observe".to_owned()),

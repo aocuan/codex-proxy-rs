@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use gateway_core::{
-    account::{AccountStatusFacts, FastMode},
+    account::{AccountModelAccess, AccountStatusFacts, FastMode},
     routing::AccountGroupId,
 };
 
@@ -14,15 +14,25 @@ use super::{PageSize, Revision, observability::DecimalAmount};
 pub fn validate_group_fields(
     name: &str,
     description: Option<&str>,
-) -> Result<(), super::AdminModelError> {
-    if name.trim() != name
-        || name.is_empty()
-        || name.chars().count() > 100
-        || name.chars().any(char::is_control)
-        || description
-            .is_some_and(|value| value.len() > 4096 || value.chars().any(char::is_control))
-    {
-        return Err(super::AdminModelError::InvalidAccountGroupFields);
+) -> Result<(), super::AdminError> {
+    if name.trim().is_empty() {
+        return Err(super::AdminError::invalid("请输入账号组名称"));
+    }
+    if name.chars().count() > 100 {
+        return Err(super::AdminError::invalid("账号组名称最多 100 个字符"));
+    }
+    if name.trim() != name || name.chars().any(char::is_control) {
+        return Err(super::AdminError::invalid(
+            "账号组名称不能包含首尾空白或控制字符",
+        ));
+    }
+    if let Some(description) = description {
+        if description.len() > 4096 {
+            return Err(super::AdminError::invalid("账号组描述最多 4096 字节"));
+        }
+        if description.chars().any(char::is_control) {
+            return Err(super::AdminError::invalid("账号组描述不能包含控制字符"));
+        }
     }
     Ok(())
 }
@@ -102,6 +112,8 @@ pub struct AccountGroupListQuery {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountGroupRecord {
     pub allow_image_generation: bool,
+    pub allow_subagents: bool,
+    pub model_access: AccountModelAccess,
     pub fast_mode: FastMode,
     pub id: AccountGroupId,
     pub name: String,
@@ -142,6 +154,8 @@ pub struct AccountGroupOptionsPage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateAccountGroup {
     pub allow_image_generation: bool,
+    pub allow_subagents: bool,
+    pub model_access: AccountModelAccess,
     pub fast_mode: FastMode,
     pub name: String,
     pub description: Option<String>,
@@ -152,6 +166,8 @@ pub struct CreateAccountGroup {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewAccountGroup {
     pub allow_image_generation: bool,
+    pub allow_subagents: bool,
+    pub model_access: AccountModelAccess,
     pub fast_mode: FastMode,
     pub id: AccountGroupId,
     pub name: String,
@@ -163,6 +179,8 @@ pub struct NewAccountGroup {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateAccountGroup {
     pub allow_image_generation: Option<bool>,
+    pub allow_subagents: Option<bool>,
+    pub model_access: Option<AccountModelAccess>,
     pub fast_mode: Option<FastMode>,
     pub id: AccountGroupId,
     pub name: String,

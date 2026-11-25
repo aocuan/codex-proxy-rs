@@ -917,7 +917,7 @@ pub(super) fn usage_record_with_account(
 }
 
 #[tokio::test]
-async fn usage_route_should_forward_name_and_model_contains_filters() {
+async fn usage_route_should_forward_record_text_filters() {
     use axum::{
         body::Body,
         http::{Request, StatusCode, header},
@@ -933,7 +933,7 @@ async fn usage_route_should_forward_name_and_model_contains_filters() {
         .with_state(fixture.state())
         .oneshot(
             Request::builder()
-                .uri("/api/admin/usage/records?model=%20coding%20&clientApiKeyName=%20Key%20%25%20&accountName=%20Account%20Name%20")
+                .uri("/api/admin/usage/records?model=%20coding%20&clientApiKeyName=%20Key%20%25%20&accountSearch=%20alice%40%20")
                 .header(header::COOKIE, "cpr_session=valid-session")
                 .header("x-request-id", "req_usage_other_outcome")
                 .body(Body::empty())
@@ -947,10 +947,7 @@ async fn usage_route_should_forward_name_and_model_contains_filters() {
     let filter = &observations.records.last().expect("usage query").filter;
     assert_eq!(filter.client_api_key_name.as_deref(), Some("Key %"));
     assert_eq!(filter.model_contains.as_deref(), Some("coding"));
-    assert_eq!(
-        filter.provider_account_name.as_deref(),
-        Some("Account Name")
-    );
+    assert_eq!(filter.provider_account_search.as_deref(), Some("alice@"));
     assert!(filter.client_api_key_ref.is_none());
     assert!(filter.provider_account_ref.is_none());
 }
@@ -1729,6 +1726,8 @@ async fn observability_queries_reject_group_filters_and_analytics_search() {
             "routingGroupRefs=group-a",
         ),
         ("/api/admin/usage/records/summary", "search=request-prefix"),
+        ("/api/admin/usage/records/summary", "errorOrigin=proxy"),
+        ("/api/admin/usage/insights/overview", "errorOrigin=proxy"),
         (
             "/api/admin/usage/insights/overview",
             "search=request-prefix",
@@ -1823,27 +1822,50 @@ pub(super) fn ops_error_record() -> gateway_admin::model::observability::OpsErro
 }
 
 #[tokio::test]
-async fn usage_status_query_accepts_three_modes_and_rejects_unknown_values() {
+async fn usage_record_query_accepts_error_sources_only_for_error_status() {
     use crate::admin::{AdminTestFixture, AdminTestState};
     use axum::{
         body::{Body, to_bytes},
         http::{Request, StatusCode, header},
     };
+    use gateway_admin::model::observability::{UsageErrorOrigin, UsageRecordStatus};
     use gateway_api::admin::observability;
     use tower::ServiceExt as _;
     let fixture = AdminTestFixture::new().await;
     fixture.auth.insert_session("valid-session");
-    for (status, expected) in [
-        ("success", StatusCode::OK),
-        ("error", StatusCode::OK),
-        ("all", StatusCode::OK),
-        ("failed", StatusCode::BAD_REQUEST),
+    for (query, expected) in [
+        ("", Some(UsageRecordStatus::Success)),
+        ("status=success", Some(UsageRecordStatus::Success)),
+        ("status=error", Some(UsageRecordStatus::Error(None))),
+        ("status=all", Some(UsageRecordStatus::All)),
+        (
+            "status=error&errorOrigin=proxy",
+            Some(UsageRecordStatus::Error(Some(UsageErrorOrigin::Proxy))),
+        ),
+        (
+            "status=error&errorOrigin=upstream",
+            Some(UsageRecordStatus::Error(Some(UsageErrorOrigin::Upstream))),
+        ),
+        (
+            "status=error&errorOrigin=connection",
+            Some(UsageRecordStatus::Error(Some(UsageErrorOrigin::Connection))),
+        ),
+        (
+            "status=error&errorOrigin=unknown",
+            Some(UsageRecordStatus::Error(Some(UsageErrorOrigin::Unknown))),
+        ),
+        ("status=failed", None),
+        ("errorOrigin=proxy", None),
+        ("status=success&errorOrigin=proxy", None),
+        ("status=all&errorOrigin=unknown", None),
+        ("status=error&errorOrigin=other", None),
+        ("status=error&errorOrigin=", None),
     ] {
         let response = observability::router::<AdminTestState>()
             .with_state(fixture.state())
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/admin/usage/records?status={status}"))
+                    .uri(format!("/api/admin/usage/records?{query}"))
                     .header(header::COOKIE, "cpr_session=valid-session")
                     .header("x-request-id", "usage_status_fixture")
                     .body(Body::empty())
@@ -1855,17 +1877,15 @@ async fn usage_status_query_accepts_three_modes_and_rejects_unknown_values() {
         let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         assert_eq!(
             actual,
-            expected,
-            "{status}: {}",
+            if expected.is_some() {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            "{query}: {}",
             String::from_utf8_lossy(&body)
         );
-        if expected == StatusCode::OK {
-            use gateway_admin::model::observability::UsageRecordStatus;
-            let status_value = match status {
-                "success" => UsageRecordStatus::Success,
-                "error" => UsageRecordStatus::Error,
-                _ => UsageRecordStatus::All,
-            };
+        if let Some(status_value) = expected {
             assert_eq!(
                 fixture
                     .observations
@@ -2019,16 +2039,15 @@ async fn dashboard_summary_identifies_trend_metrics_and_account_usage_values() {
         assert_eq!(status, StatusCode::OK, "{kind}: {value}");
         let accounts = value["data"]["accountUsage"].as_array().unwrap();
         assert_eq!(accounts.len(), 5);
-        for (account, (metric, raw, display, last_used_at)) in accounts.iter().zip([
-            ("tokens", Some(2_000), "2K", Some(now)),
-            ("tokens", Some(0), "0", None),
-            ("tokens", None, "—", None),
-            ("requests", Some(9), "9", Some(now)),
-            ("requests", Some(0), "—", None),
+        for (account, (metric, raw, last_used_at)) in accounts.iter().zip([
+            ("tokens", Some(2_000), Some(now)),
+            ("tokens", Some(0), None),
+            ("tokens", None, None),
+            ("requests", Some(9), Some(now)),
+            ("requests", Some(0), None),
         ]) {
             assert_eq!(account["metric"], metric);
             assert_eq!(account["metricValueRaw"], json!(raw));
-            assert_eq!(account["metricValue"], display);
             assert_eq!(account["lastUsedAt"], json!(last_used_at));
         }
         let summary = value["data"]["trend"]["summary"].as_array().unwrap();
@@ -2062,50 +2081,42 @@ async fn dashboard_relative_time_preserves_server_anchor_boundaries_and_deployme
         ("Asia/Kathmandu", "2026-06-15 05:45:01"),
         ("America/New_York", "2026-06-14 20:00:01"),
     ] {
-        for (elapsed_ms, expected, legacy) in [
-            (None, json!(null), "—"),
+        for (elapsed_ms, expected) in [
+            (None, json!(null)),
             (
                 Some(-1_000),
                 json!({ "kind": "absolute", "value": future_display }),
-                future_display,
             ),
-            (Some(-1), json!({ "kind": "just_now" }), "刚刚"),
-            (Some(0), json!({ "kind": "just_now" }), "刚刚"),
-            (Some(59_999), json!({ "kind": "just_now" }), "刚刚"),
+            (Some(-1), json!({ "kind": "just_now" })),
+            (Some(0), json!({ "kind": "just_now" })),
+            (Some(59_999), json!({ "kind": "just_now" })),
             (
                 Some(60_000),
                 json!({ "kind": "elapsed", "value": 1, "unit": "minute" }),
-                "1 分钟前",
             ),
             (
                 Some(119_999),
                 json!({ "kind": "elapsed", "value": 1, "unit": "minute" }),
-                "1 分钟前",
             ),
             (
                 Some(3_599_999),
                 json!({ "kind": "elapsed", "value": 59, "unit": "minute" }),
-                "59 分钟前",
             ),
             (
                 Some(3_600_000),
                 json!({ "kind": "elapsed", "value": 1, "unit": "hour" }),
-                "1 小时前",
             ),
             (
                 Some(86_399_999),
                 json!({ "kind": "elapsed", "value": 23, "unit": "hour" }),
-                "23 小时前",
             ),
             (
                 Some(86_400_000),
                 json!({ "kind": "elapsed", "value": 1, "unit": "day" }),
-                "1 天前",
             ),
             (
                 Some(34_560_000_000),
                 json!({ "kind": "elapsed", "value": 400, "unit": "day" }),
-                "400 天前",
             ),
         ] {
             // 每个边界使用独立缓存，避免相同锚点复用上一轮观测数据
@@ -2177,7 +2188,6 @@ async fn dashboard_relative_time_preserves_server_anchor_boundaries_and_deployme
                 account["lastUsedRelative"], expected,
                 "{zone}: {elapsed_ms:?}"
             );
-            assert_eq!(account["lastUsed"], legacy, "{zone}: {elapsed_ms:?}");
             assert_eq!(account["lastUsedAt"], json!(last_used_at));
         }
     }

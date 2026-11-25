@@ -5,28 +5,23 @@ mod execution;
 mod failure;
 mod observation;
 mod registration;
-pub(crate) mod target;
 
 use std::{fmt, sync::Arc};
 
 use gateway_core::{
     account::ProviderAccountId,
-    engine::{
-        AttemptContext,
-        upstream_adapter::{
-            UpstreamAdapter, UpstreamAdapterInvocation, UpstreamAdapterPlan,
-            UpstreamAdapterSelection,
-        },
+    engine::ModelRouteScope,
+    engine::upstream_adapter::{
+        UpstreamAdapter, UpstreamAdapterInvocation, UpstreamAdapterPlan, UpstreamAdapterSelection,
     },
     error::{ProviderError, ProviderErrorKind},
     identity::ProviderKind,
-    routing::UpstreamModelId,
     upstream::UpstreamSendState,
 };
 use gateway_plugin_sdk::call::upstream_adapter::UpstreamAdapterDeclaration;
 
 use super::scope::BindingScope;
-use crate::{RpcSession, callback::PluginCallbacks};
+use crate::{RpcSession, callback::PluginCallbacks, upstream_target::UpstreamTarget};
 
 pub(crate) use registration::{prepare, unavailable_entries, validate_bindings};
 
@@ -59,7 +54,7 @@ pub(crate) struct PluginUpstreamAdapter {
     instance_id: String,
     contribution_id: String,
     declaration: UpstreamAdapterDeclaration,
-    target: Arc<target::UpstreamTarget>,
+    target: Arc<UpstreamTarget>,
     session: Arc<RpcSession>,
     callbacks: Arc<PluginCallbacks>,
     connections: Arc<crate::callback::upstream::ConnectionPool>,
@@ -117,19 +112,16 @@ impl fmt::Debug for PluginUpstreamAdapterPlan {
 impl UpstreamAdapterPlan for PluginUpstreamAdapterPlan {
     fn select(
         &self,
-        context: &AttemptContext,
+        context: ModelRouteScope<'_>,
         provider: &ProviderKind,
-        model: &UpstreamModelId,
         account: Option<&ProviderAccountId>,
     ) -> Result<UpstreamAdapterSelection, ProviderError> {
-        let model = context
-            .requested_model()
-            .map_or(model.as_str(), |model| model.as_str());
+        let model = context.model;
         for entry in &self.entries {
-            if context.extension_scope().contains(&entry.instance_id)
+            if context.extensions.contains(&entry.instance_id)
                 || !entry.scope.matches_processing(
-                    context.client_api_key_ref(),
-                    context.account_group_ids(),
+                    context.client_api_key,
+                    context.account_groups,
                     Some(provider),
                     Some(model),
                 )

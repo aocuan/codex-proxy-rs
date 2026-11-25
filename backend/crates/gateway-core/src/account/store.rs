@@ -88,9 +88,11 @@ pub trait ProviderAccountStore: Send + Sync {
 
     async fn list_accounts(&self) -> Result<Vec<ProviderAccount>, StoreError>;
 
+    /// 额度维护可包含停用账号，请求调度只读取已启用账号
     async fn list_for_provider(
         &self,
         provider: &ProviderKind,
+        include_disabled: bool,
     ) -> Result<Vec<ProviderAccount>, StoreError>;
 
     /// 只读取指定 Provider 冻结范围内的已启用账号，空范围直接返回空池
@@ -172,6 +174,15 @@ pub trait ProviderAccountStore: Send + Sync {
         &self,
         change: QuotaAccessChange,
     ) -> Result<QuotaWriteOutcome, StoreError>;
+
+    /// 按请求使用的凭据版本缩短访问令牌有效期，保留在途续期的版本和重试计划
+    async fn expire_access_token(
+        &self,
+        _account: &ProviderAccount,
+        _observed_at: std::time::SystemTime,
+    ) -> Result<bool, StoreError> {
+        Err(StoreError::new(crate::error::StoreErrorKind::InvalidData))
+    }
 
     async fn apply_state_change(&self, change: AccountStateChange) -> Result<(), StoreError>;
 
