@@ -910,9 +910,9 @@ OAuth 恢复开关为 `host.logging.oauth_recovery`，默认关闭，与普通�
 
 ### 自研测评镜像
 
-`aocuan/codex-proxy-rs` 的 `main` 分支包含自研功能，使用 `Fork release` 工作流。
-相关源码、构建或部署配置推送后，原生构建 `linux/amd64` 和 `linux/arm64`，
-质量检查和两个平台的容器验收通过后，发布 GitHub Pre-release、在线更新包与
+`aocuan/codex-proxy-rs` 的 `main` 分支包含自研功能。发行时在 Actions 中手动运行 [Fork release](../.github/workflows/fork-release.yml)，
+选择 `main` 并填写要发行的完整提交 SHA。工作流原生构建 `linux/amd64` 和 `linux/arm64`，
+质量检查、依赖审计和两个平台的容器验收通过后，发布 GitHub Pre-release、在线更新包与
 `ghcr.io/aocuan/codex-proxy-rs` 镜像：
 
 - `evaluation` 指向最近一次验证通过的自研 `main` 构建

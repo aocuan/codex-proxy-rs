@@ -25,7 +25,7 @@ env:
 
 jobs:
   release-info:
-    if: ${{ !inputs.index_only }}
+    if: github.repository == 'zyycn/codex-proxy-rs' && !inputs.index_only
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -568,7 +568,7 @@ jobs:
         run: ruby .github/scripts/published-channels.rb publish "$VERSION"
 
   recover-index:
-    if: inputs.index_only
+    if: github.repository == 'zyycn/codex-proxy-rs' && inputs.index_only
     runs-on: ubuntu-26.04
     concurrency:
       group: release-publication

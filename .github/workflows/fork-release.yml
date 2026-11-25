@@ -1,10 +1,12 @@
 name: Fork release
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact main commit to publish
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -23,7 +25,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      release: ${{ steps.plan.outputs.release }}
       version: ${{ steps.release.outputs.version }}
       tag: ${{ steps.release.outputs.tag }}
       build_time: ${{ steps.release.outputs.build_time }}
@@ -31,66 +32,34 @@ jobs:
       rust: ${{ steps.toolchains.outputs.rust }}
       rust_image: ${{ steps.toolchains.outputs.rust_image }}
     steps:
+      - name: Verify selected commit
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$SOURCE_SHA" != "$GITHUB_SHA" ]]; then
+            echo "::error::source_sha must match the main commit selected for this run"
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
-          # 比较 main 推送的完整差异，避免 GitHub 触发器只检查前 300 个文件
-          fetch-depth: 0
-
-      - name: Detect release changes
-        if: github.event_name == 'push'
-        id: changes
-        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        with:
-          # 固定比较本次推送的两个提交，不跟随排队期间再次前进的 main
-          base: ${{ github.event.before != '0000000000000000000000000000000000000000' && github.event.before || 'main' }}
-          ref: ${{ github.event.before != '0000000000000000000000000000000000000000' && github.sha || 'main' }}
-          predicate-quantifier: some-with-excludes
-          filters: |
-            release:
-              - 'backend/**'
-              - 'frontend/**'
-              - 'deploy/**'
-              - 'release/platforms.yaml'
-              - '.github/workflows/fork-release.yml'
-              - '.github/workflows/_quality.yml'
-              - '.github/scripts/**'
-              - '.github/actions/build-binary/**'
-              - '.github/actions/build-frontend/**'
-              - '.github/actions/verify-container/**'
-              - '!**/*.md'
-            version:
-              - 'release/version.yaml'
-
-      - name: Select release jobs
-        id: plan
-        env:
-          # 发布索引更新不再触发发行，同次推送有构建输入变化时仍检查并发行
-          RUN_RELEASE: >-
-            ${{ github.event_name == 'workflow_dispatch' ||
-                steps.changes.outputs.release == 'true' ||
-                (steps.changes.outputs.version == 'true' &&
-                 !startsWith(github.event.head_commit.message, 'chore(release): update release channels to ')) }}
-        shell: bash
-        run: printf 'release=%s\n' "$RUN_RELEASE" >> "$GITHUB_OUTPUT"
 
       - name: Verify fork release contracts
-        if: steps.plan.outputs.release == 'true'
         run: ruby .github/scripts/tests/fork-release_test.rb
 
       - name: Read build toolchains
-        if: steps.plan.outputs.release == 'true'
         id: toolchains
         run: ruby .github/scripts/toolchains.rb >> "$GITHUB_OUTPUT"
 
       - name: Define and seal fork release metadata
-        if: steps.plan.outputs.release == 'true'
         id: release
         run: ruby .github/scripts/fork-release.rb metadata >> "$GITHUB_OUTPUT"
 
       - name: Upload release metadata
-        if: steps.release.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fork-release-metadata
@@ -105,12 +74,16 @@ jobs:
     uses: ./.github/workflows/_quality.yml
     with:
       ref: ${{ github.sha }}
-      run_backend: ${{ needs.metadata.outputs.release == 'true' }}
       run_frontend: false
+
+  security:
+    needs: metadata
+    uses: ./.github/workflows/security.yml
+    with:
+      ref: ${{ github.sha }}
 
   frontend:
     needs: metadata
-    if: needs.metadata.outputs.release == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     env:
@@ -128,7 +101,6 @@ jobs:
 
   binary:
     needs: metadata
-    if: needs.metadata.outputs.release == 'true'
     name: Build binary (${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -165,7 +137,6 @@ jobs:
 
   build:
     needs: [metadata, frontend, binary]
-    if: needs.metadata.outputs.release == 'true'
     name: Build and verify (${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -291,7 +262,7 @@ jobs:
           retention-days: 1
 
   publish:
-    needs: [metadata, quality, build]
+    needs: [metadata, quality, security, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -398,5 +369,5 @@ jobs:
             echo "- 更新标签：\`$IMAGE_NAME:evaluation\`"
             echo "- Release：https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
             echo '- 平台：linux/amd64、linux/arm64'
-            echo '- 质量检查、双架构容器验收与在线更新包校验通过'
+            echo '- 质量检查、依赖审计、双架构容器验收与在线更新包校验通过'
           } >> "$GITHUB_STEP_SUMMARY"
