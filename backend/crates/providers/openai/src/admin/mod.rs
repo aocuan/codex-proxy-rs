@@ -6,6 +6,7 @@ mod pending;
 mod profile;
 mod provider;
 mod quota;
+mod turnstate;
 
 pub(crate) use pending::OpenAiOAuthPendingStore;
 pub(crate) use provider::{OpenAiAdminProvider, OpenAiAdminServices};

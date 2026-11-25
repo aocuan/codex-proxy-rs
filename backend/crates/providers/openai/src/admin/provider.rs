@@ -168,7 +168,7 @@ impl ProviderAdmin for OpenAiAdminProvider {
             }
             None => self.profile.snapshot(),
         };
-        crate::transport::turnstate::probe(
+        super::turnstate::probe(
             self.accounts.as_ref(),
             &profile,
             account,

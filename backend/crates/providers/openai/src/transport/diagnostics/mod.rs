@@ -441,7 +441,7 @@ fn decode_identity_error_code(encoded: &str) -> Option<String> {
 }
 
 /// 快速测票仅使用已识别的机器字段，不以自由文本推导账号故障
-pub(super) fn classify_probe_failure(
+pub(crate) fn classify_probe_failure(
     status: Option<StatusCode>,
     code: Option<&str>,
     error_type: Option<&str>,

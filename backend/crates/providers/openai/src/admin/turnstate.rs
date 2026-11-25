@@ -1,4 +1,4 @@
-//! OpenAI 两请求测票传输，票据与 Cookie 仅在本次会话内存中存在
+//! 账号管理端的两轮票据探测，票据与 Cookie 仅在本次探测内存中存在
 
 use std::{collections::BTreeMap, time::Instant};
 
@@ -19,17 +19,17 @@ use secrecy::ExposeSecret as _;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
-use super::{
+use crate::credential::CodexCredentialCodec;
+use crate::profile::CodexWireProfile;
+use crate::transport::{
     client::build_account_http_client,
     diagnostics::{CodexFailureCategory, classify_probe_failure},
 };
-use crate::credential::CodexCredentialCodec;
-use crate::profile::CodexWireProfile;
 
 const ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
 const MAX_BODY_BYTES: usize = 256 * 1024;
 
-pub(crate) async fn probe(
+pub(super) async fn probe(
     accounts: &dyn ProviderAccountStore,
     profile: &CodexWireProfile,
     id: &ProviderAccountId,
