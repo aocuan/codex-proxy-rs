@@ -9,6 +9,7 @@ module ForkRelease
   REPOSITORY = 'aocuan/codex-proxy-rs'
   IMAGE = "ghcr.io/#{REPOSITORY}"
   METADATA = 'dist/fork-release.json'
+  ARCHITECTURES = %w[amd64 arm64].freeze
 
   # 二开仅发行两个 Linux 平台，通道索引仍复用宿主的已验证发布流程
   class ChannelPublisher < PublishedChannels::Publisher
@@ -16,7 +17,7 @@ module ForkRelease
       release = find_release(version)
       raise 'Fork release must be public and prerelease' unless release &&
         release.fetch('tag_name') == "v#{version}" && !release.fetch('draft') && release.fetch('prerelease')
-      expected = %w[amd64 arm64].map { |arch| "codex-proxy-rs_#{version}_linux_#{arch}.tar.gz" }
+      expected = ARCHITECTURES.map { |arch| "codex-proxy-rs_#{version}_linux_#{arch}.tar.gz" }
       expected.concat(%w[checksums.txt compose.yaml config.example.yaml image-digest.txt plugin-release-manifest.json])
       uploaded = release.fetch('assets').filter_map do |asset|
         asset.fetch('name') if asset.fetch('state') == 'uploaded' && asset.fetch('size').positive?
@@ -41,17 +42,25 @@ module ForkRelease
       'docker_version' => value.tr('+', '-'), 'git_sha' => sha,
       'build_time' => Time.now.utc.iso8601, 'build_type' => 'release'
     }
+    docker_matrix = JSON.generate('include' => docker_platforms)
     ReleaseMetadata.seal_manifest(data)
     File.write(METADATA, JSON.pretty_generate(data) + "\n")
     data.each { |key, entry| puts "#{key}=#{entry}" }
+    puts "docker_matrix=#{docker_matrix}"
+  end
+
+  def self.docker_platforms
+    platforms = ReleaseMetadata.platforms.select do |platform|
+      platform['docker'] == true && platform['os'] == 'linux' && ARCHITECTURES.include?(platform['arch'])
+    end
+    raise 'Expected both fork release platforms' unless platforms.map { |platform| platform['arch'] }.sort == ARCHITECTURES
+    platforms
   end
 
   def self.package(architecture)
     data = JSON.parse(File.read(METADATA))
-    platforms = ReleaseMetadata.platforms.select do |platform|
-      platform['docker'] && platform['os'] == 'linux' && platform['arch'] == architecture
-    end
-    raise 'Unsupported fork release platform' unless platforms.length == 1
+    platform = docker_platforms.find { |entry| entry['arch'] == architecture }
+    raise 'Unsupported fork release platform' unless platform
     compose = YAML.safe_load(File.read('deploy/compose.yaml'), aliases: true)
     app = compose.fetch('services').fetch('codex-proxy-rs')
     app['image'] = "${CPR_IMAGE:-#{IMAGE}:latest}"
@@ -62,7 +71,7 @@ module ForkRelease
     ENV.update(
       'VERSION' => data.fetch('version'), 'DOCKER_VERSION' => data.fetch('docker_version'),
       'REGISTRY' => 'ghcr.io', 'IMAGE_NAME' => REPOSITORY,
-      'PLATFORM_MATRIX' => JSON.generate('include' => platforms)
+      'PLATFORM_MATRIX' => JSON.generate('include' => [platform])
     )
     ReleasePackage.archives(compose_path: compose_path)
     FileUtils.cp(ReleasePackage::MANIFEST, 'dist/release')
@@ -75,7 +84,7 @@ module ForkRelease
     FileUtils.rm_rf(target)
     FileUtils.mkdir_p(target)
     roots = Dir.glob('dist/release-platforms/*').sort
-    raise 'Expected both platform archives' unless roots.length == 2
+    raise 'Expected both platform archives' unless roots.length == ARCHITECTURES.length
     roots.each do |root|
       Dir.glob("#{root}/*").each do |path|
         next if File.basename(path) == 'checksums.txt'
@@ -86,7 +95,7 @@ module ForkRelease
         FileUtils.cp(path, destination)
       end
     end
-    expected = %w[amd64 arm64].map { |arch| "codex-proxy-rs_#{data.fetch('version')}_linux_#{arch}.tar.gz" }
+    expected = ARCHITECTURES.map { |arch| "codex-proxy-rs_#{data.fetch('version')}_linux_#{arch}.tar.gz" }
     raise 'Missing or unexpected release archive' unless Dir.glob("#{target}/*.tar.gz").map { |path| File.basename(path) }.sort == expected.sort
     File.write("#{target}/image-digest.txt", "#{digest}\n")
     checksums = Dir.glob("#{target}/*").sort.map { |path| "#{Digest::SHA256.file(path).hexdigest}  #{File.basename(path)}\n" }

@@ -95,6 +95,8 @@ jobs:
 
   quality:
     needs: changes
+    # 二开 main 的推送由 Fork release 统一检查，PR 仍走按路径检查
+    if: github.event_name != 'push' || github.repository != 'aocuan/codex-proxy-rs'
     uses: ./.github/workflows/_quality.yml
     with:
       ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -104,7 +106,11 @@ jobs:
 
   container:
     needs: changes
-    if: needs.changes.outputs.container == 'true'
+    # 二开已验收发行镜像，只有影响源码构建的改动需要单独验证此路径
+    if: >-
+      needs.changes.outputs.container == 'true' &&
+      (github.event_name != 'push' || github.repository != 'aocuan/codex-proxy-rs' ||
+       needs.changes.outputs.source_container == 'true')
     permissions:
       contents: read
       security-events: write

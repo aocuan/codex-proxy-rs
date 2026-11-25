@@ -225,6 +225,8 @@ git diff --check
 
 [CI](.github/workflows/ci.yml) 按变更范围调用质量检查，Markdown 不触发后端、前端和容器任务，工作流语法检查独立执行
 
+二开仓库的 main 推送由 [Fork release](.github/workflows/fork-release.yml) 统一执行质量检查与发行镜像验收。源码构建的输入变化时，另验收源码镜像。对于无需发行的推送，Fork release 只校验工作流语法。PR 和依赖安全扫描仍独立执行
+
 后端 CI 使用 nextest 执行 `main` 集成测试，默认 Redis 密码模式执行完整测试集，ACL 用户模式复用同一批构建产物执行 Store 的 Redis 测试；本地验证命令见 [架构文档](docs/architecture.md#验证命令)
 
 常规容器检查与发行构建共用二进制构建入口，并复用已检查的前端产物；Dockerfile、工具链、依赖或构建配置变化时执行完整源码镜像构建，定期安全检查也覆盖源码构建。两条路径均验证容器运行、安全扫描与关闭行为

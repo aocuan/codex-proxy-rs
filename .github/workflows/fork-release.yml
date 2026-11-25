@@ -4,15 +4,6 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'backend/**'
-      - 'frontend/**'
-      - 'deploy/**'
-      - 'release/version.yaml'
-      - '.github/workflows/fork-release.yml'
-      - '.github/workflows/_quality.yml'
-      - '.github/scripts/**'
-      - '.github/actions/verify-container/**'
   workflow_dispatch:
 
 permissions:
@@ -28,29 +19,78 @@ env:
 
 jobs:
   metadata:
-    if: >-
-      github.repository == 'aocuan/codex-proxy-rs' && github.ref == 'refs/heads/main' &&
-      !startsWith(github.event.head_commit.message, 'chore(release): update release channels to ')
+    if: github.repository == 'aocuan/codex-proxy-rs' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      release: ${{ steps.plan.outputs.release }}
       version: ${{ steps.release.outputs.version }}
       tag: ${{ steps.release.outputs.tag }}
       build_time: ${{ steps.release.outputs.build_time }}
+      docker_matrix: ${{ steps.release.outputs.docker_matrix }}
+      rust: ${{ steps.toolchains.outputs.rust }}
+      rust_image: ${{ steps.toolchains.outputs.rust_image }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
+          # 比较 main 推送的完整差异，避免 GitHub 触发器只检查前 300 个文件
+          fetch-depth: 0
+
+      - name: Detect release changes
+        if: github.event_name == 'push'
+        id: changes
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          # 固定比较本次推送的两个提交，不跟随排队期间再次前进的 main
+          base: ${{ github.event.before != '0000000000000000000000000000000000000000' && github.event.before || 'main' }}
+          ref: ${{ github.event.before != '0000000000000000000000000000000000000000' && github.sha || 'main' }}
+          predicate-quantifier: some-with-excludes
+          filters: |
+            release:
+              - 'backend/**'
+              - 'frontend/**'
+              - 'deploy/**'
+              - 'release/platforms.yaml'
+              - '.github/workflows/fork-release.yml'
+              - '.github/workflows/_quality.yml'
+              - '.github/scripts/**'
+              - '.github/actions/build-binary/**'
+              - '.github/actions/build-frontend/**'
+              - '.github/actions/verify-container/**'
+              - '!**/*.md'
+            version:
+              - 'release/version.yaml'
+
+      - name: Select release jobs
+        id: plan
+        env:
+          # 发布索引更新不再触发发行，同次推送有构建输入变化时仍检查并发行
+          RUN_RELEASE: >-
+            ${{ github.event_name == 'workflow_dispatch' ||
+                steps.changes.outputs.release == 'true' ||
+                (steps.changes.outputs.version == 'true' &&
+                 !startsWith(github.event.head_commit.message, 'chore(release): update release channels to ')) }}
+        shell: bash
+        run: printf 'release=%s\n' "$RUN_RELEASE" >> "$GITHUB_OUTPUT"
 
       - name: Verify fork release contracts
+        if: steps.plan.outputs.release == 'true'
         run: ruby .github/scripts/tests/fork-release_test.rb
 
+      - name: Read build toolchains
+        if: steps.plan.outputs.release == 'true'
+        id: toolchains
+        run: ruby .github/scripts/toolchains.rb >> "$GITHUB_OUTPUT"
+
       - name: Define and seal fork release metadata
+        if: steps.plan.outputs.release == 'true'
         id: release
         run: ruby .github/scripts/fork-release.rb metadata >> "$GITHUB_OUTPUT"
 
       - name: Upload release metadata
+        if: steps.release.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fork-release-metadata
@@ -65,18 +105,71 @@ jobs:
     uses: ./.github/workflows/_quality.yml
     with:
       ref: ${{ github.sha }}
+      run_backend: ${{ needs.metadata.outputs.release == 'true' }}
+      run_frontend: false
+
+  frontend:
+    needs: metadata
+    if: needs.metadata.outputs.release == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Validate and build frontend
+        uses: ./.github/actions/build-frontend
+        with:
+          upload-artifact: 'true'
+
+  binary:
+    needs: metadata
+    if: needs.metadata.outputs.release == 'true'
+    name: Build binary (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.metadata.outputs.docker_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Build cached release binary
+        uses: ./.github/actions/build-binary
+        with:
+          rust: ${{ needs.metadata.outputs.rust }}
+          target: ${{ matrix.target }}
+          platform: ${{ matrix.os }}-${{ matrix.arch }}
+          binary: ${{ matrix.binary }}
+          rust-image: ${{ needs.metadata.outputs.rust_image }}
+        env:
+          CPR_VERSION: ${{ needs.metadata.outputs.version }}
+          CPR_GIT_SHA: ${{ github.sha }}
+          CPR_BUILD_TIME: ${{ needs.metadata.outputs.build_time }}
+          CPR_BUILD_TYPE: release
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/binaries/${{ matrix.os }}-${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 7
 
   build:
-    needs: metadata
+    needs: [metadata, frontend, binary]
+    if: needs.metadata.outputs.release == 'true'
     name: Build and verify (${{ matrix.arch }})
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
+      matrix: ${{ fromJSON(needs.metadata.outputs.docker_matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     permissions:
@@ -95,6 +188,25 @@ jobs:
           name: fork-release-metadata
           path: dist
 
+      - name: Download frontend artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: frontend-dist
+          path: dist/docker/web/dist
+
+      - name: Download binary artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/docker-artifacts/${{ matrix.artifact }}
+
+      - name: Prepare Docker prebuilt assets
+        env:
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_ARCH: ${{ matrix.arch }}
+          MATRIX_BINARY: ${{ matrix.binary }}
+        run: ruby .github/scripts/package-release.rb image
+
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -112,20 +224,14 @@ jobs:
         with:
           context: .
           file: deploy/Dockerfile
-          target: runtime-fork
-          platforms: linux/${{ matrix.arch }}
+          target: runtime-prebuilt
+          platforms: ${{ matrix.dockerPlatform }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
-            CPR_VERSION=${{ needs.metadata.outputs.version }}
-            CPR_GIT_SHA=${{ github.sha }}
-            CPR_BUILD_TIME=${{ needs.metadata.outputs.build_time }}
-            CPR_BUILD_TYPE=release
+            CPR_UPDATE_REPOSITORY=${{ github.repository }}
           no-cache-filters: |
             runtime-base
-            runtime
-            runtime-fork
-          cache-from: type=gha,scope=fork-runtime-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=fork-runtime-${{ matrix.arch }}
+            runtime-prebuilt
           provenance: mode=max
           sbom: true
           labels: |
@@ -138,7 +244,7 @@ jobs:
         uses: ./.github/actions/verify-container
         with:
           image: ${{ env.IMAGE_NAME }}@${{ steps.image.outputs.digest }}
-          platform: linux/${{ matrix.arch }}
+          platform: ${{ matrix.dockerPlatform }}
           artifact-name: fork-container-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
 
       - name: Record verified digest
@@ -292,5 +398,5 @@ jobs:
             echo "- 更新标签：\`$IMAGE_NAME:evaluation\`"
             echo "- Release：https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
             echo '- 平台：linux/amd64、linux/arm64'
-            echo '- 质量检查与双架构容器验收通过，在线更新包与镜像使用相同产物'
+            echo '- 质量检查、双架构容器验收与在线更新包校验通过'
           } >> "$GITHUB_STEP_SUMMARY"

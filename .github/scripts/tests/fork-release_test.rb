@@ -71,6 +71,20 @@ class ForkReleaseTest < Minitest::Test
     refute PublishedChannels.advance(document, version)
   end
 
+  def test_packaging_rejects_an_incomplete_fork_platform_plan
+    in_workspace do
+      path = 'release/platforms.yaml'
+      document = YAML.load_file(path)
+      document.fetch('platforms').reject! do |platform|
+        platform['docker'] == true && platform['arch'] == 'arm64'
+      end
+      File.write(path, YAML.dump(document))
+      File.write(ForkRelease::METADATA, JSON.generate(metadata))
+      error = assert_raises(RuntimeError) { ForkRelease.package('amd64') }
+      assert_equal 'Expected both fork release platforms', error.message
+    end
+  end
+
   def test_archives_preserve_verified_files_and_publish_matching_checksums
     previous_env = ENV.to_h
     in_workspace do

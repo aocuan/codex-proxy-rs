@@ -83,21 +83,12 @@ COPY --from=backend-builder --chown=cpr:cpr /tmp/codex-proxy-rs /app/bin/codex-p
 COPY --from=frontend-builder --chown=cpr:cpr /app/frontend/dist ./web/dist
 USER cpr
 
-FROM runtime AS runtime-fork
-
-ENV CPR_UPDATE_REPOSITORY=aocuan/codex-proxy-rs
-USER root
-COPY --chown=cpr:cpr dist/plugin-release-assets/plugin-release-manifest.json /app/bin/plugins/official/plugin-release-manifest.json
-RUN chown cpr:cpr /app/bin/plugins /app/bin/plugins/official \
-    && chmod 0755 /app/bin/plugins \
-    && chmod 0555 /app/bin/plugins/official \
-    && chmod 0444 /app/bin/plugins/official/plugin-release-manifest.json
-USER cpr
-
 FROM runtime-base AS runtime-prebuilt
 
 ARG TARGETARCH
 ARG CPR_PREBUILT_DIR=dist/docker
+ARG CPR_UPDATE_REPOSITORY
+ENV CPR_UPDATE_REPOSITORY=${CPR_UPDATE_REPOSITORY}
 
 COPY --chown=cpr:cpr ${CPR_PREBUILT_DIR}/linux-${TARGETARCH}/codex-proxy-rs /app/bin/codex-proxy-rs
 COPY --chown=cpr:cpr ${CPR_PREBUILT_DIR}/web/dist ./web/dist
@@ -105,5 +96,6 @@ COPY --chown=cpr:cpr ${CPR_PREBUILT_DIR}/linux-${TARGETARCH}/plugins/official /a
 RUN chmod +x /app/bin/codex-proxy-rs \
     && find /app/bin/plugins/official -type f -exec chmod 0444 '{}' + \
     && chmod 0555 /app/bin/plugins/official \
+    && chown cpr:cpr /app/bin/plugins \
     && chmod 0755 /app/bin/plugins
 USER cpr
